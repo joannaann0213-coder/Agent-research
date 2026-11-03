@@ -22,7 +22,7 @@ Revenue-facing agents cluster around $400–$500 per location per month: Slang C
 |---|---|---|---|---|---|
 | Slang.ai Core / Premium | Phone AI (reservations, call deflection) | per location / month | from $399 / from $599 (as of Sept 2026) | List | [Katalyst, 2026-09-12](https://www.katalystos.com/blog/ai-phone-answering-for-restaurants-what-it-costs) |
 | Maple Voice / Pro | Phone AI | per location / month | Voice $85 (annual) or $150 (monthly); Pro $220 (annual) or $350 (monthly) (Sept 2026) | List | [Katalyst](https://www.katalystos.com/blog/ai-phone-answering-for-restaurants-what-it-costs) |
-| Kea | Phone ordering AI | flat / month | $450, unlimited calls (vendor's own blog, as cited Sept 2026). One third-party review lists $199–$299, which conflicts. | List (vendor blog); conflicting reported figure | [Katalyst](https://www.katalystos.com/blog/ai-phone-answering-for-restaurants-what-it-costs); conflict noted in [2026 roundups](https://www.cloudtalk.io/blog/best-ai-phone-answering-systems-for-restaurants/) |
+| Kea | Phone ordering AI | flat / month | $450, unlimited calls (vendor's own blog, as cited Sept 2026). One third-party review lists $199–$299, which conflicts. | List (vendor blog); conflicting reported figure | [Katalyst](https://www.katalystos.com/blog/ai-phone-answering-for-restaurants-what-it-costs). The conflicting $199–$299 figure surfaced in a 2026 search roundup, but the specific page was not verified. |
 | Bite Buddy | Phone ordering AI | per completed order | $1.50 per order (2026) | List | [Katalyst](https://www.katalystos.com/blog/ai-phone-answering-for-restaurants-what-it-costs) |
 | Loman, SoundHound, Voiceplug | Phone/voice AI | quote | not published (Sept 2026) | Quote | [Katalyst](https://www.katalystos.com/blog/ai-phone-answering-for-restaurants-what-it-costs) |
 | Toast IQ Grow (AI Marketing Agent plus human Marketing Success Manager) | POS-native marketing agent | flat / month (bundle) | $499 / month (launched 2026-05-05) | List | [Yahoo Finance, May 2026](https://finance.yahoo.com/markets/stocks/articles/toast-tost-launches-toast-iq-132858023.html); [Pulse2](https://pulse2.com/toast-iq-grow) |
@@ -94,7 +94,7 @@ Revenue-facing agents cluster around $400–$500 per location per month: Slang C
   - No statement on future pricing; Block declined to say whether it will become a paid add-on.
   — [Square press release](https://squareup.com/us/en/press/managerbot-open-beta); [PYMNTS](https://www.pymnts.com/?p=3689889)
 - **Square agentic ordering (2026-07-01).** A ChatGPT app and a Claude plugin let consumers order from US food and beverage sellers that use Square Online Ordering. Sellers are opted in automatically, and no marketplace commission applies. Normal online processing fees still apply (reported as 2.9% or 3.3% + $0.30 depending on plan). — [VentureBeat](https://venturebeat.com/marketing-tech/restaurants-can-now-accept-orders-placed-directly-from-chatgpt-and-claude-thanks-to-squares-new-low-fee-no-setup-integration/); [Digital Applied, 2026-07-06](https://www.digitalapplied.com/blog/square-chatgpt-claude-ordering-agentic-commerce-2026)
-- **Clover (Fiserv).** No merchant AI agent was found in 2026 coverage; only Clover GPV growth (+12% YoY) was reported — [search result: Digital Transactions](https://www.digitaltransactions.net/category/news/competitive-strategies/page/13/?ap=k)
+- **Clover (Fiserv).** Searches of 2026 coverage found no Clover merchant AI agent; results were limited to payments-volume news. Treated as a gap.
 
 #### E. Marketing, CRM, website, review, labor and inventory
 - **Owner.com** (pricing page accessed Nov 2026).
@@ -207,7 +207,7 @@ None of them sells a standalone paid merchant-agent subscription. The clearest m
   — [21世纪经济报道, 2026-11-03](https://m.21jingji.com/article/20261103/herald/b56e37691b92f337f4a4d22c09b29386.html)
 - **Douyin / 抖音来客.**
   - Around Double 11 2026, Douyin e-commerce launched a "豆包运营" dashboard and free AI tools (开店托管 store hosting, 分销管家 distribution manager) for small merchants.
-  - **Since 2026-08-10, merchants in accommodation, fitness, home, education and maternity categories pay an extra 4%–13% technical service fee on orders referred by Doubao.**
+  - **Since August 10 (year inferred as 2026 from the article's context), merchants in accommodation, fitness, home, education and maternity categories pay an extra 4%–13% technical service fee on orders referred by Doubao.** The general Douyin Mall channel fee can reach 5.2%.
   — [人人都是产品经理/电厂, 2026-10-28](https://www.woshipm.com/ai/6485093.html)
   - Douyin life services launched the LIFE+ lead-generation system on 2026-09-10. AI-feature penetration among lead-gen merchants reached 72% in the three months to August 2026. — [CNFIN, 2026-09-11](https://www.cnfin.com/cmjj-lb/detail/20260911/4469014_1.html)
 - **Merchant reception in China.**
