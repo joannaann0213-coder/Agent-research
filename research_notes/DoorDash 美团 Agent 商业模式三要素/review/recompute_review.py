@@ -5,7 +5,9 @@ and run the sensitivity tests used in review/analysis_and_calculations.md.
 Inputs come from the report itself and from the research notes
 (doordash.md, meituan.md, analysis_toolkit_unit_economics.md,
 merchant_agent_market.md, working_files/inference_cost_estimate.py).
-Model prices were checked on 2026-11-04 (see the findings file, section B).
+Model prices were checked on 2026-11-04 (see the findings, section 2):
+Google, OpenAI and DeepSeek on their official pages; Claude from the Anthropic
+reference supplied by the coordinator (cached 2026-10-06), not re-fetched.
 Standard library only. Run: python3 recompute_review.py
 """
 
@@ -47,8 +49,8 @@ P = {
     "Gemini 3.8 Flash 2026":          (0.75, 0.075, 3.75),
     "Gemini 3.8 Flash 2027":          (1.50, 0.15, 7.50),
     "GPT-5.4 mini":                   (0.75, 0.075, 4.50),
-    "Claude Sonnet 5.5 (cache $0.10)": (2.00, 0.10, 10.00),
-    "Claude Sonnet 5.5 (cache $0.20)": (2.00, 0.20, 10.00),
+    "Claude Sonnet 5.5 (cache $0.10)": (2.00, 0.10, 10.00),  # notes/script; earlier repo report after 2026-10-07
+    "Claude Sonnet 5.5 (cache $0.20)": (2.00, 0.20, 10.00),  # coordinator-verified Anthropic reference: use this
     "Claude Opus 5.5":                (4.00, 0.20, 20.00),
     "GPT-5.5":                        (5.00, 0.50, 30.00),
 }
