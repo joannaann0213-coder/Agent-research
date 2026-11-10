@@ -11,6 +11,7 @@ Buy three seats together in the **Sideline Club, Section 103** (center court, di
 - **Curry is in front of you:** the Warriors' bench sits directly below Sections 102–103.
 - **Comfort:** the ticket includes the United Club lounge behind the section, with its own bar, food counters and tables. Food is not included; you buy it.
 - **Budget:** it uses 55–75% of the $2,000 instead of all of it.
+- **For an 8-year-old:** she needs her own ticket. Give her the aisle seat of the three, where one side is open and stepping out is easy. She can manage the stairs, so there is no reason to sit higher than row 10.
 
 Fallbacks, in order: Section 116 or 115 (center court on the opposite sideline, facing the benches, with Ultra Club access), then Section 102 (also behind the Warriors' bench, one section off center, from about $245 a seat).
 
@@ -60,7 +61,7 @@ How the arena is laid out: Sections 101–106 run along the bench sideline. The 
 
 ## The other options
 
-**Everything on the floor: about $1,950–$2,400 for three.** Courtside Club riser seats in Sections 9–10 are within seven rows of the court and include a buffet, snacks and soft drinks in the Chase Club. Choose this if your daughter is about ten or older and being close matters more to her than seeing the whole court. The view is flat, so a small child looks at the backs of heads. These two sections are behind the basket at the Kings' end. And it takes the whole budget.
+**Everything on the floor: about $1,950–$2,400 for three.** Courtside Club riser seats in Sections 9–10 are within seven rows of the court and include a buffet, snacks and soft drinks in the Chase Club. For an 8-year-old I would skip this. The view is flat, so a child looks at the backs of heads. These two sections are behind the basket at the Kings' end. And it takes the whole budget.
 
 **Spend half, keep half: about $500–$900 for three.** Section 102, a lower-level corner, or the Cache Creek Club with dinner included. Sections 107, 112, 119 and 124 are half-size corner sections, which makes them easy to get in and out of. Choose this if the $2,000 also has to cover a hotel or travel.
 
@@ -98,7 +99,7 @@ I would not sit in the upper level with this budget. It is steep, and you can af
 
 - Bags up to 14 × 14 × 6 inches. No backpacks. A larger bag costs $10 to check outside.
 - No outside food or drink, including water, and no reusable bottles. There are water fountains inside.
-- A child under 24 months needs no ticket but must sit on an adult's lap.
+- Your daughter needs her own ticket. Only children under 24 months enter without one.
 - There is no re-entry once you leave.
 - A light jacket. Late November evenings in San Francisco are cool, and it may rain.
 
@@ -106,10 +107,9 @@ The Thrive City holiday lighting ceremony is on Nov 27, two days after the game,
 
 ## Questions that would sharpen this
 
-1. How old is your daughter? Under two she needs no ticket. At three to eight I would choose aisle seats in rows 8–14, a shorter climb to the lounge and concourse. As a teenager she might prefer the floor.
-2. Does the $2,000 cover only the tickets, or the whole night including travel or a hotel?
-3. Are you coming from the Bay Area, or flying in and staying overnight?
-4. Do you have a Chase credit or debit card?
+1. Does the $2,000 cover only the tickets, or the whole night including travel or a hotel?
+2. Are you coming from the Bay Area, or flying in and staying overnight?
+3. Do you have a Chase credit or debit card?
 
 ## Sources
 
