@@ -114,7 +114,77 @@ He/She is currently staying at [hotel name and address].
 [Phone]                                                 [Signature]
 ```
 
-真的住在亲友家时，把中间两句换成：`[APPLICANT'S FULL NAME] has been living with me at this address since [date].`
+真的住在亲友家时，不用这封同意信，改用下面的租约或居住证明信。
+
+### 租约和居住证明信怎么写
+
+银行没有规定格式。Wells Fargo 写的是“现行租约”，Bank of America 写的是“租约”，官网都没有更细的要求。按下面几条准备，柜员就能核对：
+
+1. 用英文打印，双方手写签名，带签过字的原件去银行。
+2. 住客的姓名和护照上的拼写完全一致。
+3. 地址写全：门牌号、单元号或房间号、城市、州、邮编。
+4. 写明起止日期，开户那天必须在有效期内。
+5. 内容如实。付房租就签租约；免费住就写居住证明信，不要为了开户编一份有租金的租约。
+
+屋主签租约之前要知道三件事：
+
+- 租约是有法律效力的合同，住客由此获得租客的权利，各州的规定不一样。
+- 收到的房租一般要作为收入报税。
+- 屋主自己是租客的话，先看自己的租约允不允许转租。更好的做法是请房东出一份补充协议，把住客加进原租约，这份文件的效力比朋友之间签的租约强。
+
+三家银行公布的要求里都没有公证。想让文件更有分量，可以拿去公证，但这不是必需的。
+
+房间租约模板：
+
+```
+ROOM RENTAL AGREEMENT
+
+Date: [Month Day, Year]
+
+Landlord: [HOST'S FULL NAME]          Phone: [__________]
+Tenant:   [TENANT'S FULL NAME, exactly as shown on passport]
+
+1. Premises. Landlord rents to Tenant one bedroom in the home at
+   [street address, apt/unit #, city, state, ZIP], with shared use of
+   the kitchen, bathroom and living areas.
+2. Term. This agreement begins on [start date] and ends on [end date].
+3. Rent. $[amount] per month, due on the [1st] day of each month,
+   paid by [check / bank transfer / cash].
+4. Security deposit. $[amount / none].
+5. Utilities. [Included in the rent / shared as follows: ________].
+6. Use. Tenant will use the premises as a residence only.
+7. Ending the agreement. Either party may end this agreement with
+   [30] days' written notice.
+
+Landlord signature: ____________________   Date: __________
+Tenant signature:   ____________________   Date: __________
+```
+
+居住证明信模板，免费住或不想签租约时用：
+
+```
+                                                Date: [Month Day, Year]
+
+To Whom It May Concern:
+
+I, [HOST'S FULL NAME], am the [owner / leaseholder] of the home at
+[street address, apt/unit #, city, state, ZIP].
+
+I confirm that [RESIDENT'S FULL NAME, exactly as shown on passport] has
+lived with me at this address since [move-in date] and is expected to
+stay through at least [date]. [He/She] [does not pay rent / pays
+$____ per month in rent].
+
+You may contact me at [phone] or [email] to verify this.
+
+Signature: ____________________
+Printed name: [HOST'S FULL NAME]
+
+Attached: a copy of my [utility bill / lease / mortgage statement]
+dated within the last 60 days, and a copy of my photo ID.
+```
+
+居住证明信要附上屋主自己 60 天内的水电账单、租约或房贷账单的复印件，以及屋主证件的复印件。
 
 ## 4. 选哪家银行
 
