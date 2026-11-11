@@ -44,7 +44,7 @@
 | 雇主录用信、工牌或工资单 | 地址证明、副证件 | Chase 把雇主证件、工资单、写有姓名地址的信都列为副证件 |
 | 本国住址的英文写法、本国纳税人识别号 | 银行可能会问 | 中国大陆居民的纳税人识别号就是身份证号 |
 | 入境现金申报回执（FinCEN 105） | 说明资金来源 | 只在带超过 $10,000 现金入境时才有 |
-| 亲友在美国的地址和电话 | 邮寄地址 | 要先征得对方同意 |
+| 亲友的地址、电话和一封签名的同意信 | 邮寄地址 | 要先征得对方同意。银行没有公布要这封信，带上以防柜员问；模板见第 3 节 |
 
 本国身份证上只有中文姓名时，柜员可能没法和护照核对，所以副证件要多带几种。
 
@@ -83,6 +83,31 @@ is accepted and held at the front desk.
 [Name], [Title]
 [Phone]                                                 [Signature]
 ```
+
+### 用亲友地址时要不要证明信
+
+三家银行的官网都没有提到亲友地址。下面是按它们公布的地址证明规则推出来的做法，具体以分行的答复为准。
+
+- **只用来收信。** 人住酒店，亲友家登记为邮寄地址。Bank of America 和 Wells Fargo 公布的地址证明要求针对的是实际住址，Chase 只说证件上要有美国地址，三家都没有要求给邮寄地址另外出证明。建议还是带一封亲友签名的同意信，柜员问起时可以直接拿出来。
+- **登记为住址。** 只有真的住在亲友家才可以这样填。这时光有亲友写的信通常不够，因为银行要的是写有本人姓名的地址证明，Wells Fargo 还明确要求姓名和证件一致。可以准备的材料有：亲友签名的居住证明信、亲友自己的水电账单或租约复印件、亲友的证件复印件和电话。最稳妥的还是一份寄到该地址、写有本人姓名的正式信件。
+- 人住在酒店，就不要把亲友家填成住址。
+
+同意信模板，只用来收信时用：
+
+```
+                                                        Date: __________
+
+To Whom It May Concern:
+
+I, [FRIEND'S FULL NAME], live at [street address, city, state, ZIP].
+[APPLICANT'S FULL NAME, as shown on passport] has my permission to
+receive mail at this address while he/she looks for permanent housing.
+He/She is currently staying at [hotel name and address].
+
+[Phone]                                                 [Signature]
+```
+
+真的住在亲友家时，把中间两句换成：`[APPLICANT'S FULL NAME] has been living with me at this address since [date].`
 
 ## 4. 选哪家银行
 
