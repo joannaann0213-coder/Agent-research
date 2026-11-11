@@ -186,6 +186,8 @@ dated within the last 60 days, and a copy of my photo ID.
 
 居住证明信要附上屋主自己 60 天内的水电账单、租约或房贷账单的复印件，以及屋主证件的复印件。
 
+可以直接打印的 Word 版在同一目录：`proof-of-residence-letter.docx`。姓名、地址、日期和联系方式都留空，打印后手写或者先在 Word 里填好再打印都可以。
+
 ## 4. 选哪家银行
 
 | | Chase | Bank of America | Wells Fargo |
