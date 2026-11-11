@@ -69,7 +69,7 @@ I would not sit in the upper level with this budget. It is steep, and you can af
 
 ## How to buy
 
-1. **Start on Ticketmaster.** It is the Warriors' official marketplace, and tickets land directly in your Ticketmaster account. In this snapshot it also had the lowest price in 9 of the 16 lower-level sections listed. Chase Center says it cannot check the validity of tickets bought from third-party sellers.
+1. **Start on Ticketmaster.** It is the Warriors' official marketplace, and tickets land directly in your Ticketmaster account. The [event page for this game](https://www.ticketmaster.com/event/1C00650AB397D81F?brand=warriors&artistid=805946) is the one behind the "Buy Tickets" button in the Warriors' November fan guide. In this snapshot it also had the lowest price in 9 of the 16 lower-level sections listed. Chase Center says it cannot check the validity of tickets bought from third-party sellers.
 2. **Set quantity to 3** and look at Section 103 first, then 116, 115 and 102. Sort by row as well as price.
 3. **Skip listings marked SRO, WCA or limited view.** SRO is standing room. WCA is wheelchair and companion seating.
 4. **Compare the final checkout total** for the same section and row on TickPick (no buyer fees) and Gametime before you pay.
