@@ -1,19 +1,20 @@
 # Warriors vs. Kings, Nov 25, 2026: family ticket plan (3 people, about $2,000)
 
-> Researched Nov 10, 2026. Prices are a snapshot from that day and move daily. All amounts are in USD.
+> Researched Nov 10, 2026; updated Nov 12 with live listings for three seats together. Prices move daily. All amounts are in USD.
 > Ticketmaster, StubHub and SeatGeek block automated access, so I could not open their live seat maps. Section-level prices below come from an aggregator; row-level prices and the exact three-together listings need a live check when you buy.
 
 ## Recommendation
 
-Buy three seats together in the **Sideline Club, Section 103** (center court, directly behind the Warriors' bench), rows 1–10, starting on Ticketmaster. Plan on about **$1,100–$1,500 for the three tickets**. That leaves $500–$900 for dinner, a jersey for your daughter and getting there.
+Section 103 is still the ideal seat: center court, directly behind the Warriors' bench. But on Nov 12, on the one marketplace I could read, three seats together there started at $752 each ($2,256 for three), and only in rows 14–15, near the top of the section. Rows 1–13 were sold in pairs. My first estimate of $1,100–$1,500 for three was too low.
 
-- **View:** a center-court sideline seat. Row 1 starts about 13 rows above the floor, so a child can see over the people in front. Floor-level seats do not give her that.
-- **Curry is in front of you:** the Warriors' bench sits directly below Sections 102–103.
-- **Comfort:** the ticket includes the United Club lounge behind the section, with its own bar, food counters and tables. Food is not included; you buy it.
-- **Budget:** it uses 55–75% of the $2,000 instead of all of it.
-- **For an 8-year-old:** she needs her own ticket. Give her the aisle seat of the three, where one side is open and stepping out is easy. She can manage the stairs, so there is no reason to sit higher than row 10.
+1. **Check Ticketmaster for Section 103 first.** If it has three seats together for about $500 each or less, fees included, buy them.
+2. **Otherwise buy Section 105, row 5:** a set of exactly three at $601 each, **$1,803 in total**. It is one section off center, about 17 rows from the court, behind the visitors' bench. RateYourSeats rates these seats 4.5 out of 5, higher than the back rows of 103 (4.3).
+3. **To keep more of the budget:** Section 106, row 3 at $522 each ($1,566), or row 6 at $445 each ($1,335). Same club, one section closer to the corner.
 
-Fallbacks, in order: Section 116 or 115 (center court on the opposite sideline, facing the benches, with Ultra Club access), then Section 102 (also behind the Warriors' bench, one section off center, from about $245 a seat).
+- **View:** Sideline Club rows start about 13 rows above the floor, so a child can see over the people in front. Floor-level seats do not give her that.
+- **Comfort:** Sections 101–106 include the United Club lounge, with its own bar, food counters and tables. Food is not included; you buy it.
+- **For an 8-year-old:** she needs her own ticket. Seat her between the two of you; none of these listings is marked as an aisle.
+- **Skip "SRO" listings.** The $290–$300 tickets in Sections 102 and 105 are standing room with a possibly obstructed view.
 
 ## The game
 
@@ -33,7 +34,7 @@ The Kings bring Domantas Sabonis, Zach LaVine and rookie guard Darius Acuff Jr.,
 
 ## What seats cost on Nov 10
 
-Lowest asking price per ticket for this game across Ticketmaster, StubHub, SeatGeek, Vivid Seats, Gametime and viagogo, collected by the TicketsData aggregator. The Ticketmaster figures appear to include its fees; I could not confirm that for the other sites. TickPick and Gametime both showed an $85 all-in get-in price the same day. Lower rows, and three seats together, cost more than these minimums.
+Lowest asking price per ticket for this game across Ticketmaster, StubHub, SeatGeek, Vivid Seats, Gametime and viagogo, collected by the TicketsData aggregator. The Ticketmaster figures appear to include its fees; I could not confirm that for the other sites. TickPick and Gametime both showed an $85 all-in get-in price the same day. Lower rows, and three seats together, cost more than these minimums. The aggregator showed exactly the same figures again on Nov 12, so they may be older than their date suggests; see the live check below.
 
 | Area | Sections with listings | Lowest per ticket | Three tickets | What you get |
 |---|---|---|---|---|
@@ -48,33 +49,53 @@ Lowest asking price per ticket for this game across Ticketmaster, StubHub, SeatG
 
 How the arena is laid out: Sections 101–106 run along the bench sideline. The Warriors' bench is in front of 102–103 and the visitors' bench in front of 104–105. Sections 113–118 are the opposite sideline. Center court falls between 103 and 104, and between 115 and 116. All lower-level sideline seats are club seats. [Seating chart](https://www.rateyourseats.com/chase-center/seating/seating-chart).
 
+## Live check, Nov 12
+
+Three-seat listings on RateYourSeats at 8:48 AM ET on Nov 12, out of 1,452 listings for this game. The listing IDs suggest the inventory comes from Vivid Seats. Prices are per ticket as the site shows them, labelled all-in; confirm the total at checkout. "Sold as" is the quantities the seller allows. Tickets in one listing are normally seated together unless the listing says otherwise.
+
+| Section | Row | Per ticket | Three tickets | Sold as | Note |
+|---|---|---|---|---|---|
+| 103 | 14 | $752 | $2,256 | 1–4 | Rows 1–13 sold in pairs only |
+| 103 | 15 | $1,254 | $3,762 | up to 10 | |
+| 104 | 15 | $730 | $2,190 | 1–4 | |
+| 102 | 12 | $642 | $1,926 | 1–3 | Behind the Warriors' bench |
+| 105 | 4 | $648 | $1,944 | 1 or 3 | |
+| **105** | **5** | **$601** | **$1,803** | **3 only** | **Recommended** |
+| 106 | 3 | $522 | $1,566 | 1, 2, 3 or 5 | |
+| 106 | 6 | $445 | $1,335 | 3 only | |
+| 128 | 3 | $247 | $741 | 3 only | Cache Creek Club, behind the basket |
+
+I could not read Ticketmaster, StubHub, SeatGeek, TickPick or Gametime listings from here, so other three-seat sets, possibly cheaper, may exist there.
+
 ## What the recommended night costs
 
 | Item | Allow |
 |---|---|
-| Three tickets, Section 103 (or 115/116), rows 1–10 | $1,100–$1,500 |
+| Three tickets: Section 105 row 5, or Section 106 | $1,335–$1,803 |
 | Dinner and snacks | $120–$180 (my estimate) |
 | Jersey and souvenirs | $100–$150 (my estimate) |
 | Getting there | $0 by Muni (free with your ticket) to $75 in the arena garage |
 | Halftime scoreboard message | a donation; the form shows the amount |
-| **Total** | **about $1,350–$1,950** |
+| **Total** | **about $1,550–$2,200** |
+
+With Section 105 the whole night can run slightly over $2,000. Taking Muni (free with your ticket) and buying one souvenir keeps it close.
 
 ## The other options
 
-**Everything on the floor: about $1,950–$2,400 for three.** Courtside Club riser seats in Sections 9–10 are within seven rows of the court and include a buffet, snacks and soft drinks in the Chase Club. For an 8-year-old I would skip this. The view is flat, so a child looks at the backs of heads. These two sections are behind the basket at the Kings' end. And it takes the whole budget.
+**Everything on the floor: out of reach for three.** Courtside Club riser seats in Sections 9–10, behind one basket, are within seven rows of the court and include a buffet, snacks and soft drinks in the Chase Club. On Nov 12 the only three-seat listing there was $2,084 a seat. For an 8-year-old I would skip it anyway: the view is flat, so a child looks at the backs of heads.
 
-**Spend half, keep half: about $500–$900 for three.** Section 102, a lower-level corner, or the Cache Creek Club with dinner included. Sections 107, 112, 119 and 124 are half-size corner sections, which makes them easy to get in and out of. Choose this if the $2,000 also has to cover a hotel or travel.
+**Spend half, keep half: about $750–$1,000 for three.** On Nov 12, three seats together were $741 in the Cache Creek Club (Section 128, row 3, behind the basket; RateYourSeats says a meal is included at Warriors games), $789 in Section 111 (row 24) and about $990 in Sections 108 and 112 (row 21). Choose this if the $2,000 also has to cover a hotel or travel.
 
 I would not sit in the upper level with this budget. It is steep, and you can afford better. Theater Boxes (a semi-private box of four with food included) are another family format, but I found no price for this game.
 
 ## How to buy
 
 1. **Start on Ticketmaster.** It is the Warriors' official marketplace, and tickets land directly in your Ticketmaster account. The [event page for this game](https://www.ticketmaster.com/event/1C00650AB397D81F?brand=warriors&artistid=805946) is the one behind the "Buy Tickets" button in the Warriors' November fan guide. In this snapshot it also had the lowest price in 9 of the 16 lower-level sections listed. Chase Center says it cannot check the validity of tickets bought from third-party sellers.
-2. **Set quantity to 3** and look at Section 103 first, then 116, 115 and 102. Sort by row as well as price.
+2. **Set quantity to 3** and look at Section 103 first, then 104, 105, 102 and 106. Sort by row as well as price.
 3. **Skip listings marked SRO, WCA or limited view.** SRO is standing room. WCA is wheelchair and companion seating.
 4. **Compare the final checkout total** for the same section and row on TickPick (no buyer fees) and Gametime before you pay.
 5. **If you have a Chase card,** turn on the "Chase Cardholder Preferred Seating" filter on Ticketmaster. Those seats are held for cardholders and must be paid for with the Chase card.
-6. **When to buy.** NBA resale prices usually hold steady until about a week before the game and then fall. A study of 1.9 million StubHub sales from the 2022–23 season found game-day prices averaged 32% below the price one week earlier. That is an average, not a promise, and the Warriors are on a winning streak. With a child and a need for three specific seats together on Thanksgiving eve, I would watch prices now and buy around Nov 18–22. Buy sooner if three together in rows 1–10 of Section 103 appear at about $450 a seat or less, fees included. That threshold is my judgment from the section minimums above.
+6. **When to buy: in the next few days.** Across the NBA, resale prices tend to fall in the last week; a study of 1.9 million StubHub sales from the 2022–23 season found game-day prices averaged 32% below the price one week earlier. For three seats together, selection matters more. RateYourSeats reports that for Warriors home games last season, prices in the final day or two were about 11% lower than 13 days out, but the number of listings fell by about 53%. Section 103 already has only two three-seat listings on that site.
 
 ## Game-day plan
 
@@ -129,6 +150,7 @@ Prices
 - [TickPick Warriors listings](https://www.tickpick.com/nba/golden-state-warriors-tickets/) and [Gametime event page](https://gametime.co/nba-basketball/nba-cup-kings-at-warriors-tickets/11-25-2026-san-francisco-ca-chase-center/events/6a7bd2799af8b0d790566fca)
 - [TicketSmarter event page](https://www.ticketsmarter.com/e/nba-cup-sacramento-kings-at-golden-state-warriors-tickets-san-francisco-11-25-2026-chase-center/3464964) (average about $303)
 - [Ticketmaster: Warriors home games](https://www.ticketmaster.com/golden-state-warriors-tickets/artist/805946?home_away=home)
+- [RateYourSeats: listings and price history for this game](https://www.rateyourseats.com/tickets/events/nba-cup-sacramento-kings-at-golden-state-warriors-tickets-november-25-2026-7420144)
 - [FinanceBuzz: best time to buy NBA tickets](https://financebuzz.com/best-time-to-buy-nba-tickets)
 
 Seating and background
