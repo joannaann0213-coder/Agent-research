@@ -1,0 +1,1447 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Agent 连接器与 MCP</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="按提问顺序讲清 agent 连接器：MCP 原理、各家自建的接入层、目录与官方注册表、认证方式、连接即授权，以及在自己的 agent 上搭平台、迁移存量 MCP。">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700;900&display=swap">
+<style>
+/* Layout: same reading column and type system as the sister page 《共享 Agent 与工作助理》, so the two read as a set. Each question opens with the asker's message, then 分析思路, then the conclusion. Colour carries meaning throughout: ochre = 钥匙、授权与凭据; indigo = 你的 agent 产品和它的接入层; teal = 第三方应用和它的 MCP 服务器. */
+:root {
+  --paper: #F3F5F4;
+  --surface: #FFFFFF;
+  --panel: #E9EDEE;
+  --ink: #16202A;
+  --ink-2: #4E5A66;
+  --rule: #D3DADF;
+  --app: #0B7666;
+  --app-soft: #D8EEE9;
+  --plat: #3A4EC2;
+  --plat-soft: #E1E5FA;
+  --key: #8F5C0E;
+  --key-soft: #F4E7D0;
+  --font-display: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+  --font-body: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0F1317;
+    --surface: #161B21;
+    --panel: #1C232A;
+    --ink: #E5EAEE;
+    --ink-2: #9FAAB5;
+    --rule: #2B343D;
+    --app: #45C6AD;
+    --app-soft: #12322C;
+    --plat: #95A3FF;
+    --plat-soft: #1E254D;
+    --key: #E2A94F;
+    --key-soft: #382B15;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0F1317;
+  --surface: #161B21;
+  --panel: #1C232A;
+  --ink: #E5EAEE;
+  --ink-2: #9FAAB5;
+  --rule: #2B343D;
+  --app: #45C6AD;
+  --app-soft: #12322C;
+  --plat: #95A3FF;
+  --plat-soft: #1E254D;
+  --key: #E2A94F;
+  --key-soft: #382B15;
+  color-scheme: dark;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.8;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+.wrap {
+  max-width: 772px;
+  margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 36px 72px;
+}
+@media (min-width: 720px) {
+  .wrap {
+    padding-left: max(36px, env(safe-area-inset-left, 0px));
+    padding-right: max(36px, env(safe-area-inset-right, 0px));
+    padding-block: 64px 96px;
+  }
+}
+a { color: inherit; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+a:hover { text-decoration-color: currentColor; }
+:focus-visible { outline: 2px solid var(--plat); outline-offset: 3px; border-radius: 4px; }
+section, nav { scroll-margin-top: 16px; }
+code {
+  font-family: var(--font-mono);
+  font-size: .86em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--panel);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- hero ---------- */
+.eyebrow { margin: 0 0 10px; font-size: 13px; letter-spacing: .14em; color: var(--ink-2); }
+.hero h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 900;
+  font-size: clamp(34px, 8.4vw, 56px);
+  line-height: 1.16;
+  letter-spacing: .01em;
+  text-wrap: balance;
+}
+.dek { margin: 18px 0 0; font-size: 17px; line-height: 1.85; max-width: 34em; }
+@media (min-width: 720px) { .dek { font-size: 18px; } }
+.meta { margin: 14px 0 0; font-size: 13.5px; line-height: 1.7; color: var(--ink-2); }
+.layers { display: grid; gap: 10px; margin-top: 28px; }
+.layer {
+  display: grid;
+  grid-template-columns: 6.4em minmax(0, 1fr);
+  gap: 2px 14px;
+  align-items: baseline;
+  padding: 13px 18px 14px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 4px solid var(--ink-2);
+  border-radius: 10px;
+}
+@media (max-width: 480px) { .layer { grid-template-columns: minmax(0, 1fr); } }
+.layer.k { border-left-color: var(--key); }
+.layer.p { border-left-color: var(--plat); }
+.layer.a { border-left-color: var(--app); }
+.layer-who { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .06em; }
+.layer.k .layer-who { color: var(--key); }
+.layer.p .layer-who { color: var(--plat); }
+.layer.a .layer-who { color: var(--app); }
+.layer-what { margin: 0; min-width: 0; font-size: 15.5px; line-height: 1.75; color: var(--ink-2); }
+.layer-what b { display: block; font-family: var(--font-display); font-weight: 700; font-size: 20px; line-height: 1.45; color: var(--ink); }
+
+/* ---------- section scaffolding ---------- */
+.sec { margin-top: 76px; }
+.sec h2 {
+  margin: 0 0 18px;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: clamp(24px, 5.4vw, 31px);
+  line-height: 1.35;
+  text-wrap: balance;
+}
+.sec h3 { margin: 38px 0 10px; font-size: 18px; font-weight: 700; line-height: 1.55; text-wrap: balance; }
+.sec p { margin: 0 0 14px; }
+.lead { font-weight: 700; }
+.note { font-size: 14.5px; color: var(--ink-2); }
+.infer {
+  display: inline-block;
+  margin: 0 3px;
+  padding: 0 6px;
+  border: 1px dashed var(--ink-2);
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.55;
+  color: var(--ink-2);
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+ul.bul { list-style: none; margin: 0 0 14px; padding: 0; display: grid; gap: 10px; }
+ul.bul > li { position: relative; padding-left: 18px; min-width: 0; }
+ul.bul > li::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: .78em;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--ink-2);
+}
+
+/* the asker's message, then the method box, then the verdict */
+.ask {
+  margin: 0 0 12px;
+  padding: 13px 18px 14px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 16px 16px 16px 4px;
+}
+.ask-label, .method-label, .verdict-label, .aside-label {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+  letter-spacing: .1em;
+  color: var(--ink-2);
+}
+.ask .ask-text { margin: 0; font-size: 16px; line-height: 1.8; }
+.method { margin: 14px 0 24px; padding: 13px 18px 15px; background: var(--panel); border-radius: 12px; }
+.method ol, ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; counter-reset: step; }
+.method li, ol.steps li {
+  counter-increment: step;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  font-size: 14.5px;
+  line-height: 1.75;
+}
+.method li::before, ol.steps li::before { content: counter(step); font-family: var(--font-mono); font-size: 13px; color: var(--ink-2); padding-top: 1px; }
+ol.steps { margin: 0 0 16px; gap: 6px; }
+ol.steps li { font-size: 15px; }
+.must {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--key-soft);
+  color: var(--key);
+  font-size: 11.5px;
+  font-weight: 700;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.verdict { margin: 0 0 6px; font-size: 19px; font-weight: 700; line-height: 1.7; }
+
+.first-hand {
+  margin: 26px 0 8px;
+  padding: 14px 18px;
+  border: 1px dashed var(--ink-2);
+  border-radius: 12px;
+}
+.first-hand p:last-child { margin: 0; font-size: 15px; line-height: 1.8; }
+
+/* ---------- route ---------- */
+.route-intro { color: var(--ink-2); font-size: 15px; }
+.route ol { list-style: none; margin: 20px 0 0; padding: 0; }
+.route li { position: relative; padding: 0 0 20px 28px; }
+.route li::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 14px;
+  bottom: -6px;
+  width: 1px;
+  background: var(--rule);
+}
+.route li:last-child { padding-bottom: 0; }
+.route li:last-child::before { display: none; }
+.route li::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid var(--ink-2);
+  background: var(--paper);
+}
+.route a { display: grid; gap: 1px; text-decoration: none; }
+.r-step { font-size: 12.5px; letter-spacing: .1em; color: var(--ink-2); }
+.r-q { font-size: 16px; font-weight: 700; line-height: 1.6; }
+.r-a { font-size: 14.5px; line-height: 1.7; color: var(--ink-2); }
+.route a:hover .r-q, .route a:focus-visible .r-q { text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px; }
+
+/* ---------- glossary ---------- */
+.terms dl { margin: 0; border-top: 1px solid var(--rule); }
+.term {
+  display: grid;
+  grid-template-columns: 7.2em minmax(0, 1fr);
+  gap: 4px 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--rule);
+}
+@media (max-width: 520px) { .term { grid-template-columns: minmax(0, 1fr); } }
+.term dt { font-weight: 700; }
+.term dd { margin: 0; min-width: 0; }
+.term .k { color: var(--key); }
+.term .p { color: var(--plat); }
+.term .a { color: var(--app); }
+
+/* ---------- figures (inline SVG) ---------- */
+.fig {
+  margin: 26px 0;
+  padding: 18px 16px 14px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+}
+@media (max-width: 480px) { .fig { padding: 12px 8px 12px; } .fig figcaption, .fig .legend { padding: 0 6px; } }
+.fig svg { display: block; width: 100%; max-width: 540px; height: auto; margin: 0 auto; }
+.fig figcaption { margin-top: 14px; font-size: 14px; line-height: 1.75; color: var(--ink-2); }
+.fig figcaption b { color: var(--ink); font-weight: 700; margin-right: 6px; }
+.fig svg text { font-family: var(--font-body); }
+.fig .t { fill: var(--ink); font-size: 12.5px; }
+.fig .t-m { fill: var(--ink); font-size: 12px; }
+.fig .t-b { fill: var(--ink); font-size: 14px; font-weight: 700; }
+.fig .t-s { fill: var(--ink-2); font-size: 11.5px; }
+.fig .t-key { fill: var(--key); }
+.fig .t-plat { fill: var(--plat); }
+.fig .t-app { fill: var(--app); }
+.fig .n { fill: var(--surface); stroke: var(--ink-2); stroke-width: 1.1; }
+.fig .n-app { fill: var(--app-soft); stroke: var(--app); stroke-width: 1.3; }
+.fig .n-plat { fill: var(--plat-soft); stroke: var(--plat); stroke-width: 1.3; }
+.fig .n-key { fill: var(--key-soft); stroke: var(--key); stroke-width: 1.3; }
+.fig .ghost { fill: none; stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 4 4; }
+.fig .band-plat { fill: var(--plat-soft); stroke: var(--plat); stroke-width: 1.3; }
+.fig .bus { fill: var(--panel); stroke: var(--ink-2); stroke-width: 1.1; }
+.fig .div { stroke: var(--rule); stroke-width: 1; }
+.fig .life { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 3 4; opacity: .5; }
+.fig .mesh line { stroke: var(--ink-2); stroke-width: 1; opacity: .7; }
+.fig .a { fill: none; stroke: var(--ink-2); stroke-width: 1.4; }
+.fig .a-key { stroke: var(--key); }
+.fig .a-dash { stroke-dasharray: 4 3; }
+.fig .mk { fill: var(--ink-2); }
+.fig .mk-key { fill: var(--key); }
+.fig .legend { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 6px; counter-reset: lg; }
+.fig .legend li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 4px; font-size: 14px; line-height: 1.7; color: var(--ink-2); }
+.fig .legend li::before {
+  counter-increment: lg;
+  content: counter(lg);
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 3px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1;
+}
+.fig .legend b { color: var(--ink); font-weight: 700; }
+
+/* ---------- mock UI inside figures ---------- */
+.pin {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: var(--ink);
+  color: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+  line-height: 1;
+  vertical-align: 2px;
+}
+.cardmock {
+  max-width: 360px;
+  margin: 4px auto 0;
+  padding: 16px 16px 14px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+}
+.cm-top { display: flex; gap: 12px; align-items: center; }
+.cm-icon {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+  background: var(--app-soft);
+  border: 1.3px solid var(--app);
+  color: var(--app);
+}
+.cm-icon svg { width: 24px; height: 24px; }
+.cm-icon .pin { position: absolute; top: -8px; right: -8px; margin: 0; }
+.cm-name { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.45; }
+.cm-pub { margin: 0; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.cm-desc { margin: 12px 0 10px; font-size: 14.5px; line-height: 1.7; }
+.cm-badges { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 12px; }
+.badge {
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  font-size: 12.5px;
+  line-height: 1.8;
+  color: var(--ink-2);
+}
+.badge.key { border-color: var(--key); background: var(--key-soft); color: var(--key); font-weight: 700; }
+.cm-btn {
+  display: block;
+  padding: 7px 0;
+  border-radius: 9px;
+  background: var(--plat);
+  color: var(--surface);
+  text-align: center;
+  font-size: 14.5px;
+  font-weight: 700;
+}
+.cm-btn .pin { background: var(--surface); color: var(--plat); }
+.setmock {
+  max-width: 420px;
+  margin: 4px auto 0;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  overflow: hidden;
+}
+.sm-head { display: flex; gap: 12px; align-items: center; padding: 13px 16px; border-bottom: 1px solid var(--rule); }
+.sm-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  background: var(--app-soft);
+  border: 1.3px solid var(--app);
+  color: var(--app);
+}
+.sm-icon svg { width: 20px; height: 20px; }
+.sm-name { margin: 0; font-size: 15.5px; font-weight: 700; line-height: 1.4; }
+.sm-sub { margin: 0; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.sm-tag { margin-left: auto; padding: 0 6px; border: 1px dashed var(--ink-2); border-radius: 4px; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+.sm-row { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--rule); }
+.sm-row:last-child { border-bottom: none; }
+.sm-row > .pin { margin: 3px 0 0; }
+.sm-label { margin: 0; font-size: 13px; font-weight: 700; letter-spacing: .06em; color: var(--ink-2); }
+.sm-val { margin: 2px 0 0; font-size: 15px; line-height: 1.7; }
+.sm-note { margin: 2px 0 0; font-size: 13px; line-height: 1.65; color: var(--ink-2); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+.chip { padding: 0 10px; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); font-size: 13.5px; line-height: 1.8; color: var(--ink-2); }
+.chip.on { border-color: var(--plat); background: var(--plat-soft); color: var(--plat); font-weight: 700; }
+.tools { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 5px; }
+.tools li { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 14.5px; line-height: 1.7; }
+.mode { flex: none; padding: 0 8px; border-radius: 6px; border: 1px solid var(--rule); background: var(--surface); font-size: 12.5px; line-height: 1.8; }
+.mode.ask { border-color: var(--key); background: var(--key-soft); color: var(--key); font-weight: 700; }
+.mode.block { background: var(--panel); color: var(--ink-2); text-decoration: line-through; }
+.sm-btn { display: inline-block; margin-top: 6px; padding: 2px 12px; border: 1px solid var(--ink-2); border-radius: 8px; font-size: 14px; font-weight: 700; }
+
+/* ---------- roadmap ---------- */
+.phases { list-style: none; margin: 16px 0 20px; padding: 0; }
+.phases > li { position: relative; padding: 0 0 16px 30px; }
+.phases > li::before { content: ""; position: absolute; left: 7px; top: 14px; bottom: 0; width: 2px; background: var(--rule); }
+.phases > li:last-child { padding-bottom: 0; }
+.phases > li:last-child::before { display: none; }
+.phases > li::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  top: 8px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 2px solid var(--plat);
+}
+.phases > li:first-child::after { background: var(--plat); }
+.ph-card { min-width: 0; padding: 12px 16px 13px; background: var(--surface); border: 1px solid var(--rule); border-radius: 12px; }
+.ph-name { margin: 0; font-size: 16px; font-weight: 700; line-height: 1.6; }
+.ph-items { margin: 3px 0 0; font-size: 14.5px; line-height: 1.75; color: var(--ink-2); }
+.ph-gate { display: flex; gap: 9px; align-items: center; margin: 9px 0 0; font-size: 13.5px; line-height: 1.6; }
+.ph-gate::before { content: ""; flex: none; width: 9px; height: 9px; transform: rotate(45deg); border: 1.5px solid var(--key); background: var(--key-soft); }
+
+/* ---------- tables ---------- */
+.table-wrap {
+  overflow-x: auto;
+  margin: 18px 0 22px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+}
+table { width: 100%; min-width: 540px; border-collapse: collapse; font-size: 14.5px; line-height: 1.65; }
+table.wide { min-width: 660px; }
+th, td { padding: 11px 14px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--rule); }
+tbody tr:last-child td { border-bottom: none; }
+thead th { background: var(--panel); font-size: 13px; font-weight: 700; letter-spacing: .04em; color: var(--ink-2); }
+tbody td:first-child { font-weight: 700; white-space: nowrap; }
+
+/* ---------- takeaways and sources ---------- */
+.takeaways ul.bul { gap: 14px; }
+.takeaways ul.bul > li { font-size: 16px; line-height: 1.85; }
+.sources { margin-top: 76px; padding-top: 26px; border-top: 1px solid var(--rule); font-size: 14px; line-height: 1.75; color: var(--ink-2); }
+.sources h2 { margin: 0 0 10px; font-size: 19px; font-weight: 700; color: var(--ink); }
+.sources h3 { margin: 20px 0 6px; font-size: 14px; font-weight: 700; color: var(--ink); }
+.sources p { margin: 0 0 8px; }
+.sources ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; }
+.sources a { overflow-wrap: anywhere; }
+</style>
+
+<div class="wrap" lang="zh-CN">
+
+<header class="hero">
+  <p class="eyebrow">问答整理 · 提问者与 Claude</p>
+  <h1>Agent 连接器与 MCP</h1>
+  <p class="dek">一个第三方应用，是怎么接进 AI agent 的？这里按提问的顺序拆开讲：底层协议、各家自建的接入层、连接器目录、认证方式、“连接一个应用”背后的授权，以及怎么在自己的 agent 产品上搭一套，把现有的 MCP 迁进来。</p>
+  <p class="meta">2026 年 10 月 23 日 · 11 月 18 日修订，改动见文末<a href="#revisions">修订记录</a> · 依据 MCP 规范、各家公开文档和报道 · 标有 <span class="infer">推断</span> 的是分析判断，不代表任何公司的官方说法 · 团队共享 agent 和工作助理，另见姊妹篇《共享 Agent 与工作助理》</p>
+  <div class="layers">
+    <div class="layer k"><p class="layer-who">用户看到的</p><p class="layer-what"><b>连接一个应用</b>这一步就是一次授权。用户看不到 MCP。</p></div>
+    <div class="layer p"><p class="layer-who">产品要做的</p><p class="layer-what"><b>自建一层接入层</b>目录、授权、令牌保管、调用网关，每个 agent 产品做一次。</p></div>
+    <div class="layer a"><p class="layer-who">应用方要做的</p><p class="layer-what"><b>做一个 MCP 服务器</b>做一次，所有支持 MCP 的 agent 都能接。</p></div>
+  </div>
+</header>
+
+<nav class="sec route" id="route" aria-labelledby="route-h">
+  <h2 id="route-h">提问路线</h2>
+  <p class="route-intro">下面按提问的先后顺序展开。每个问题先写分析思路，再写结论。</p>
+  <ol>
+    <li><a href="#q1"><span class="r-step">问题一</span><span class="r-q">连接器是什么原理？每个 agent 产品都要逐个适配吗？</span><span class="r-a">底层是 MCP。每家自建一次接入层，接标准应用只是填配置；要逐家处理的只剩四件事。</span></a></li>
+    <li><a href="#q2"><span class="r-step">问题二</span><span class="r-q">目录条目里存了什么？和官方 MCP Registry 什么关系？</span><span class="r-a">注册表是上游的“黄页”，只存元数据；产品目录再加审核、图标和认证配置。</span></a></li>
+    <li><a href="#q3"><span class="r-step">问题三</span><span class="r-q">常见的图标和接入方式：OAuth、key、用户名密码？</span><span class="r-a">大多数走 OAuth；key 留给共用和无人值守；密码只在应用自己的页面上输。</span></a></li>
+    <li><a href="#q4"><span class="r-step">问题四</span><span class="r-q">用户不懂 MCP，连接一个应用到底授权了什么？</span><span class="r-a">一次授权，五个开关：能碰什么、谁能用、开哪些工具、动手前问不问、怎么收回。</span></a></li>
+    <li><a href="#q5"><span class="r-step">问题五</span><span class="r-q">在自己的 personal agent 上怎么搭？存量 MCP 怎么迁？</span><span class="r-a">七个模块、八张表；存量服务器分四类迁，再统一走三步。</span></a></li>
+    <li><a href="#q6"><span class="r-step">问题六</span><span class="r-q">能把三方 MCP 封装成自己的连接器吗？agent loop 也走 MCP？</span><span class="r-a">都对。模型只决定调哪个工具，调用由 harness 经网关发出。</span></a></li>
+    <li><a href="#q7"><span class="r-step">问题七</span><span class="r-q">为什么 Claude Tag 推连接器和插件，没有单推 skill？</span><span class="r-a">skill 装进插件，和连接器一起由管理员把关。在共享 agent 里，skill 也是一种权力。</span></a></li>
+  </ol>
+</nav>
+
+<section class="sec terms" id="terms" aria-labelledby="terms-h">
+  <h2 id="terms-h">先认识几个词</h2>
+  <dl>
+    <div class="term"><dt>Agent</dt><dd>能自己调用工具、分几步把一件事做完的 AI，不只是聊天。</dd></div>
+    <div class="term"><dt class="k">连接器</dt><dd>让 agent 接上某个应用的“钥匙”。连接时，你在那个应用自己的页面上登录授权；之后 agent 就按这份授权读写里面的数据。</dd></div>
+    <div class="term"><dt>MCP</dt><dd>连接器的通用规格，全称 Model Context Protocol。应用方按它做一次，所有支持 MCP 的 agent 都能接入。</dd></div>
+    <div class="term"><dt class="a">服务器、客户端</dt><dd>应用方提供 MCP 服务器，对外暴露工具和数据；agent 产品里内置 MCP 客户端，去连这些服务器。</dd></div>
+    <div class="term"><dt>工具</dt><dd>服务器提供的一个个动作，比如“搜索邮件”“创建工单”。每个都带名称、说明和参数格式，模型靠这些决定调哪个。</dd></div>
+    <div class="term"><dt class="p">接入层</dt><dd>每个 agent 产品在后端自建的一层，管目录、授权、令牌和调用。用户看到的“应用”页面，背后就是它。</dd></div>
+    <div class="term"><dt class="k">OAuth</dt><dd>一种标准授权方式：你在应用自己的页面登录，再把有限的权限交给第三方，第三方拿不到你的密码。</dd></div>
+    <div class="term"><dt class="k">令牌</dt><dd>授权完成后，应用发给 agent 产品的通行证。它有范围、会过期、能撤销。</dd></div>
+    <div class="term"><dt>Skill</dt><dd>一份按需读取的说明书，教 agent 某件事该怎么做。它本身不带任何访问权。</dd></div>
+    <div class="term"><dt>插件</dt><dd>把连接器、skill 和常用命令打包成一次安装的套装。</dd></div>
+  </dl>
+</section>
+
+<!-- ======================= 问题一 ======================= -->
+<section class="sec" id="q1" aria-labelledby="q1-h">
+  <p class="eyebrow">问题一</p>
+  <h2 id="q1-h">连接器是怎么接进来的</h2>
+  <div class="ask"><p class="ask-label">提问</p><p class="ask-text">深入调研一下 agent 里连接器的技术架构原理。第三方系统怎么添加、怎么连接？是不是要 agent 产品逐个适配到自己的配置页面？比如 Claude、Cursor 的 Grok Bot、ChatGPT 里的连接器，感觉每个 agent 产品都要适配一下。</p></div>
+  <div class="ask"><p class="ask-label">追问</p><p class="ask-text">我在想，实现层应该有一个接入的抽象层。我知道底层是 MCP。</p></div>
+  <div class="method">
+    <p class="method-label">分析思路</p>
+    <ol>
+      <li>读 MCP 规范：谁和谁通信、怎么传输、怎么授权</li>
+      <li>对照 Claude、ChatGPT、Cursor、Grok Bot 的接入文档，看“添加应用”背后发生了什么</li>
+      <li>把“每家 agent 做一次”的事，和“每个应用都要逐家处理”的事分开</li>
+    </ol>
+  </div>
+  <p class="verdict-label">结论</p>
+  <p class="verdict">你的直觉是对的：每家 agent 都自建了一层接入层，对外统一走 MCP。接一个标准应用基本只是填配置，不用写代码；还要逐家处理的只剩四件事。</p>
+
+  <h3>从“两两对接”到“各做一次”</h3>
+  <p>MCP 由 Anthropic 在 2024 年 11 月发起，2025 年 12 月捐给了 Linux 基金会下的 Agentic AI Foundation。它要解决的是对接数量的问题：</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 380 452" role="img" aria-label="图 1：没有统一标准时，3 个 agent 接 4 个应用要两两对接，共 12 套；有了 MCP，3 个 agent 各做一个客户端，4 个应用各做一个服务器，一共 7 件事，任何一对都能连上。">
+      <text class="t-b" x="4" y="16">没有统一标准：两两对接</text>
+      <rect class="n-plat" x="8" y="34" width="104" height="34" rx="8"/>
+      <text class="t" x="60" y="56" text-anchor="middle">Claude</text>
+      <rect class="n-plat" x="8" y="82" width="104" height="34" rx="8"/>
+      <text class="t" x="60" y="104" text-anchor="middle">ChatGPT</text>
+      <rect class="n-plat" x="8" y="130" width="104" height="34" rx="8"/>
+      <text class="t" x="60" y="152" text-anchor="middle">Cursor</text>
+      <rect class="n-app" x="268" y="30" width="104" height="28" rx="8"/>
+      <text class="t" x="320" y="49" text-anchor="middle">Notion</text>
+      <rect class="n-app" x="268" y="68" width="104" height="28" rx="8"/>
+      <text class="t" x="320" y="87" text-anchor="middle">GitHub</text>
+      <rect class="n-app" x="268" y="106" width="104" height="28" rx="8"/>
+      <text class="t" x="320" y="125" text-anchor="middle">Slack</text>
+      <rect class="n-app" x="268" y="144" width="104" height="28" rx="8"/>
+      <text class="t" x="320" y="163" text-anchor="middle">Jira</text>
+      <g class="mesh">
+        <line x1="112" y1="51" x2="268" y2="44"/><line x1="112" y1="51" x2="268" y2="82"/><line x1="112" y1="51" x2="268" y2="120"/><line x1="112" y1="51" x2="268" y2="158"/>
+        <line x1="112" y1="99" x2="268" y2="44"/><line x1="112" y1="99" x2="268" y2="82"/><line x1="112" y1="99" x2="268" y2="120"/><line x1="112" y1="99" x2="268" y2="158"/>
+        <line x1="112" y1="147" x2="268" y2="44"/><line x1="112" y1="147" x2="268" y2="82"/><line x1="112" y1="147" x2="268" y2="120"/><line x1="112" y1="147" x2="268" y2="158"/>
+      </g>
+      <text class="t-s" x="190" y="194" text-anchor="middle">3 个 agent × 4 个应用 = 12 套对接代码</text>
+      <line class="div" x1="4" y1="212" x2="376" y2="212"/>
+
+      <text class="t-b" x="4" y="240">有了 MCP：各做一次</text>
+      <rect class="n-plat" x="8" y="258" width="104" height="40" rx="8"/>
+      <text class="t" x="60" y="275" text-anchor="middle">Claude</text>
+      <text class="t-s" x="60" y="291" text-anchor="middle">MCP 客户端</text>
+      <rect class="n-plat" x="8" y="308" width="104" height="40" rx="8"/>
+      <text class="t" x="60" y="325" text-anchor="middle">ChatGPT</text>
+      <text class="t-s" x="60" y="341" text-anchor="middle">MCP 客户端</text>
+      <rect class="n-plat" x="8" y="358" width="104" height="40" rx="8"/>
+      <text class="t" x="60" y="375" text-anchor="middle">Cursor</text>
+      <text class="t-s" x="60" y="391" text-anchor="middle">MCP 客户端</text>
+      <rect class="bus" x="168" y="256" width="44" height="154" rx="8"/>
+      <text class="t-b" x="190" y="277" text-anchor="middle">MCP</text>
+      <text class="t-s" x="190" y="295" text-anchor="middle">协议</text>
+      <rect class="n-app" x="268" y="256" width="104" height="34" rx="8"/>
+      <text class="t" x="320" y="270" text-anchor="middle">Notion</text>
+      <text class="t-s" x="320" y="285" text-anchor="middle">MCP 服务器</text>
+      <rect class="n-app" x="268" y="296" width="104" height="34" rx="8"/>
+      <text class="t" x="320" y="310" text-anchor="middle">GitHub</text>
+      <text class="t-s" x="320" y="325" text-anchor="middle">MCP 服务器</text>
+      <rect class="n-app" x="268" y="336" width="104" height="34" rx="8"/>
+      <text class="t" x="320" y="350" text-anchor="middle">Slack</text>
+      <text class="t-s" x="320" y="365" text-anchor="middle">MCP 服务器</text>
+      <rect class="n-app" x="268" y="376" width="104" height="34" rx="8"/>
+      <text class="t" x="320" y="390" text-anchor="middle">Jira</text>
+      <text class="t-s" x="320" y="405" text-anchor="middle">MCP 服务器</text>
+      <line class="a" x1="112" y1="278" x2="168" y2="278"/>
+      <line class="a" x1="112" y1="328" x2="168" y2="328"/>
+      <line class="a" x1="112" y1="378" x2="168" y2="378"/>
+      <line class="a" x1="212" y1="273" x2="268" y2="273"/>
+      <line class="a" x1="212" y1="313" x2="268" y2="313"/>
+      <line class="a" x1="212" y1="353" x2="268" y2="353"/>
+      <line class="a" x1="212" y1="393" x2="268" y2="393"/>
+      <text class="t-s" x="190" y="440" text-anchor="middle">3 + 4 = 7 件事；新应用接进来，agent 不用改代码</text>
+    </svg>
+    <figcaption><b>图 1</b>没有统一标准时，每个 agent 都要给每个应用写一套对接。有了 MCP，应用方做一个服务器，agent 方做一个客户端，任何一对都能直接连上。</figcaption>
+  </figure>
+
+  <h3>MCP 里有什么</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>部分</th><th>是什么</th><th>例子</th></tr></thead>
+      <tbody>
+        <tr><td>工具</td><td>agent 能调用的动作，每个都带名称、说明和参数格式</td><td>搜索邮件、创建工单</td></tr>
+        <tr><td>资源</td><td>agent 能读取的数据</td><td>一个文件、一条记录</td></tr>
+        <tr><td>提示</td><td>服务器预设的提问模板</td><td>“总结这个 PR”</td></tr>
+        <tr><td>传输</td><td>本地服务器用 stdio，在你电脑上作为子进程运行；远程服务器用 Streamable HTTP</td><td>读本机文件的工具；各家官方的远程服务器</td></tr>
+        <tr><td>授权</td><td>远程服务器用 OAuth 2.1</td><td>跳到应用自己的登录页</td></tr>
+        <tr><td>扩展</td><td>按需加的附加能力</td><td>MCP Apps（工具返回交互界面）、Tasks（长任务）、Skills（随服务器下发说明书）、企业托管授权</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>最新一版规范在 2026 年 7 月 28 日发布，是 MCP 进入基金会后的第一版。最大的变化是核心改成了无状态：去掉开场握手和会话 ID，每个请求自带协议版本和能力信息；服务器必须提供 <code>server/discover</code>，告诉客户端自己支持什么。请求头里还要带上方法名，网关不用拆开请求体就能路由，负载均衡也不再需要“粘性会话”。Roots、Sampling、Logging 三项被标为弃用，Tasks 挪进了扩展。服务器要向用户追问时，也不再主动发请求，而是返回 <code>input_required</code>，由客户端补齐答复后重发原请求（MRTR）；工具清单这类列表结果，还要带上缓存时长和缓存范围（<code>ttlMs</code>、<code>cacheScope</code>）。</p>
+
+  <h3>每家 agent 做一次：接入层</h3>
+  <p>你说的“抽象层”就是它。每个 agent 产品在后端自建一层，把所有连接管起来：</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 380 556" role="img" aria-label="图 2：接入层架构。用户界面之下是 agent 运行时，模型只见工具名和参数。所有工具调用都经过每家自建的接入层，其中有目录与上架、安装与策略、认证代理与凭据库、工具注册表、MCP 网关和原生适配器；令牌在调用时由凭据库注入网关。网关连三方 MCP 服务器和沙箱或设备上的本地服务器，原生适配器连谷歌、微软等巨头的 API。">
+      <defs>
+        <marker id="b2-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="b2-ahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk-key" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="n" x="8" y="8" width="364" height="48" rx="10"/>
+      <text class="t-b" x="190" y="28" text-anchor="middle">用户界面</text>
+      <text class="t-s" x="190" y="46" text-anchor="middle">只有应用、连接、断开、权限，看不到 MCP</text>
+      <line class="a" x1="190" y1="58" x2="190" y2="76" marker-end="url(#b2-ah)"/>
+      <rect class="n" x="8" y="80" width="364" height="48" rx="10"/>
+      <text class="t-b" x="190" y="100" text-anchor="middle">Agent 运行时</text>
+      <text class="t-s" x="190" y="118" text-anchor="middle">模型 + 工具调用循环：只见工具名和参数，不见令牌</text>
+      <line class="a" x1="190" y1="130" x2="190" y2="154" marker-end="url(#b2-ah)"/>
+      <text class="t-s" x="200" y="146">工具调用 / 结果</text>
+
+      <rect class="band-plat" x="4" y="158" width="372" height="282" rx="12"/>
+      <text x="18" y="182"><tspan class="t-b t-plat">接入层</tspan><tspan class="t-s" dx="10">每个 agent 产品自建一次</tspan></text>
+      <rect class="n" x="18" y="196" width="166" height="62" rx="10"/>
+      <text class="t-b" x="101" y="222" text-anchor="middle">目录与上架</text>
+      <text class="t-s" x="101" y="242" text-anchor="middle">有哪些应用可以连</text>
+      <rect class="n" x="196" y="196" width="166" height="62" rx="10"/>
+      <text class="t-b" x="279" y="222" text-anchor="middle">安装与策略</text>
+      <text class="t-s" x="279" y="242" text-anchor="middle">谁连了什么、开哪些工具</text>
+      <rect class="n-key" x="18" y="270" width="166" height="62" rx="10"/>
+      <text class="t-b" x="101" y="296" text-anchor="middle">认证代理与凭据库</text>
+      <text class="t-s" x="101" y="316" text-anchor="middle">跑授权，令牌不出后端</text>
+      <rect class="n" x="196" y="270" width="166" height="62" rx="10"/>
+      <text class="t-b" x="279" y="296" text-anchor="middle">工具注册表</text>
+      <text class="t-s" x="279" y="316" text-anchor="middle">命名空间、按需加载</text>
+      <line class="a a-key" x1="101" y1="334" x2="101" y2="358" marker-end="url(#b2-ahk)"/>
+      <text class="t-s t-key" x="111" y="350">调用时注入令牌</text>
+      <rect class="n" x="18" y="362" width="166" height="62" rx="10"/>
+      <text class="t-b" x="101" y="388" text-anchor="middle">MCP 网关</text>
+      <text class="t-s" x="101" y="408" text-anchor="middle">连标准 MCP 服务器</text>
+      <rect class="n" x="196" y="362" width="166" height="62" rx="10"/>
+      <text class="t-b" x="279" y="388" text-anchor="middle">原生适配器</text>
+      <text class="t-s" x="279" y="408" text-anchor="middle">接谷歌、微软等</text>
+
+      <path class="a" d="M101 426 V458 H66 V482" marker-end="url(#b2-ah)"/>
+      <path class="a" d="M101 458 H190 V482" marker-end="url(#b2-ah)"/>
+      <path class="a" d="M279 426 V458 H314 V482" marker-end="url(#b2-ah)"/>
+      <rect class="n-app" x="8" y="486" width="116" height="60" rx="10"/>
+      <text class="t-b" x="66" y="510" text-anchor="middle">三方 MCP 服务器</text>
+      <text class="t-s" x="66" y="530" text-anchor="middle">Notion、GitHub…</text>
+      <rect class="n-app" x="132" y="486" width="116" height="60" rx="10"/>
+      <text class="t-b" x="190" y="510" text-anchor="middle">沙箱或你的设备</text>
+      <text class="t-s" x="190" y="530" text-anchor="middle">迁移来的本地服务器</text>
+      <rect class="n" x="256" y="486" width="116" height="60" rx="10"/>
+      <text class="t-b" x="314" y="510" text-anchor="middle">巨头 API</text>
+      <text class="t-s" x="314" y="530" text-anchor="middle">Gmail、SharePoint</text>
+    </svg>
+    <figcaption><b>图 2</b>接入层是每个 agent 产品在后端自建一次的一层。模型只看到工具名和参数；令牌存在凭据库里，只在网关发出请求的那一刻注入。标准应用走 MCP 网关，谷歌、微软这类巨头生态走原生适配。</figcaption>
+  </figure>
+
+  <ul class="bul">
+    <li><span class="lead">目录与上架。</span>管“有哪些应用可以连”，条目只存元数据（见问题二）。</li>
+    <li><span class="lead">安装与策略。</span>记录谁连了什么、在哪些对话里能用、每个工具是允许、先问还是禁用。</li>
+    <li><span class="lead">认证代理与凭据库。</span>跑授权流程，加密保管令牌，自动刷新，随时撤销。</li>
+    <li><span class="lead">工具注册表。</span>把各服务器的工具交给模型，加命名空间（按安装起名，同一应用连两个账号也不撞名）；工具多时按需加载（见问题六）。</li>
+    <li><span class="lead">MCP 网关。</span>和三方服务器通信，管超时、重试（只自动重试只读或幂等的工具）、结果大小和出网白名单。</li>
+    <li><span class="lead">原生适配器。</span>谷歌、微软这类巨头生态，或者根本没有 MCP 服务器的系统，自己写适配，对上层暴露成同样的工具。</li>
+  </ul>
+
+  <h3>在四家产品里“添加一个应用”</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>产品</th><th>用户怎么加</th><th>背后是什么</th></tr></thead>
+      <tbody>
+        <tr><td>Claude</td><td>从连接器目录里点选；也可以粘贴远程 MCP 服务器地址，添加目录外的连接器</td><td>远程 MCP，OAuth 或请求头认证；Team 和 Enterprise 要先由管理员把连接器加到工作区</td></tr>
+        <tr><td>ChatGPT</td><td>从插件目录里连接；开发者模式（测试版）可以添加自定义 MCP 服务器</td><td>应用和插件底层都是 MCP；桌面端和 Codex 共用一份 MCP 配置</td></tr>
+        <tr><td>Cursor</td><td>点“一键安装”链接，或者在 <code>mcp.json</code> 里写服务器地址或启动命令</td><td>远程地址，或本地 stdio 进程</td></tr>
+        <tr><td>Grok Bot</td><td>在“连接应用”里连插件，同一账号下的 Bot 共用这些连接</td><td>连上一个插件，就允许 agent 读取、操作或监控那个服务</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>每个应用还要逐家处理的四件事</h3>
+  <ul class="bul">
+    <li><span class="lead">客户端身份。</span>你的产品要让每个应用的授权服务器认得自己。跟对方有预注册关系的，先用预注册的 client_id；否则首选 CIMD（客户端身份元数据文档）：在自己的域名上放一份描述文件，它的网址就是 client_id，到哪都能用。两者都不行，才回退到 2026 年 7 月版已标为弃用的动态注册（DCR）。也有应用要求更多，比如 Slack 要求接入方先建一个 Slack 应用。</li>
+    <li><span class="lead">目录审核。</span>应用方要分别向 Claude、OpenAI 等各家的目录提交，各过一遍审核。</li>
+    <li><span class="lead">功能差异。</span>各家支持的规范版本和扩展不完全一样。比如交互界面 MCP Apps，今年 1 月成为第一个官方扩展时，只有 Claude、ChatGPT、VS Code 测试版和 Goose 支持。</li>
+    <li><span class="lead">巨头生态。</span>谷歌、微软的邮件、日历和文档，要自己注册 OAuth 应用、过对方的审核，往往还要做原生对接和同步索引。</li>
+  </ul>
+</section>
+
+<!-- ======================= 问题二 ======================= -->
+<section class="sec" id="q2" aria-labelledby="q2-h">
+  <p class="eyebrow">问题二</p>
+  <h2 id="q2-h">目录条目和官方注册表</h2>
+  <div class="ask"><p class="ask-label">提问</p><p class="ask-text">连接器目录条目里具体存了哪些元数据？和官方 MCP Registry 是什么关系？</p></div>
+  <div class="method">
+    <p class="method-label">分析思路</p>
+    <ol>
+      <li>读官方 MCP Registry 的发布说明和 server.json 格式</li>
+      <li>读 Claude、OpenAI 的连接器提交和认证文档</li>
+      <li>把条目里的字段，按“从哪来”分开</li>
+    </ol>
+  </div>
+  <p class="verdict-label">结论</p>
+  <p class="verdict">官方 MCP Registry 是上游的“黄页”：只记有哪些服务器、在哪、谁发布的，不存代码，也不做背书。各家产品目录从它同步，或者直接收应用方的提交，再加上审核、图标、权限说明和认证配置。用户看到的是产品目录。</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 380 452" role="img" aria-label="图 3：应用方发布 server.json 到官方 MCP Registry；注册表只存元数据、只验证名称归属；子注册表和聚合器大约每小时同步，加评分和安全扫描；各家产品的连接器目录再精选、审核，加上图标、权限说明和认证配置；用户在添加应用页看到的是产品目录。应用方也可以直接向产品目录提交，用户也可以粘贴服务器地址添加目录外的应用。">
+      <defs>
+        <marker id="b3-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="n-app" x="24" y="8" width="276" height="50" rx="10"/>
+      <text class="t-b" x="162" y="29" text-anchor="middle">应用方</text>
+      <text class="t-s" x="162" y="48" text-anchor="middle">写好 server.json，用发布工具提交</text>
+      <line class="a" x1="162" y1="60" x2="162" y2="84" marker-end="url(#b3-ah)"/>
+      <text class="t-s" x="172" y="76">发布</text>
+      <rect class="n" x="24" y="88" width="276" height="68" rx="10"/>
+      <text class="t-b" x="162" y="110" text-anchor="middle">官方 MCP Registry</text>
+      <text class="t-s" x="162" y="129" text-anchor="middle">只存元数据，不存代码</text>
+      <text class="t-s" x="162" y="146" text-anchor="middle">只验证名称归属，不审代码</text>
+      <line class="a" x1="162" y1="158" x2="162" y2="182" marker-end="url(#b3-ah)"/>
+      <text class="t-s" x="172" y="174">约每小时同步</text>
+      <rect class="n" x="24" y="186" width="276" height="50" rx="10"/>
+      <text class="t-b" x="162" y="207" text-anchor="middle">子注册表、聚合器</text>
+      <text class="t-s" x="162" y="226" text-anchor="middle">加评分、安全扫描，如 GitHub 的注册表</text>
+      <line class="a" x1="162" y1="238" x2="162" y2="262" marker-end="url(#b3-ah)"/>
+      <text class="t-s" x="172" y="254">精选、审核</text>
+      <rect class="n-plat" x="24" y="266" width="276" height="68" rx="10"/>
+      <text class="t-b" x="162" y="288" text-anchor="middle">各家产品的连接器目录</text>
+      <text class="t-s" x="162" y="307" text-anchor="middle">Claude 连接器目录、ChatGPT 插件目录…</text>
+      <text class="t-s" x="162" y="324" text-anchor="middle">加图标、权限说明、认证配置</text>
+      <line class="a" x1="162" y1="336" x2="162" y2="360" marker-end="url(#b3-ah)"/>
+      <text class="t-s" x="172" y="352">上架</text>
+      <rect class="n" x="24" y="364" width="276" height="50" rx="10"/>
+      <text class="t-b" x="162" y="385" text-anchor="middle">用户的“添加应用”页</text>
+      <text class="t-s" x="162" y="404" text-anchor="middle">看到的是产品目录，不是注册表</text>
+      <path class="a a-dash" d="M300 33 H336 V300 H304" marker-end="url(#b3-ah)"/>
+      <text class="t-s" x="342" y="160">直接</text>
+      <text class="t-s" x="342" y="177">提交</text>
+      <text class="t-s" x="162" y="440" text-anchor="middle">也可以粘贴服务器地址，添加目录外的应用</text>
+    </svg>
+    <figcaption><b>图 3</b>官方 MCP Registry 是上游的“黄页”，只记有哪些服务器、在哪、谁发布的。各家产品目录从它同步，或者直接收应用方的提交，再加上审核、图标和认证配置。用户看到的是这一层。</figcaption>
+  </figure>
+
+  <h3>一个目录条目里有什么</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>类别</th><th>存什么</th><th>从哪来</th></tr></thead>
+      <tbody>
+        <tr><td>身份</td><td>名称（反向域名格式，如 <code>io.github.用户名/服务器名</code>）、版本、发布方</td><td>官方注册表的 server.json；名称前缀在发布时验证过归属</td></tr>
+        <tr><td>连接</td><td>远程地址和传输方式；或者本地安装包（npm、PyPI、Docker 等）和启动方式</td><td>server.json 里的 <code>remotes</code> 和 <code>packages</code></td></tr>
+        <tr><td>展示</td><td>标题、一句话简介（100 字符以内）、图标、官网链接</td><td>server.json，加上服务器在协议里声明的 <code>icons</code> 和 <code>websiteUrl</code>；产品目录通常再审一遍</td></tr>
+        <tr><td>认证</td><td>认证方式（OAuth、请求头、无）、授权服务器、需要的权限范围</td><td>连接时向服务器发现；你的产品自己的 client_id 由产品保管</td></tr>
+        <tr><td>能力</td><td>工具清单：名称、说明、参数格式、只读或破坏性注解</td><td>连接后从服务器拉取，存成快照</td></tr>
+        <tr><td>治理</td><td>审核状态、隐私政策、数据用途、企业里谁能装</td><td>产品目录自己加</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>自建目录时，条目可以直接从 server.json 导入。平台私有的字段放在 <code>_meta</code> 下、用自己的命名空间，不和标准字段混在一起。</p>
+
+  <h3>注册表不是背书</h3>
+  <ul class="bul">
+    <li><span class="lead">只验证归属。</span>发布时用 GitHub 账号、DNS 记录或网站上的验证文件，证明名称前缀是你的；代码本身不审。</li>
+    <li><span class="lead">只删明显的坏东西。</span>违法内容、恶意软件、垃圾信息、根本不能用的服务器会被删；质量差、有漏洞、重复的不会。按它自己的说法，进注册表是分发，不是背书。</li>
+    <li><span class="lead">不给客户端直接读。</span>它的定位是给下游的目录和市场用，由它们决定展示什么、怎么扫描。</li>
+    <li><span class="lead">还在预览。</span>2025 年 9 月上线，由 Anthropic、GitHub、微软、PulseMCP 等支持，目前不承诺可用性和数据持久性。</li>
+  </ul>
+</section>
+
+<!-- ======================= 问题三 ======================= -->
+<section class="sec" id="q3" aria-labelledby="q3-h">
+  <p class="eyebrow">问题三</p>
+  <h2 id="q3-h">图标和接入方式</h2>
+  <div class="ask"><p class="ask-label">提问</p><p class="ask-text">在 agent 产品上，一些常用的连接器图标、logo，还有接入方式，比如 token、key，还有用户名密码吧？</p></div>
+  <div class="method">
+    <p class="method-label">分析思路</p>
+    <ol>
+      <li>看一张连接器卡片上的信息，各自从哪来</li>
+      <li>统计常见应用的官方远程服务器用什么认证</li>
+      <li>比较几种方式下，长期有效的秘密落在谁手里</li>
+    </ol>
+  </div>
+  <p class="verdict-label">结论</p>
+  <p class="verdict">绝大多数 SaaS 走 OAuth：用户跳到应用自己的页面登录，产品拿到的是令牌。API key 和 token 用在团队共用或无人值守的场景。用户名密码只该出现在应用自己的登录页，或者数据库这类“自定义连接”里。</p>
+
+  <h3>一张连接器卡片</h3>
+  <figure class="fig">
+    <div class="cardmock" role="group" aria-label="示意：目录里的一张连接器卡片，编号标出每样信息的来源">
+      <div class="cm-top">
+        <span class="cm-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8 12.5l2.6 2.6L16 9.5"/></svg><i class="pin">1</i></span>
+        <div>
+          <p class="cm-name">示例任务应用<i class="pin">2</i></p>
+          <p class="cm-pub">com.example · 已验证<i class="pin">3</i></p>
+        </div>
+      </div>
+      <p class="cm-desc">在对话里建任务、查进度、改负责人。<i class="pin">4</i></p>
+      <p class="cm-badges"><span class="badge key">OAuth</span><i class="pin">5</i><span class="badge">12 个工具</span><span class="badge key">4 个会写入</span><i class="pin">6</i></p>
+      <span class="cm-btn">连接<i class="pin">7</i></span>
+    </div>
+    <ol class="legend">
+      <li><span><b>图标</b>：服务器可以在协议里声明，目录一般再存一份审核过的</span></li>
+      <li><span><b>名称</b>：server.json 里的标题</span></li>
+      <li><span><b>发布方</b>：名称前缀，发布时验证过归属</span></li>
+      <li><span><b>简介</b>：server.json 里的描述，100 字符以内</span></li>
+      <li><span><b>认证方式</b>：连接时向服务器发现，目录里记一份</span></li>
+      <li><span><b>工具数和写入数</b>：连接后拉取工具清单，按只读、破坏性注解统计</span></li>
+      <li><span><b>连接</b>：点下去就是一次授权，见问题四</span></li>
+    </ol>
+    <figcaption><b>示意</b>一张连接器卡片上，每样信息都有出处。卡片里的应用是虚构的，只用来说明字段。</figcaption>
+  </figure>
+
+  <h3>图标从哪来</h3>
+  <p>2025 年 11 月那版规范加入了 <code>icons</code> 字段（SEP-973）：服务器本身、每个工具、资源和提示都可以带图标，给出多种尺寸和格式，服务器还能带一个官网链接。规范同时提醒客户端：只从服务器自己的域名或可信域名加载图标；SVG 里可能藏着脚本，要做防护。所以产品目录一般会把审核过的图标存一份，不在用户打开页面时临时去抓。</p>
+  <p>图标只回答“这是谁”，不代表安全。授权页上真正要写清楚的，是发布方和权限。</p>
+
+  <h3>几种接入方式</h3>
+  <figure class="fig">
+    <svg viewBox="0 0 380 368" role="img" aria-label="图 4：几种接入方式，长期有效的秘密经过谁的手。OAuth：你的密码只交给应用登录页，产品拿到的是令牌。API key：应用后台生成密钥，你复制粘贴给产品，密钥落在产品手里。用户名密码：你把密码交给产品，产品再拿去连数据库等系统。企业托管授权：公司身份系统给产品一份身份断言，产品去应用的授权方换令牌。">
+      <defs>
+        <marker id="b4-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="b4-ahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk-key" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <text class="t-b" x="4" y="16">OAuth：密码只交给应用自己</text>
+      <rect class="n" x="8" y="24" width="84" height="36" rx="8"/>
+      <text class="t" x="50" y="47" text-anchor="middle">你</text>
+      <rect class="n-app" x="148" y="24" width="84" height="36" rx="8"/>
+      <text class="t" x="190" y="47" text-anchor="middle">应用登录页</text>
+      <rect class="n-plat" x="288" y="24" width="84" height="36" rx="8"/>
+      <text class="t" x="330" y="47" text-anchor="middle">你的产品</text>
+      <line class="a a-key" x1="94" y1="42" x2="145" y2="42" marker-end="url(#b4-ahk)"/>
+      <text class="t-s t-key" x="120" y="36" text-anchor="middle">密码</text>
+      <line class="a" x1="234" y1="42" x2="285" y2="42" marker-end="url(#b4-ah)"/>
+      <text class="t-s" x="260" y="36" text-anchor="middle">令牌</text>
+      <text class="t-s" x="4" y="80">产品拿到的是令牌：有范围、会过期、能撤销</text>
+
+      <text class="t-b" x="4" y="108">API key / token：一串长期有效的密钥</text>
+      <rect class="n-app" x="8" y="116" width="84" height="36" rx="8"/>
+      <text class="t" x="50" y="139" text-anchor="middle">应用后台</text>
+      <rect class="n" x="148" y="116" width="84" height="36" rx="8"/>
+      <text class="t" x="190" y="139" text-anchor="middle">你</text>
+      <rect class="n-plat" x="288" y="116" width="84" height="36" rx="8"/>
+      <text class="t" x="330" y="139" text-anchor="middle">你的产品</text>
+      <line class="a a-key" x1="94" y1="134" x2="145" y2="134" marker-end="url(#b4-ahk)"/>
+      <text class="t-s t-key" x="120" y="128" text-anchor="middle">生成</text>
+      <line class="a a-key" x1="234" y1="134" x2="285" y2="134" marker-end="url(#b4-ahk)"/>
+      <text class="t-s t-key" x="260" y="128" text-anchor="middle">粘贴</text>
+      <text class="t-s" x="4" y="172">密钥落在产品手里，必须进保险库；权限常常给得过大</text>
+
+      <text class="t-b" x="4" y="200">用户名密码：产品拿着你的密码</text>
+      <rect class="n" x="8" y="208" width="84" height="36" rx="8"/>
+      <text class="t" x="50" y="231" text-anchor="middle">你</text>
+      <rect class="n-plat" x="148" y="208" width="84" height="36" rx="8"/>
+      <text class="t" x="190" y="231" text-anchor="middle">你的产品</text>
+      <rect class="n-app" x="288" y="208" width="84" height="36" rx="8"/>
+      <text class="t" x="330" y="231" text-anchor="middle">数据库等</text>
+      <line class="a a-key" x1="94" y1="226" x2="145" y2="226" marker-end="url(#b4-ahk)"/>
+      <text class="t-s t-key" x="120" y="220" text-anchor="middle">密码</text>
+      <line class="a a-key" x1="234" y1="226" x2="285" y2="226" marker-end="url(#b4-ahk)"/>
+      <text class="t-s t-key" x="260" y="220" text-anchor="middle">密码</text>
+      <text class="t-s" x="4" y="264">只用于数据库、自建系统这类“自定义连接”</text>
+
+      <text class="t-b" x="4" y="292">企业托管授权：公司统一发放</text>
+      <rect class="n" x="8" y="300" width="84" height="36" rx="8"/>
+      <text class="t" x="50" y="323" text-anchor="middle">公司身份系统</text>
+      <rect class="n-plat" x="148" y="300" width="84" height="36" rx="8"/>
+      <text class="t" x="190" y="323" text-anchor="middle">你的产品</text>
+      <rect class="n-app" x="288" y="300" width="84" height="36" rx="8"/>
+      <text class="t" x="330" y="323" text-anchor="middle">应用授权方</text>
+      <line class="a" x1="94" y1="318" x2="145" y2="318" marker-end="url(#b4-ah)"/>
+      <text class="t-s" x="120" y="312" text-anchor="middle">身份断言</text>
+      <line class="a" x1="237" y1="318" x2="285" y2="318" marker-start="url(#b4-ah)" marker-end="url(#b4-ah)"/>
+      <text class="t-s" x="260" y="312" text-anchor="middle">换令牌</text>
+      <text class="t-s" x="4" y="356">员工不用逐个点同意；离职时由公司一键收回</text>
+    </svg>
+    <figcaption><b>图 4</b>几种方式的区别，在于长期有效的秘密经过谁的手。OAuth 的密码只交给应用自己，产品拿到的是能撤销的令牌；API key 和用户名密码会落在产品手里，必须进保险库；企业托管授权由公司的身份系统统一发放。</figcaption>
+  </figure>
+
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>方式</th><th>用户要做什么</th><th>产品保管什么</th><th>适合</th></tr></thead>
+      <tbody>
+        <tr><td>OAuth 2.1</td><td>跳到应用自己的登录和同意页，点“允许”</td><td>访问令牌和刷新令牌：有范围、会过期、能撤销</td><td>每人用自己账号的 SaaS，绝大多数连接器</td></tr>
+        <tr><td>API key、token</td><td>在应用后台生成一串密钥，粘贴进来</td><td>这串密钥本身，通常长期有效</td><td>团队共用、无人值守、内部 API</td></tr>
+        <tr><td>用户名密码</td><td>填地址、用户名、密码</td><td>连接串或密码</td><td>数据库、自建系统这类自定义连接</td></tr>
+        <tr><td>企业托管授权</td><td>用公司账号登录一次，不用逐个点同意</td><td>公司身份系统换来的令牌</td><td>公司统一管理的员工应用</td></tr>
+        <tr><td>无认证</td><td>什么都不用做</td><td>无</td><td>公开数据</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>OAuth 2.1 删掉了“把密码直接交给第三方”的密码模式。所以正规的连接器里，用户名密码只出现在应用自己的登录页，或者“自定义连接”表单里。</p>
+  <p>企业托管授权是 MCP 的一个扩展，2026 年 6 月 18 日宣布稳定。员工单点登录时，公司的身份系统签发一份身份断言，产品拿它去应用那边换令牌，员工不会看到逐个应用的同意页。首个支持的身份提供商是 Okta；客户端有 Anthropic 的 Claude 和 Claude Code、微软的 VS Code；服务器有 Asana、Atlassian、Canva、Figma、Granola、Linear、Supabase，Slack 等正在加入。</p>
+
+  <h3>同一个应用，本地版和远程版</h3>
+  <div class="table-wrap">
+    <table class="wide">
+      <thead><tr><th>应用</th><th>本地版怎么认证</th><th>官方远程地址</th><th>远程版怎么认证</th></tr></thead>
+      <tbody>
+        <tr><td>GitHub</td><td>个人访问令牌（PAT），放在环境变量</td><td><code>api.githubcopilot.com/mcp/</code></td><td>OAuth；也可以把 PAT 放进请求头</td></tr>
+        <tr><td>Notion</td><td>内部集成令牌</td><td><code>mcp.notion.com/mcp</code></td><td>OAuth</td></tr>
+        <tr><td>Slack</td><td>用户令牌或机器人令牌</td><td><code>mcp.slack.com/mcp</code></td><td>OAuth 用户令牌；接入方要先建一个 Slack 应用</td></tr>
+        <tr><td>Jira、Confluence</td><td>API token</td><td><code>mcp.atlassian.com/v1/mcp</code></td><td>OAuth 2.1；管理员开启后也可以用 API token</td></tr>
+        <tr><td>Stripe</td><td>secret key 或受限 key</td><td><code>mcp.stripe.com</code></td><td>交互式客户端用 OAuth；无人值守的用专给 agent 的 API key</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Stripe 是一个正在发生的例子：它要求在 2026 年 11 月 30 日前迁完，12 月起它的 MCP 服务器不再接受完整权限的 secret key，也不再接受没有 Agent 标签的受限 key，只认 OAuth 或新建的 agent API key。</p>
+
+  <h3>团队场景：钥匙用谁的</h3>
+  <p>同一个连接器放进团队共用的 agent，就多了一个问题：用谁的钥匙。Grok Bot 的团队版是这样分的：OAuth 类插件用正在跟它说话的那个人的账号，填 key 的插件用 Bot 自己的共享凭据。Claude Tag 的默认做法不同：频道里用组织开通的服务账号；仓库里的 <code>.mcp.json</code> 不会加载，会话只能经管理员给频道配的连接访问外部服务，密钥在网络层注入，从不进沙箱。姊妹篇专门比较了这几种做法。</p>
+</section>
+
+<!-- ======================= 问题四 ======================= -->
+<section class="sec" id="q4" aria-labelledby="q4-h">
+  <p class="eyebrow">问题四</p>
+  <h2 id="q4-h">连接一个应用，就是一次授权</h2>
+  <div class="ask"><p class="ask-label">提问</p><p class="ask-text">我知道底层是 MCP，但普通用户根本不懂 MCP。本质上，我连接一个应用，就是授权了相关的工具和数据。</p></div>
+  <div class="method">
+    <p class="method-label">分析思路</p>
+    <ol>
+      <li>把一次连接拆成用户看得到的步骤，和后台发生的事</li>
+      <li>对照 OAuth 授权码流程和 MCP 的授权规范</li>
+      <li>列出连上之后，用户还能控制什么</li>
+    </ol>
+  </div>
+  <p class="verdict-label">结论</p>
+  <p class="verdict">对。对用户来说没有 MCP，只有“连接一个应用”。这一步本质上是一次授权，背后有五个开关：能碰什么、谁能用、开哪些工具、动手前问不问、怎么收回。</p>
+
+  <h3>点下“连接”之后</h3>
+  <figure class="fig">
+    <svg viewBox="0 0 380 532" role="img" aria-label="图 5：点连接之后的十一步。你点连接；你的产品后端先不带令牌请求应用的 MCP 服务器；服务器返回 401 和资源元数据地址；后端据此找到授权服务器、读它的元数据，再让浏览器跳转到授权页，带上 client_id、PKCE 和 resource 参数；你在应用的授权服务器上登录、同意授权范围，账号密码只在这里输入；授权服务器带着授权码跳回后端；后端用授权码换令牌；授权服务器返回访问令牌和刷新令牌，后端加密存进凭据库；后端带令牌拉工具清单；服务器返回工具名、说明和注解，后端按注解定默认权限；最后显示已连接和权限摘要。">
+      <defs>
+        <marker id="b5-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="b5-ahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk-key" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="n" x="2" y="6" width="84" height="40" rx="8"/>
+      <text class="t-b" x="44" y="23" text-anchor="middle">你</text>
+      <text class="t-s" x="44" y="39" text-anchor="middle">浏览器</text>
+      <rect class="n-plat" x="104" y="6" width="84" height="40" rx="8"/>
+      <text class="t-b" x="146" y="23" text-anchor="middle">你的产品</text>
+      <text class="t-s" x="146" y="39" text-anchor="middle">后端</text>
+      <rect class="n-app" x="206" y="6" width="84" height="40" rx="8"/>
+      <text class="t-b" x="248" y="23" text-anchor="middle">应用的</text>
+      <text class="t-s" x="248" y="39" text-anchor="middle">授权服务器</text>
+      <rect class="n-app" x="292" y="6" width="84" height="40" rx="8"/>
+      <text class="t-b" x="334" y="23" text-anchor="middle">应用的</text>
+      <text class="t-s" x="334" y="39" text-anchor="middle">MCP 服务器</text>
+      <line class="life" x1="44" y1="48" x2="44" y2="526"/>
+      <line class="life" x1="146" y1="48" x2="146" y2="526"/>
+      <line class="life" x1="248" y1="48" x2="248" y2="526"/>
+      <line class="life" x1="334" y1="48" x2="334" y2="526"/>
+
+      <line class="a" x1="46" y1="78" x2="142" y2="78" marker-end="url(#b5-ah)"/>
+      <text class="t-m" x="95" y="71" text-anchor="middle">① 点“连接”</text>
+      <line class="a" x1="148" y1="112" x2="330" y2="112" marker-end="url(#b5-ah)"/>
+      <text class="t-m" x="240" y="105" text-anchor="middle">② 先不带令牌试一下</text>
+      <line class="a" x1="332" y1="146" x2="150" y2="146" marker-end="url(#b5-ah)"/>
+      <text class="t-m" x="240" y="139" text-anchor="middle">③ 401 + 元数据地址</text>
+      <line class="a" x1="144" y1="180" x2="48" y2="180" marker-end="url(#b5-ah)"/>
+      <text class="t-m" x="95" y="173" text-anchor="middle">④ 跳转授权页</text>
+      <text class="t-s" x="95" y="197" text-anchor="middle">带 PKCE、resource</text>
+      <line class="a a-key" x1="46" y1="226" x2="244" y2="226" marker-end="url(#b5-ahk)"/>
+      <text class="t-m" x="146" y="219" text-anchor="middle">⑤ 登录，同意授权范围</text>
+      <text class="t-s t-key" x="146" y="243" text-anchor="middle">账号密码只在这里输入</text>
+      <line class="a" x1="246" y1="272" x2="150" y2="272" marker-end="url(#b5-ah)"/>
+      <text class="t-m" x="197" y="265" text-anchor="middle">⑥ 带授权码跳回</text>
+      <line class="a" x1="148" y1="306" x2="244" y2="306" marker-end="url(#b5-ah)"/>
+      <text class="t-m" x="197" y="299" text-anchor="middle">⑦ 用码换令牌</text>
+      <line class="a a-key" x1="246" y1="340" x2="150" y2="340" marker-end="url(#b5-ahk)"/>
+      <text class="t-m t-key" x="197" y="333" text-anchor="middle">⑧ 访问令牌、刷新令牌</text>
+      <rect class="n-key" x="90" y="352" width="112" height="30" rx="8"/>
+      <text class="t" x="146" y="372" text-anchor="middle">加密存进凭据库</text>
+      <line class="a" x1="148" y1="410" x2="330" y2="410" marker-end="url(#b5-ah)"/>
+      <text class="t-m" x="240" y="403" text-anchor="middle">⑨ 带令牌拉工具清单</text>
+      <line class="a" x1="332" y1="444" x2="150" y2="444" marker-end="url(#b5-ah)"/>
+      <text class="t-m" x="240" y="437" text-anchor="middle">⑩ 工具名、说明、注解</text>
+      <rect class="n" x="90" y="456" width="112" height="30" rx="8"/>
+      <text class="t" x="146" y="476" text-anchor="middle">按注解定默认权限</text>
+      <line class="a" x1="144" y1="508" x2="48" y2="508" marker-end="url(#b5-ah)"/>
+      <text class="t-m" x="95" y="501" text-anchor="middle">⑪ 显示已连接</text>
+    </svg>
+    <figcaption><b>图 5</b>用户点“连接”之后的十一步。账号密码只在应用自己的登录页输入；换来的令牌直接进后端的凭据库，浏览器和模型都碰不到。最后拉取工具清单，按工具自带的注解定默认权限。第 ③ 步的元数据告诉后端该去哪个授权服务器；授权请求带上 <code>resource</code> 参数，换来的令牌就只对这一台服务器有效。</figcaption>
+  </figure>
+  <p>几个容易忽略的细节：令牌要“绑定受众”，发给 A 服务器的令牌不能拿去调 B；凭据按签发它的授权服务器分开存，授权服务器变了就重新注册；回调时要核对授权响应里的签发方（iss），防止被换成别家的授权码。受众绑定从 2025 年 6 月那版规范起就是要求；按授权服务器分开存、核对 iss，是 2026 年 7 月那版新写进去的。</p>
+
+  <h3>连上之后的五个开关</h3>
+  <figure class="fig">
+    <div class="setmock" role="group" aria-label="示意：一个邮件应用的连接设置，对应五个开关">
+      <div class="sm-head">
+        <span class="sm-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="6" width="17" height="12" rx="2"/><path d="M4.5 7.5l7.5 5.5 7.5-5.5"/></svg></span>
+        <div><p class="sm-name">示例邮件应用</p><p class="sm-sub">已连接 · 你的工作账号</p></div>
+        <span class="sm-tag">示意</span>
+      </div>
+      <div class="sm-row"><i class="pin">1</i><div><p class="sm-label">能碰什么</p><p class="sm-val">读取邮件和附件；起草并发送邮件</p><p class="sm-note">来自应用的授权范围，不会超过你账号本来的权限</p></div></div>
+      <div class="sm-row"><i class="pin">2</i><div><p class="sm-label">谁能用</p><p class="chips"><span class="chip">所有对话</span><span class="chip on">只在“工作助手”里</span></p></div></div>
+      <div class="sm-row"><i class="pin">3</i><div><p class="sm-label">开哪些工具</p>
+        <ul class="tools">
+          <li><span>搜索邮件</span><span class="mode">允许</span></li>
+          <li><span>读取邮件</span><span class="mode">允许</span></li>
+          <li><span>起草回复</span><span class="mode ask">先问</span></li>
+          <li><span>发送邮件</span><span class="mode ask">先问</span></li>
+          <li><span>删除邮件</span><span class="mode block">禁用</span></li>
+        </ul></div></div>
+      <div class="sm-row"><i class="pin">4</i><div><p class="sm-label">动手前问不问</p><p class="sm-val">只读的直接做；写入先问你；删除每次都问</p></div></div>
+      <div class="sm-row"><i class="pin">5</i><div><p class="sm-label">怎么收回</p><p class="sm-val"><span class="sm-btn">断开并删除令牌</span></p><p class="sm-note">再到应用那边撤销授权，两头都断干净</p></div></div>
+    </div>
+    <figcaption><b>图 6</b>示意：连接一个应用以后，用户能管的五个开关。前三个决定它能做什么，第四个决定做之前问不问你，第五个决定怎么收回。</figcaption>
+  </figure>
+  <ul class="bul">
+    <li><span class="lead">读写分级靠工具注解。</span>MCP 的工具可以自带提示：只读（readOnlyHint）、会破坏数据（destructiveHint）。默认只读的直接放行，写入先问，破坏性操作每次都问；没有注解的也按“先问”处理。注解是服务器自报的，只能当提示，不能当保证。例外是会访问外部网络的只读工具：对话里已经混入别的应用的数据时，它也能把数据带出去，要按“先问”处理。</li>
+    <li><span class="lead">应用那边还有一道闸。</span>Stripe 对退款、对外付款这类写操作，要求人到 Stripe 的页面上再确认一次。</li>
+    <li><span class="lead">内容不是命令。</span>连上的邮件、文档、网页里可能夹带指令，也就是提示注入，一律当资料处理，不执行。这一点也要在授权页上告诉用户。</li>
+    <li><span class="lead">一次连接，处处可用。</span>连接是账号级的，网页、手机、桌面和后台定时任务共用同一份授权。后台任务没人在场，“先问”的工具不能自动放行，要推送审批、等人批准后再做。</li>
+    <li><span class="lead">在公司里，这一步可以交给公司。</span>用企业托管授权，员工不用逐个点同意，权限由身份系统按部门和角色统一管，离职时一键收回。</li>
+  </ul>
+</section>
+
+<!-- ======================= 问题五 ======================= -->
+<section class="sec" id="q5" aria-labelledby="q5-h">
+  <p class="eyebrow">问题五</p>
+  <h2 id="q5-h">在自己的 agent 上搭一套</h2>
+  <div class="ask"><p class="ask-label">提问</p><p class="ask-text">我需要一个整体的方案，同时把现在存量的 MCP 转换过来。把我们聊的落到一个 agent 产品上，比如我个人的 personal agent，怎么实现？</p></div>
+  <div class="method">
+    <p class="method-label">分析思路</p>
+    <ol>
+      <li>把前四问的结论落成模块、数据和流程</li>
+      <li>盘点常见客户端的 MCP 配置格式</li>
+      <li>按“在哪运行、怎么认证”给存量服务器分类</li>
+      <li>排出上线顺序和安全底线</li>
+    </ol>
+  </div>
+  <p class="verdict-label">结论</p>
+  <p class="verdict">在 personal agent 的后端自建一层连接器平台：对用户只呈现“连接应用 = 授权”，对外统一走 MCP。存量 MCP 基本不用改服务器代码：导入配置，分四类迁移，再统一走三步。</p>
+  <p class="note">完整方案另有一份文档，这里是摘要。前提是产品有云端后端，前端是网页和手机；如果只做给自己用的本地版，下面路线图的第一阶段就是全部范围。</p>
+
+  <h3>七个模块</h3>
+  <div class="table-wrap">
+    <table class="wide">
+      <thead><tr><th>模块</th><th>管什么</th><th>关键设计</th></tr></thead>
+      <tbody>
+        <tr><td>目录与上架</td><td>有哪些应用可以连</td><td>只存元数据；来源有官方注册表同步、人工精选、用户粘贴地址三种</td></tr>
+        <tr><td>安装与策略</td><td>谁连了什么、开了哪些工具</td><td>安装时锁定服务器地址；按助手、按对话开关；每个工具设为允许、先问或禁用</td></tr>
+        <tr><td>认证代理与凭据库</td><td>跑授权流程，保管令牌</td><td>OAuth 2.1 + PKCE；客户端注册按预注册、CIMD、DCR 的顺序；加密存储、自动刷新、可撤销</td></tr>
+        <tr><td>工具注册表与路由</td><td>把工具交给模型</td><td>命名空间按安装起名，如“github_work__create_issue”；按需加载；工具定义存快照，变了先扣住</td></tr>
+        <tr><td>MCP 网关</td><td>和三方服务器通信</td><td>Streamable HTTP，兼容旧的 SSE；新旧两版协议都支持，含 MRTR 追问；超时、结果上限、出网白名单；只自动重试只读或幂等的工具</td></tr>
+        <tr><td>原生适配器</td><td>接谷歌、微软等</td><td>自己注册 OAuth 应用并过审核；对上层暴露成同样的工具</td></tr>
+        <tr><td>界面渲染</td><td>显示工具返回的界面</td><td>支持 MCP Apps，在沙箱 iframe 里渲染，外链跳转先确认</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>八张表</h3>
+  <div class="table-wrap">
+    <table class="wide">
+      <thead><tr><th>实体</th><th>存什么</th><th>为什么单独存</th></tr></thead>
+      <tbody>
+        <tr><td>目录条目</td><td>名称、简介、图标、地址、传输方式、认证方式、来源、运行位置</td><td>可以直接从 server.json 导入</td></tr>
+        <tr><td>安装记录</td><td>谁装的、锁定的地址、状态、作用范围</td><td>目录里地址变了，老安装继续用锁定的地址，用户确认后再切</td></tr>
+        <tr><td>凭据</td><td>类型（OAuth、请求头、自定义）、签发它的授权服务器、受众、保险库引用、过期时间、个人还是共用</td><td>原文只在保险库，表里只存引用</td></tr>
+        <tr><td>工具快照</td><td>工具名、说明、参数格式、注解、哈希、状态</td><td>服务器改了工具，新版本先扣住；同一服务器对不同账号可能给出不同工具，所以按安装存</td></tr>
+        <tr><td>权限策略</td><td>每个工具是允许、先问还是禁用</td><td>默认由注解推导，用户可以改</td></tr>
+        <tr><td>客户端注册</td><td>授权服务器（issuer）、client_id、注册方式（预注册、CIMD、DCR）</td><td>按授权服务器分开存；授权服务器变了只重注册这一条</td></tr>
+        <tr><td>审批记录</td><td>哪个工具、参数哈希、批准或拒绝、范围、谁批的、何时过期</td><td>批准绑定参数，参数变了要重新批；后台任务的审批在这里排队</td></tr>
+        <tr><td>审计日志</td><td>时间、用户、哪个助手、哪个工具、参数摘要、结果、审批记录</td><td>给用户看“谁什么时候调了什么”，也用于排查</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>目录条目、安装记录和凭据分开存，改地址、撤销授权和审计才互不牵连。</p>
+
+  <h3>服务器在哪运行</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>运行位置</th><th>适用</th><th>怎么连</th></tr></thead>
+      <tbody>
+        <tr><td>三方托管</td><td>有官方远程服务器的 SaaS</td><td>网关直连对方的 HTTPS 地址</td></tr>
+        <tr><td>平台沙箱</td><td>只有本地版、但可以上云的服务器</td><td>每个用户一个隔离容器，把 stdio 转成 HTTP 接入网关</td></tr>
+        <tr><td>用户设备</td><td>必须读本机文件或内网的服务器</td><td>桌面端当桥接，网关经它转发；内网服务也可以走隧道</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>存量 MCP 怎么迁</h3>
+  <figure class="fig">
+    <svg viewBox="0 0 380 532" role="img" aria-label="图 7：存量 MCP 迁移。第一步导入 Cursor、Claude Code、Claude Desktop、VS Code 的 mcp.json；第二步按在哪运行、怎么认证分四类：远程加 OAuth，直接导入地址，用户重新授权一次；远程加固定请求头，密钥搬进保险库并标明个人还是共用；本地且有官方远程版，换成官方远程地址改走 OAuth；本地且没有替代，能上云的放进沙箱，留在本机的走设备桥接。之后三步对所有连接器都一样：迁密钥、协议兼容、验证上线；验证时写入工具只在测试账号里调用。">
+      <defs>
+        <marker id="b7-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="n" x="8" y="8" width="364" height="54" rx="10"/>
+      <text class="t-b" x="190" y="30" text-anchor="middle">① 导入现有配置</text>
+      <text class="t-s" x="190" y="50" text-anchor="middle">Cursor、Claude Code、Claude Desktop、VS Code 的 mcp.json</text>
+      <line class="a" x1="190" y1="64" x2="190" y2="92" marker-end="url(#b7-ah)"/>
+      <text class="t-s" x="200" y="82">② 按在哪运行、怎么认证分类</text>
+      <rect class="ghost" x="4" y="96" width="372" height="196" rx="12"/>
+      <rect class="n-app" x="14" y="106" width="170" height="84" rx="10"/>
+      <text class="t-b" x="99" y="130" text-anchor="middle">远程 + OAuth</text>
+      <text class="t-s" x="99" y="150" text-anchor="middle">直接导入地址</text>
+      <text class="t-s" x="99" y="168" text-anchor="middle">用户重新授权一次</text>
+      <rect class="n-app" x="196" y="106" width="170" height="84" rx="10"/>
+      <text class="t-b" x="281" y="130" text-anchor="middle">远程 + 固定请求头</text>
+      <text class="t-s" x="281" y="150" text-anchor="middle">密钥搬进保险库</text>
+      <text class="t-s" x="281" y="168" text-anchor="middle">标明个人还是共用</text>
+      <rect class="n" x="14" y="198" width="170" height="84" rx="10"/>
+      <text class="t-b" x="99" y="222" text-anchor="middle">本地，有官方远程版</text>
+      <text class="t-s" x="99" y="242" text-anchor="middle">换成官方远程地址</text>
+      <text class="t-s" x="99" y="260" text-anchor="middle">改走 OAuth</text>
+      <rect class="n" x="196" y="198" width="170" height="84" rx="10"/>
+      <text class="t-b" x="281" y="222" text-anchor="middle">本地，没有替代</text>
+      <text class="t-s" x="281" y="242" text-anchor="middle">能上云的放进沙箱</text>
+      <text class="t-s" x="281" y="260" text-anchor="middle">留在本机的走设备桥接</text>
+      <line class="a" x1="190" y1="294" x2="190" y2="318" marker-end="url(#b7-ah)"/>
+      <rect class="n" x="8" y="322" width="364" height="50" rx="10"/>
+      <text class="t-b" x="20" y="343">③ 迁密钥</text>
+      <text class="t-s" x="20" y="362">明文密钥进保险库，配置里只留引用；提醒去服务商轮换</text>
+      <line class="a" x1="190" y1="374" x2="190" y2="394" marker-end="url(#b7-ah)"/>
+      <rect class="n" x="8" y="398" width="364" height="50" rx="10"/>
+      <text class="t-b" x="20" y="419">④ 协议兼容</text>
+      <text class="t-s" x="20" y="438">新服务器先调 server/discover，老服务器回退到握手</text>
+      <line class="a" x1="190" y1="450" x2="190" y2="470" marker-end="url(#b7-ah)"/>
+      <rect class="n" x="8" y="474" width="364" height="50" rx="10"/>
+      <text class="t-b" x="20" y="495">⑤ 验证上线</text>
+      <text class="t-s" x="20" y="514">只读工具调一遍、写入工具只在测试账号调；缺注解的先问</text>
+    </svg>
+    <figcaption><b>图 7</b>存量 MCP 基本不用改服务器代码。四类做法只在前半段不同；迁密钥、协议兼容、验证上线三步，对所有连接器都一样。</figcaption>
+  </figure>
+  <p>第一步要读的配置文件：Cursor 的 <code>~/.cursor/mcp.json</code> 和项目里的 <code>.cursor/mcp.json</code>；Claude Code 的 <code>.mcp.json</code> 和 <code>~/.claude.json</code>；Claude Desktop 的 <code>claude_desktop_config.json</code>（只含本地服务器）；VS Code 的 <code>.vscode/mcp.json</code>。每条配置只有两种形态：<code>url</code>（可带 <code>headers</code>）是远程服务器，<code>command</code> + <code>args</code> + <code>env</code> 是本地服务器。注意 VS Code 的顶层键是 <code>servers</code>，密钥常放在 <code>inputs</code> 里；<code>command</code> 是 <code>npx mcp-remote &lt;地址&gt;</code> 的，实际是远程服务器，按地址归类。</p>
+  <p>“远程 + OAuth”这一类的旧令牌不迁移，它是发给原来那个客户端的，用户在你的产品里重新授权一次就行。常见应用的官方远程地址见问题三的表。最后，常用的组合可以按 Agent Plugins 格式打包成 <code>plugin.json</code> + <code>mcp.json</code> + skills，以后能带去别的客户端。</p>
+
+  <h3>安全底线</h3>
+  <p>上线前逐条确认。前四条不满足，就不要开放给用户：</p>
+  <ol class="steps">
+    <li><span>令牌和 API key 只存在服务端保险库；前端、日志、模型上下文里都看不到原文<span class="must">必须</span></span></li>
+    <li><span>令牌绑定受众；凭据按授权服务器分开存，授权服务器变了就重新注册<span class="must">必须</span></span></li>
+    <li><span>授权码流程强制 PKCE，回调地址精确匹配，核对 iss；不用密码模式<span class="must">必须</span></span></li>
+    <li><span>工具返回的内容一律当不可信数据，不执行其中的指令<span class="must">必须</span></span></li>
+    <li><span>跨应用的数据流动，比如把邮件内容发进 Slack，一律先问：按对话记下哪些应用的数据已进入上下文，之后调用另一个应用的写入或联网工具就改为先问</span></li>
+    <li><span>工具定义变了先扣住，用户或管理员确认后才生效</span></li>
+    <li><span>网关出网走白名单，只连目录里登记的域名，拦截内网和云元数据地址</span></li>
+    <li><span>抓取 CIMD 文档、图标这类外部资源时同样设防，限制大小和超时</span></li>
+    <li><span>沙箱里的本地服务器按用户隔离，不能访问宿主的文件系统</span></li>
+    <li><span>每次工具调用写审计日志，用户看得到，并能一键断开</span></li>
+    <li><span>不做令牌透传：网关不把用户或产品的令牌转给三方服务器，也不接受不是发给自己的令牌</span></li>
+    <li><span>后台任务里“先问”的工具推送审批、排队等批准，不自动放行；批准绑定参数</span></li>
+    <li><span>写入工具超时不自动重试，防止重复发送、重复扣款</span></li>
+    <li><span>设备桥接只开放用户勾选过的本地服务器；本地服务只监听 localhost 并校验 Origin</span></li>
+    <li><span>能一键下架恶意连接器，并作废所有用户的相关令牌</span></li>
+  </ol>
+
+  <h3>上线顺序</h3>
+  <ol class="phases">
+    <li><div class="ph-card"><p class="ph-name">阶段一：能连</p><p class="ph-items">远程 MCP 客户端；OAuth（预注册、CIMD，DCR 只作回退）；凭据库和令牌刷新；粘贴地址添加应用；每个工具可设允许、先问、禁用；工具快照和变更扣住</p><p class="ph-gate">进入下一阶段：常用服务能安全调用</p></div></li>
+    <li><div class="ph-card"><p class="ph-name">阶段二：好用</p><p class="ph-items">目录、图标、授权摘要；工具检索和按需加载；审计日志、一键断开；请求头凭据（API key）</p><p class="ph-gate">进入下一阶段：新用户不看文档也能连上</p></div></li>
+    <li><div class="ph-card"><p class="ph-name">阶段三：迁移</p><p class="ph-items">配置导入器；沙箱托管本地服务器；桌面端设备桥接；官方注册表同步；新旧两版协议兼容</p><p class="ph-gate">进入下一阶段：存量配置四类都跑通</p></div></li>
+    <li><div class="ph-card"><p class="ph-name">阶段四：扩展</p><p class="ph-items">MCP Apps 界面；谷歌、微软原生适配；Agent Plugins 打包；多个助手和后台任务共用连接；企业托管授权（可选）</p></div></li>
+  </ol>
+</section>
+
+<!-- ======================= 问题六 ======================= -->
+<section class="sec" id="q6" aria-labelledby="q6-h">
+  <p class="eyebrow">问题六</p>
+  <h2 id="q6-h">封装三方 MCP，agent loop 怎么调用</h2>
+  <div class="ask"><p class="ask-label">提问</p><p class="ask-text">实际上我可以基于现在第三方系统的 MCP，在我的 agent 产品上封装一个连接器？同时这里 harness 的 agent loop，也是通过 MCP 来调用它们？</p></div>
+  <div class="method">
+    <p class="method-label">分析思路</p>
+    <ol>
+      <li>拆开 agent loop 的一轮：模型看到什么、输出什么、谁去执行</li>
+      <li>看接入层在调用前后各做什么</li>
+      <li>对照 Anthropic 关于工具检索的工程文章，看工具多了怎么办</li>
+    </ol>
+  </div>
+  <p class="verdict-label">结论</p>
+  <p class="verdict">两个判断都对。连接器 = 三方的 MCP 服务器 + 你在外面包的一层：目录条目、授权、权限和审计。Agent loop 里，模型只决定“调哪个工具、传什么参数”；真正发出调用的，是 harness 里的 MCP 客户端，经过你的网关。</p>
+
+  <figure class="fig">
+    <svg viewBox="0 0 380 492" role="img" aria-label="图 8：一轮工具调用。harness 把工具清单（名称、说明、参数）交给模型；模型输出调哪个工具、传什么参数；harness 把调用转给接入层网关；网关查权限，允许、先问或禁用，先问就弹给你批准，禁用就告诉模型不行；放行后网关注入令牌，向三方 MCP 服务器发 tools/call；结果回到网关，截断并记审计；再回到 harness；harness 把结果当资料放回模型上下文；模型想下一步，回到第二步，直到做完。">
+      <defs>
+        <marker id="b8-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="b8-ahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk-key" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="n" x="2" y="6" width="84" height="40" rx="8"/>
+      <text class="t-b" x="44" y="23" text-anchor="middle">模型</text>
+      <text class="t-s" x="44" y="39" text-anchor="middle">只出主意</text>
+      <rect class="n-plat" x="104" y="6" width="84" height="40" rx="8"/>
+      <text class="t-b" x="146" y="23" text-anchor="middle">Harness</text>
+      <text class="t-s" x="146" y="39" text-anchor="middle">agent loop</text>
+      <rect class="n-plat" x="206" y="6" width="84" height="40" rx="8"/>
+      <text class="t-b" x="248" y="23" text-anchor="middle">接入层</text>
+      <text class="t-s" x="248" y="39" text-anchor="middle">网关</text>
+      <rect class="n-app" x="292" y="6" width="84" height="40" rx="8"/>
+      <text class="t-b" x="334" y="23" text-anchor="middle">三方服务器</text>
+      <text class="t-s" x="334" y="39" text-anchor="middle">MCP</text>
+      <line class="life" x1="44" y1="48" x2="44" y2="466"/>
+      <line class="life" x1="146" y1="48" x2="146" y2="466"/>
+      <line class="life" x1="248" y1="48" x2="248" y2="466"/>
+      <line class="life" x1="334" y1="48" x2="334" y2="466"/>
+
+      <line class="a" x1="144" y1="80" x2="48" y2="80" marker-end="url(#b8-ah)"/>
+      <text class="t-m" x="95" y="73" text-anchor="middle">① 给出工具清单</text>
+      <text class="t-s" x="95" y="96" text-anchor="middle">名称、说明、参数</text>
+      <line class="a" x1="46" y1="128" x2="142" y2="128" marker-end="url(#b8-ah)"/>
+      <text class="t-m" x="95" y="121" text-anchor="middle">② 调哪个、传什么</text>
+      <text class="t-s" x="95" y="144" text-anchor="middle">输出工具名和参数</text>
+      <line class="a" x1="148" y1="176" x2="244" y2="176" marker-end="url(#b8-ah)"/>
+      <text class="t-m" x="197" y="169" text-anchor="middle">③ 转发调用</text>
+      <rect class="n" x="192" y="190" width="112" height="48" rx="8"/>
+      <text class="t-b" x="248" y="210" text-anchor="middle">④ 查权限</text>
+      <text class="t-s" x="248" y="228" text-anchor="middle">允许 · 先问 · 禁用</text>
+      <text class="t-s" x="248" y="256" text-anchor="middle">先问：弹给你批准</text>
+      <text class="t-s" x="248" y="272" text-anchor="middle">禁用：告诉模型不行</text>
+      <line class="a a-key" x1="250" y1="304" x2="330" y2="304" marker-end="url(#b8-ahk)"/>
+      <text class="t-m t-key" x="291" y="297" text-anchor="middle">⑤ tools/call</text>
+      <text class="t-s t-key" x="291" y="320" text-anchor="middle">注入令牌</text>
+      <line class="a" x1="332" y1="346" x2="252" y2="346" marker-end="url(#b8-ah)"/>
+      <text class="t-m" x="291" y="339" text-anchor="middle">⑥ 结果</text>
+      <line class="a" x1="246" y1="384" x2="150" y2="384" marker-end="url(#b8-ah)"/>
+      <text class="t-m" x="197" y="377" text-anchor="middle">⑦ 结果</text>
+      <text class="t-s" x="197" y="400" text-anchor="middle">截断、记审计</text>
+      <line class="a" x1="144" y1="428" x2="48" y2="428" marker-end="url(#b8-ah)"/>
+      <text class="t-m" x="95" y="421" text-anchor="middle">⑧ 放回上下文</text>
+      <text class="t-s" x="95" y="444" text-anchor="middle">当资料，不当命令</text>
+      <path class="a a-dash" d="M38 458 H14 V128 H40" marker-end="url(#b8-ah)"/>
+      <text class="t-s" x="8" y="484">⑨ 想下一步，回到 ②，直到做完</text>
+    </svg>
+    <figcaption><b>图 8</b>一轮工具调用。模型只决定“调哪个工具、传什么参数”；真正发出调用的，是 harness 里的 MCP 客户端，经过接入层网关时查权限、注入令牌。结果回到模型时只当资料，里面夹带的指令不执行。</figcaption>
+  </figure>
+
+  <h3>一个细节：模型本身不说 MCP</h3>
+  <p>模型 API 有自己的工具格式。Harness 把从 MCP 服务器拿到的工具定义，翻译成这种格式交给模型；模型输出的调用，再翻译回 MCP 的 <code>tools/call</code>。所以连接器和模型是解耦的：换一个模型，不用重做连接器。</p>
+
+  <h3>封装时你加的那一层</h3>
+  <ul class="bul">
+    <li><span class="lead">命名空间。</span>用“安装别名__工具”的形式命名，比如 <code>notion__search</code>、<code>github_work__create_issue</code>：两个服务器的同名工具不会撞车，同一应用连了两个账号也分得开。名字要清洗成模型 API 允许的字符，长度控制在 64 个以内，并留一张映射表。</li>
+    <li><span class="lead">工具快照。</span>存下每个工具的名称、说明和参数的哈希；服务器改了，先扣住，确认后才生效。工具说明会直接进模型的上下文，被人改坏了，本身就是一种注入。</li>
+    <li><span class="lead">默认权限。</span>由注解推导，用户可以改（见问题四）。</li>
+    <li><span class="lead">按需加载。</span>连的应用一多，几百个工具的说明会挤满上下文。Anthropic 的做法是先给模型一个“工具检索”，用到哪个再加载哪个。</li>
+    <li><span class="lead">稳定性。</span>超时、结果大小上限；只对只读或幂等的工具自动重试，写入工具超时后结果按“未知”处理，不重发。令牌过期由网关自动刷新（同一凭据串行刷新，防止被当成重放），刷新失败才打扰用户。</li>
+    <li><span class="lead">交互界面。</span>工具可以返回 MCP Apps 界面，在沙箱 iframe 里显示，比如一张能直接操作的表格或图表。</li>
+    <li><span class="lead">审计。</span>每次调用记一笔：谁、哪个助手、什么时候、调了什么、结果如何。</li>
+  </ul>
+</section>
+
+<!-- ======================= 问题七 ======================= -->
+<section class="sec" id="q7" aria-labelledby="q7-h">
+  <p class="eyebrow">问题七</p>
+  <h2 id="q7-h">为什么 Tag 推连接器和插件</h2>
+  <div class="ask"><p class="ask-label">提问</p><p class="ask-text">为什么 Anthropic 在 Claude Tag 上不推 skills，而是选择连接器和插件？从 Claude 的角度，以及行业里的 agent（比如 Meta Muse、OpenAI dots）整体看看，分析一下方向思路。</p></div>
+  <div class="ask"><p class="ask-label">追问</p><p class="ask-text">你从 Anthropic、Claude 的角度怎么看这个问题？深入一点。</p></div>
+  <div class="method">
+    <p class="method-label">分析思路</p>
+    <ol>
+      <li>读 Claude Tag 的定制文档，发现问题的前提需要修正</li>
+      <li>对比 Meta Muse、OpenAI dots、Grok Bot 怎么扩展能力</li>
+      <li>读 MCP 的 Skills 扩展规范，看它怎么定位 skill 的风险</li>
+      <li>查 Agent Skills 标准和插件打包标准的来历</li>
+      <li>对照我自己作为 agent 的工作方式，标出哪些是推断</li>
+    </ol>
+  </div>
+  <p class="verdict-label">结论</p>
+  <p class="verdict">Tag 也用 skill，只是把它装进插件，和连接器一起放在“能做什么”这一层，由管理员把关。在一个大家共用的 agent 里，谁能给它加 skill，谁就能改变所有人用的 agent，所以 skill 也是一种权力。<span class="infer">推断</span></p>
+
+  <h3>先修正一个前提</h3>
+  <p>在 Claude Tag 里，skill 有两条来路：装在插件里（一个插件可以打包一到多个 skill），或者放进 skills 仓库，由管理员按频道下发。频道成员默认也能给自己的频道加插件，管理员可以关掉这个权限；管理员加的插件，成员删不掉。成员能直接调整的是频道指令和频道记忆，跟 Claude 说一句就记下。</p>
+
+  <h3>三种东西，各管一件事</h3>
+  <figure class="fig">
+    <svg viewBox="0 0 380 332" role="img" aria-label="图 9：连接器以你的授权访问第三方系统；skill 只告诉 agent 怎么做，本身不带访问权；插件把两者打包成一次安装。">
+      <defs>
+        <marker id="b9-ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk" d="M0 0L10 5L0 10z"/></marker>
+        <marker id="b9-ahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path class="mk-key" d="M0 0L10 5L0 10z"/></marker>
+      </defs>
+      <rect class="n" x="100" y="10" width="180" height="52" rx="10"/>
+      <text class="t-b" x="190" y="32" text-anchor="middle">Agent</text>
+      <text class="t-s" x="190" y="51" text-anchor="middle">模型 + 工具调用循环</text>
+      <rect class="ghost" x="8" y="104" width="364" height="124" rx="12"/>
+      <text class="t-s" x="190" y="124" text-anchor="middle">插件：一次装好的套装</text>
+      <rect class="n" x="24" y="136" width="150" height="74" rx="10"/>
+      <text class="t-b" x="99" y="160" text-anchor="middle">Skill</text>
+      <text class="t" x="99" y="180" text-anchor="middle">说明书</text>
+      <text class="t-s" x="99" y="198" text-anchor="middle">教它怎么做</text>
+      <rect class="n-key" x="206" y="136" width="150" height="74" rx="10"/>
+      <text class="t-b" x="281" y="160" text-anchor="middle">连接器</text>
+      <text class="t" x="281" y="180" text-anchor="middle">钥匙</text>
+      <text class="t-s" x="281" y="198" text-anchor="middle">决定能进哪里</text>
+      <rect class="n-app" x="206" y="268" width="150" height="52" rx="10"/>
+      <text class="t-b" x="281" y="290" text-anchor="middle">第三方系统</text>
+      <text class="t-s" x="281" y="309" text-anchor="middle">GitHub、Notion…</text>
+      <line class="a" x1="112" y1="134" x2="150" y2="66" marker-end="url(#b9-ah)"/>
+      <text class="t-s" x="122" y="100" text-anchor="end">按需读入</text>
+      <line class="a" x1="230" y1="66" x2="268" y2="134" marker-end="url(#b9-ah)"/>
+      <text class="t-s" x="258" y="100">调用工具</text>
+      <line class="a a-key" x1="281" y1="212" x2="281" y2="264" marker-end="url(#b9-ahk)"/>
+      <text class="t-s t-key" x="271" y="244" text-anchor="end">MCP · 带你的授权</text>
+      <text class="t-s" x="99" y="244" text-anchor="middle">本身不带访问权</text>
+    </svg>
+    <figcaption><b>图 9</b>连接器决定 agent 能进哪些系统、用谁的授权；skill 只告诉它怎么做，本身打不开任何系统；插件把两者打包成一次安装。</figcaption>
+  </figure>
+
+  <h3>为什么这样设计</h3>
+  <ul class="bul">
+    <li><span class="lead">一个共享身份，治理优先。</span>频道里只有一个大家共用的 Claude，它用组织开通的服务账号干活。管理员最先要回答的是“它能碰什么”，这正是连接器和插件管的事。</li>
+    <li><span class="lead">Skill 本身是一个风险面。</span>MCP 的 Skills 扩展规范要求把服务器下发的 skill 当作不可信内容，并认为它比远程调用工具风险更高：skill 想在本机执行代码，必须逐个经用户批准；它声明要用的工具权限，默认不生效。放进共享频道，一个有问题的 skill 影响的是整个团队。</li>
+    <li><span class="lead">Skill 离开工具就没用。</span>同一份规范写明，它要解决的问题之一，就是应用服务和教 agent 用它的 skill 分开安装，用户装了服务，都不知道还有配套的 skill。插件把“钥匙”和“说明书”绑在了一起。应用方也在这么做：Stripe 推荐用它的 agent 插件，一次装好 MCP 服务器和配套的 skills，并自动保持更新。</li>
+    <li><span class="lead">团队惯例用记忆就够了。</span>“报告用表格”“这个线程别插话”这类要求，说一句就存进频道记忆，不需要谁去写一份 skill 文件。</li>
+  </ul>
+
+  <h3>行业里的几家</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>产品</th><th>用户装的是什么</th><th>skill 从哪来</th></tr></thead>
+      <tbody>
+        <tr><td>Claude Tag</td><td>连接器和插件，由管理员按频道配置</td><td>装在插件里或放进 skills 仓库；团队惯例存进频道记忆</td></tr>
+        <tr><td>Meta Muse</td><td>内置连接器，由 Meta 和服务商一起做</td><td>每个内置连接器自带 Meta 写的 skill；它为新服务自建的集成也存成 skill</td></tr>
+        <tr><td>OpenAI dots</td><td>插件生态里的 4,000 多个应用</td><td>打包在插件里</td></tr>
+        <tr><td>Grok Bot</td><td>“连接应用”，账号下所有 Bot 共用</td><td>做过或演示过的任务存下来复用</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>共同点是，用户和管理员装的都是“连接”和“插件”。Skill 要么跟着连接器、插件一起来，要么由 agent 自己沉淀出来。</p>
+
+  <h3>能力在往模型里走，缺的是访问和语境 <span class="infer">推断</span></h3>
+  <p>模型越强，“怎么写需求文档、怎么做代码评审”这类通用 skill 的价值就越低；真正缺的是访问权和组织语境。Tag 把语境放到了各自最合适的地方：代码仓库的安装说明写在仓库自己的 CLAUDE.md 里，由维护者更新；团队惯例进频道记忆；组织流程放进 skills 仓库。</p>
+
+  <h3>Skill 成了基础设施，竞争在打包层</h3>
+  <p>Anthropic 在 2025 年 12 月 18 日把 Agent Skills 作为开放标准发布，微软、OpenAI、Atlassian、Figma、Cursor、GitHub 都已采用，和 MCP 走的是同一条路。让应用服务通过 MCP 下发 skill 的扩展也已经定稿，Claude Code 在 Anthropic 内部做了原型。</p>
+  <p>还在竞争的是打包这一层。Agent Plugins 1.0 在 2026 年 8 月 6 日发布，由 Vercel 发起，OpenAI、AWS、Cursor、微软（GitHub、VS Code）等参与，公开的发布名单里没有 Anthropic；OpenAI 的插件文档里还有一篇教人把 Claude Code 插件提交到它的目录。Anthropic 在 Tag 里推插件，也是在经营自己的分发渠道。<span class="infer">推断</span></p>
+
+  <h3>方向判断</h3>
+  <ul class="bul">
+    <li><span class="lead">三种角色已经分清。</span>连接器给访问权，skill 教方法，插件打包成一次安装。Claude 的官方文档就是这么划分的。</li>
+    <li><span class="lead">Skill 跟着产品走。</span>应用服务可以通过同一条连接下发自己的 skill，相当于“说明书随产品一起寄”。</li>
+    <li><span class="lead">Skill 越来越由 agent 自己写。</span>Muse 把自建的集成存成 skill，Grok Bot 把做过的任务存下来复用，Claude Tag 把团队惯例存进记忆。人负责授权，agent 负责积累方法。</li>
+    <li><span class="lead">竞争点在变。</span><span class="infer">推断</span>比拼的重点会从“有多少 skill”，转向连接器生态、治理能力，以及 agent 自己的学习能力。</li>
+  </ul>
+
+  <aside class="first-hand">
+    <p class="aside-label">Claude 的视角</p>
+    <p>这次整理时，我要读取前面写的那份方案文档。我先加载了文档系统的 skill，它告诉我那套系统该怎么用；真正读到文档内容，靠的是一组 MCP 工具。说明书教我怎么做，但给不了我任何访问权限。这就是两者在共享场景里要分开管的原因。</p>
+  </aside>
+</section>
+
+<section class="sec takeaways" id="takeaways" aria-labelledby="take-h">
+  <h2 id="take-h">要带走的几个判断</h2>
+  <ul class="bul">
+    <li><span class="lead">底层是 MCP。</span>应用方做一次服务器，agent 方做一次接入层；接一个标准应用，基本只是填配置。</li>
+    <li><span class="lead">仍要逐家处理的是四件事。</span>客户端身份、目录审核、功能差异、巨头生态。</li>
+    <li><span class="lead">官方注册表是上游的“黄页”。</span>只存元数据、不做背书；用户看到的是各家产品目录。</li>
+    <li><span class="lead">优先 OAuth。</span>密码只交给应用自己；key 留给共用和无人值守；用户名密码只用于自定义连接。</li>
+    <li><span class="lead">连接一个应用就是一次授权。</span>背后有五个开关；令牌永远不进浏览器和模型。</li>
+    <li><span class="lead">存量 MCP 基本不用改代码。</span>分四类迁移，再统一走三步。</li>
+    <li><span class="lead">连接器给访问权，skill 教方法，插件打包。</span>在共享 agent 里，三者都由管理员把关。</li>
+  </ul>
+</section>
+
+<footer class="sources" id="sources" aria-labelledby="src-h">
+  <h2 id="src-h">说明与资料来源</h2>
+  <p>本文依据截至 2026 年 10 月 23 日的公开资料整理，包括 MCP 规范、各家官方文档和媒体报道。标有“推断”的内容是分析判断。</p>
+  <p>分析和写作由 Claude（Anthropic 的 AI）在与提问者的一次对话中完成。文中的“我”指 Claude，“Claude 的视角”一段是它对自身工作方式的描述。</p>
+
+  <h3>协议与规范</h3>
+  <ul>
+    <li><a href="https://modelcontextprotocol.io/specification/2026-07-28/changelog">MCP 2026-07-28 版本变更说明</a></li>
+    <li><a href="https://blog.modelcontextprotocol.io/posts/2026-07-28/">MCP 博客：2026-07-28 版规范发布</a></li>
+    <li><a href="https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization">MCP 授权规范（2026-07-28）</a></li>
+    <li><a href="https://modelcontextprotocol.io/seps/973-expose-additional-metadata-for-implementations-res.md">MCP SEP-973：图标和官网链接字段</a></li>
+    <li><a href="https://modelcontextprotocol.io/seps/2640-skills-extension.md">MCP SEP-2640：Skills 扩展</a></li>
+    <li><a href="https://blog.modelcontextprotocol.io/posts/2026-01-26-mcp-apps/">MCP 博客：MCP Apps 成为官方扩展</a></li>
+    <li><a href="https://blog.modelcontextprotocol.io/posts/enterprise-managed-auth/">MCP 博客：企业托管授权扩展</a></li>
+    <li><a href="https://blog.modelcontextprotocol.io/posts/2025-12-09-mcp-joins-agentic-ai-foundation/">MCP 博客：MCP 加入 Agentic AI Foundation</a></li>
+    <li><a href="https://modelcontextprotocol.io/registry/registry-aggregators">MCP Registry：聚合器与子注册表</a></li>
+    <li><a href="https://www.stackone.com/blog/mcp-registry-how-to-get-listed/">StackOne：官方 MCP Registry 怎么上架</a></li>
+    <li><a href="https://www.noze.it/en/insights/mcp-2026-07-28-stateless/">Noze：2026-07-28 版的无状态改造</a></li>
+    <li><a href="https://ssojet.com/blog/mcp-authorization-spec-2026-07-28-what-changed">SSOJet：2026-07-28 版授权规范的变化</a></li>
+  </ul>
+
+  <h3>各家产品</h3>
+  <ul>
+    <li><a href="https://www.claude.com/docs/connectors/directory">Claude：连接器目录</a></li>
+    <li><a href="https://claude.com/docs/connectors/custom/add-unlisted.md">Claude：添加目录外的连接器</a></li>
+    <li><a href="https://www.claude.com/docs/connectors/building/authentication">Claude：连接器认证方式</a></li>
+    <li><a href="https://claude.com/docs/connectors/building/submission.md">Claude：提交连接器到目录</a></li>
+    <li><a href="https://claude.com/docs/extend/overview">Claude：连接器、skill 与插件</a></li>
+    <li><a href="https://claude.com/docs/claude-tag/concepts/for-claude-code-users.md">Claude Tag：给 Claude Code 用户的说明</a></li>
+    <li><a href="https://developers.openai.com/apps-sdk/build/auth">OpenAI：Apps SDK 认证</a></li>
+    <li><a href="https://developers.openai.com/plugins/deploy/submission">OpenAI：插件上传与提交</a></li>
+    <li><a href="https://help.openai.com/en/articles/12584461-developer-mode-apps-and-full-mcp-connectors-in-chatgpt">OpenAI 帮助中心：ChatGPT 开发者模式与 MCP 连接器</a></li>
+    <li><a href="https://cursor.com/docs/context/mcp">Cursor：MCP 文档</a></li>
+    <li><a href="https://cursor.com/help/grok-bot/connect-apps.md">Grok Bot：连接应用</a></li>
+    <li><a href="https://www.mindstudio.ai/blog/grokbot-xai-agent-app">MindStudio：Grok Bot 的插件和权限</a></li>
+    <li><a href="https://codersera.com/blog/grok-bot-complete-guide-2026/">Codersera：Grok Bot 团队版的凭据规则</a></li>
+    <li><a href="https://anthropic.com/engineering/advanced-tool-use">Anthropic：工具检索与按需加载</a></li>
+  </ul>
+
+  <h3>应用方的 MCP 服务器</h3>
+  <ul>
+    <li><a href="https://docs.stripe.com/mcp">Stripe MCP：认证、密钥迁移和人工确认</a></li>
+    <li><a href="https://support.atlassian.com/atlassian-rovo-mcp-server/docs/authentication-and-authorization/">Atlassian Rovo MCP 认证</a></li>
+    <li><a href="https://docs.github.com/en/copilot/how-tos/provide-context/use-mcp/set-up-the-github-mcp-server">GitHub MCP 服务器配置</a></li>
+    <li><a href="https://docs.mintmcp.com/docs/slack-mcp-setup">MintMCP：Slack MCP 接入</a></li>
+    <li><a href="https://x-cmd.com/install/notion-mcp-server">Notion MCP 本地版与远程版对比</a></li>
+  </ul>
+
+  <h3>Skill 与插件</h3>
+  <ul>
+    <li><a href="https://www.unite.ai/anthropic-opens-agent-skills-standard-continuing-its-pattern-of-building-industry-infrastructure">Unite.AI：Anthropic 开放 Agent Skills 标准</a></li>
+    <li><a href="https://vercel.com/blog/introducing-agent-plugins">Vercel：Introducing Agent Plugins</a></li>
+    <li><a href="https://agentpedia.codes/blog/agent-plugins-1-0-portable-skills-mcp-guide">Agentpedia：Agent Plugins 1.0 指南</a></li>
+    <li><a href="https://claude.com/docs/claude-tag/admins/customize">Claude Tag 文档：定制的四个层次</a></li>
+    <li><a href="https://parallel.ai/articles/meta-muse-custom-integrations">Parallel：Meta Muse 的连接器与自定义集成</a></li>
+    <li><a href="https://siliconangle.com/2026/09/29/openai-launches-dots-always-on-ai-agents-in-chatgpt-with-their-own-cloud-computers/">SiliconANGLE：OpenAI 推出 dots</a></li>
+  </ul>
+  <h3 id="revisions">修订记录（2026 年 11 月 18 日）</h3>
+  <p>由 Claude 在一次设计评审中修订，依据 MCP 2026-07-28 规范和各家公开文档。完整方案的 Word 文档同步做了修订（修订模式）。</p>
+  <ul>
+    <li>问题一：客户端身份的顺序改为“预注册 → CIMD → DCR（已弃用，只作回退）”，与规范和方案文档一致；补充 MRTR 追问和列表缓存字段。</li>
+    <li>问题一、五、六：命名空间按安装起名，同一应用连两个账号不撞名；名字清洗并限长。</li>
+    <li>问题一、五、六：网关只自动重试只读或幂等的工具；写入工具超时结果按“未知”处理，避免重复发送、重复扣款。</li>
+    <li>问题四：图 5 补上元数据发现、<code>resource</code> 参数和刷新令牌；区分 2025 年 6 月版和 2026 年 7 月版各自新增的要求。</li>
+    <li>问题四：读写分级补上例外，会访问外部网络的只读工具在混入其他应用数据时要先问；后台任务的“先问”改为推送审批排队。</li>
+    <li>问题五：六张表改为八张，补“客户端注册”和“审批记录”；凭据记签发方和受众；工具快照按安装存。</li>
+    <li>问题五：验证上线不再对真实账号调用写入工具；配置导入补 VS Code 和 mcp-remote 的差异；安全底线加 5 条；工具快照和变更扣住提前到阶段一。</li>
+    <li>问题七：更正 Agent Plugins 1.0 的发起方和发布日期。</li>
+    <li>资料来源：GitHub 文档链接从韩文版改为英文版；新增 MCP 博客和 Vercel 两条来源。</li>
+  </ul>
+</footer>
+
+</div>
+
+</body></html>
