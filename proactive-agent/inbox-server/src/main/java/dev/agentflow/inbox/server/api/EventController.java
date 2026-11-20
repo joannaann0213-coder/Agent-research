@@ -1,12 +1,15 @@
 package dev.agentflow.inbox.server.api;
 
 import dev.agentflow.inbox.api.EventDetail;
+import dev.agentflow.inbox.api.EventView;
 import dev.agentflow.inbox.api.WriteEventRequest;
 import dev.agentflow.inbox.api.WriteEventResponse;
 import dev.agentflow.inbox.server.auth.AuthenticatedClient;
 import dev.agentflow.inbox.server.auth.Role;
 import dev.agentflow.inbox.server.query.EventQueries;
 import dev.agentflow.inbox.server.write.EventWriter;
+import java.time.Instant;
+import java.util.List;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -38,6 +41,20 @@ public class EventController {
             throw InboxException.forbidden("only a producer may write events");
         }
         return ResponseEntity.accepted().body(writer.write(client, Tenants.resolve(client, tenantId), inboxId, request));
+    }
+
+    /** Lists the inbox's events in arrival order; a producer sees the ones it wrote. */
+    @GetMapping
+    public List<EventView> list(AuthenticatedClient client, @PathVariable String inboxId,
+            @RequestParam(name = "tenant_id", required = false) String tenantId,
+            @RequestParam(name = "status", required = false) String status,
+            @RequestParam(name = "source", required = false) String source,
+            @RequestParam(name = "from", required = false) Instant from,
+            @RequestParam(name = "to", required = false) Instant to,
+            @RequestParam(name = "limit", defaultValue = "100") int limit) {
+        String onlyClient = client.has(Role.OPERATOR) ? null : client.clientId();
+        return queries.list(Tenants.resolve(client, tenantId), inboxId, onlyClient, status, source, from, to,
+                Math.max(1, Math.min(limit, 500)));
     }
 
     @GetMapping("/{eventId}")

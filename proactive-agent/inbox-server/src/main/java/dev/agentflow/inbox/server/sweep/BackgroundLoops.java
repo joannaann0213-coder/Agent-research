@@ -1,6 +1,7 @@
 package dev.agentflow.inbox.server.sweep;
 
 import dev.agentflow.inbox.server.config.InboxProperties;
+import dev.agentflow.inbox.server.metrics.DepthSampler;
 import dev.agentflow.inbox.server.time.InboxClock;
 import dev.agentflow.inbox.server.timer.TimerScheduler;
 import jakarta.annotation.PostConstruct;
@@ -29,6 +30,7 @@ public class BackgroundLoops {
     private final LeaseSweeper leaseSweeper;
     private final SuspendSweeper suspendSweeper;
     private final TimerScheduler timerScheduler;
+    private final DepthSampler depthSampler;
     private final ReclaimGate reclaimGate;
     private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2, runnable -> {
         Thread thread = new Thread(runnable, "inbox-background");
@@ -37,12 +39,13 @@ public class BackgroundLoops {
     });
 
     public BackgroundLoops(InboxProperties properties, InboxClock clock, LeaseSweeper leaseSweeper,
-            SuspendSweeper suspendSweeper, TimerScheduler timerScheduler) {
+            SuspendSweeper suspendSweeper, TimerScheduler timerScheduler, DepthSampler depthSampler) {
         this.config = properties.getScheduling();
         this.clock = clock;
         this.leaseSweeper = leaseSweeper;
         this.suspendSweeper = suspendSweeper;
         this.timerScheduler = timerScheduler;
+        this.depthSampler = depthSampler;
         this.reclaimGate = new ReclaimGate(properties.getLease().getDuration(), clock.now());
     }
 
@@ -51,6 +54,7 @@ public class BackgroundLoops {
         schedule("lease sweep", config.getLeaseSweepInterval(), this::leaseSweep);
         schedule("suspend sweep", config.getSuspendSweepInterval(), suspendSweeper::runOnce);
         schedule("timer scheduler", config.getTimerInterval(), timerScheduler::runOnce);
+        schedule("depth gauges", config.getGaugeInterval(), depthSampler::sample);
     }
 
     @PreDestroy

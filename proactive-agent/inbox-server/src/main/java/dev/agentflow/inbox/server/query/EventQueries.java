@@ -10,6 +10,7 @@ import dev.agentflow.inbox.server.api.InboxException;
 import dev.agentflow.inbox.server.db.Db;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Instant;
 import java.util.List;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -74,6 +75,30 @@ public class EventQueries {
             return new EventDetail(scheduled.getFirst(), List.of());
         }
         throw InboxException.notFound("no such event in this inbox");
+    }
+
+    /**
+     * Events of an inbox in arrival order, optionally narrowed by state, source and the time they were
+     * received ({@code from <= t < to}).
+     */
+    public List<EventView> list(String tenantId, String inboxId, String clientId, String status, String source,
+            Instant from, Instant to, int limit) {
+        return jdbc.sql("SELECT " + EVENT_COLUMNS + """
+                  FROM event
+                 WHERE tenant_id = :tenant AND inbox_id = :inbox
+                   AND (CAST(:clientId AS text) IS NULL OR client_id = :clientId)
+                   AND (CAST(:status AS text) IS NULL OR status = :status)
+                   AND (CAST(:source AS text) IS NULL OR source = :source)
+                   AND (CAST(:from AS timestamptz) IS NULL OR received_at >= :from)
+                   AND (CAST(:to AS timestamptz) IS NULL OR received_at < :to)
+                 ORDER BY seq
+                 LIMIT :limit
+                """)
+                .param("tenant", tenantId).param("inbox", inboxId).param("clientId", clientId)
+                .param("status", status).param("source", source).param("from", Db.ts(from)).param("to", Db.ts(to))
+                .param("limit", limit)
+                .query((rs, n) -> mapEvent(rs))
+                .list();
     }
 
     public List<TransitionView> transitions(String eventId) {

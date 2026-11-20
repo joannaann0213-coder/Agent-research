@@ -1,16 +1,23 @@
 package dev.agentflow.inbox.client;
 
 import dev.agentflow.inbox.api.AckRequest;
+import dev.agentflow.inbox.api.AuditEntry;
 import dev.agentflow.inbox.api.ClaimRequest;
 import dev.agentflow.inbox.api.ClaimedRun;
 import dev.agentflow.inbox.api.CreateTimerRequest;
+import dev.agentflow.inbox.api.DeadLetterRequest;
 import dev.agentflow.inbox.api.EventDetail;
+import dev.agentflow.inbox.api.EventView;
 import dev.agentflow.inbox.api.HeartbeatRequest;
 import dev.agentflow.inbox.api.HeartbeatResponse;
 import dev.agentflow.inbox.api.HmacSigner;
+import dev.agentflow.inbox.api.InboxConfigRequest;
 import dev.agentflow.inbox.api.InboxJson;
+import dev.agentflow.inbox.api.InboxStatus;
 import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.api.Problem;
+import dev.agentflow.inbox.api.ReplayRequest;
+import dev.agentflow.inbox.api.ReplayResponse;
 import dev.agentflow.inbox.api.RunOutcome;
 import dev.agentflow.inbox.api.RunView;
 import dev.agentflow.inbox.api.SteerRequest;
@@ -130,6 +137,35 @@ public class InboxClient {
 
     public ApiResult<RunView> getRun(String runId) {
         return get("/v1/runs/" + enc(runId), RunView.class);
+    }
+
+    // ---- operator -------------------------------------------------------------------------------
+
+    public ApiResult<ReplayResponse> replay(ReplayRequest request) {
+        return post("/v1/admin/replay", request, ReplayResponse.class);
+    }
+
+    public ApiResult<Void> deadLetter(String eventId, DeadLetterRequest request) {
+        return post("/v1/admin/events/" + enc(eventId) + "/dead", request, Void.class);
+    }
+
+    public ApiResult<InboxStatus> configureInbox(String inboxId, InboxConfigRequest request) {
+        return put("/v1/admin/inboxes/" + enc(inboxId) + "/config", request, InboxStatus.class);
+    }
+
+    public ApiResult<InboxStatus> inboxStatus(String tenantId, String inboxId) {
+        return get("/v1/admin/inboxes/" + enc(inboxId) + "?tenant_id=" + enc(tenantId), InboxStatus.class);
+    }
+
+    public ApiResult<AuditEntry[]> audit(String tenantId, int limit) {
+        return get("/v1/admin/audit?limit=" + limit + (tenantId == null ? "" : "&tenant_id=" + enc(tenantId)),
+                AuditEntry[].class);
+    }
+
+    /** Events of an inbox in arrival order; {@code query} is a raw query string such as {@code status=dead}. */
+    public ApiResult<EventView[]> listEvents(String inboxId, String query) {
+        return get("/v1/inbox/" + enc(inboxId) + "/events" + (query == null || query.isEmpty() ? "" : "?" + query),
+                EventView[].class);
     }
 
     // ---- plumbing -------------------------------------------------------------------------------
