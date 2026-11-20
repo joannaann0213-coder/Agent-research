@@ -42,13 +42,16 @@ public class TimerController {
     @GetMapping("/{timerId}")
     public TimerView get(AuthenticatedClient client, @PathVariable String inboxId, @PathVariable String timerId,
             @RequestParam(name = "tenant_id", required = false) String tenantId) {
-        return timers.get(Tenants.resolve(client, tenantId), inboxId, timerId);
+        // A producer sees the timers it created; an operator sees every timer of the tenant.
+        String onlyClient = client.has(Role.OPERATOR) ? null : client.clientId();
+        return timers.get(Tenants.resolve(client, tenantId), inboxId, timerId, onlyClient);
     }
 
+    /** A producer cancels its own timers. An operator may cancel any timer; that is written to the audit log. */
     @DeleteMapping("/{timerId}")
     public ResponseEntity<Void> cancel(AuthenticatedClient client, @PathVariable String inboxId,
             @PathVariable String timerId, @RequestParam(name = "tenant_id", required = false) String tenantId) {
-        timers.cancel(Tenants.resolve(client, tenantId), inboxId, timerId);
+        timers.cancel(client, Tenants.resolve(client, tenantId), inboxId, timerId);
         return ResponseEntity.noContent().build();
     }
 }

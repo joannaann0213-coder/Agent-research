@@ -12,7 +12,6 @@ public final class ProblemCodes {
     public static final String DATABASE_UNAVAILABLE = "database_unavailable";
     public static final String LEASE_LOST = "lease_lost";
     public static final String RESUME_KEY_IN_USE = "resume_key_in_use";
-    public static final String NOT_REPLAYABLE = "not_replayable";
     public static final String CONFLICT = "conflict";
     public static final String INTERNAL = "internal_error";
 

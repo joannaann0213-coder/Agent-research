@@ -2,7 +2,6 @@ package dev.agentflow.inbox.server.wake;
 
 import dev.agentflow.inbox.server.config.InboxProperties;
 import java.time.Duration;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import org.springframework.stereotype.Component;
@@ -62,9 +61,5 @@ public class InProcessWakeBus implements WakeBus {
         } finally {
             lock.unlock();
         }
-    }
-
-    static long toNanos(Duration duration) {
-        return TimeUnit.NANOSECONDS.convert(duration);
     }
 }

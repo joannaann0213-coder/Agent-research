@@ -5,8 +5,10 @@ import dev.agentflow.inbox.api.CreateTimerRequest;
 import dev.agentflow.inbox.api.EventSource;
 import dev.agentflow.inbox.api.Lane;
 import dev.agentflow.inbox.api.TimerView;
+import dev.agentflow.inbox.server.admin.AuditLog;
 import dev.agentflow.inbox.server.api.InboxException;
 import dev.agentflow.inbox.server.auth.AuthenticatedClient;
+import dev.agentflow.inbox.server.auth.Role;
 import dev.agentflow.inbox.server.config.InboxProperties;
 import dev.agentflow.inbox.server.core.IdGenerator;
 import dev.agentflow.inbox.server.db.Db;
@@ -51,15 +53,17 @@ public class TimerService {
     private final InboxProperties properties;
     private final IdGenerator ids;
     private final JsonMapper json;
+    private final AuditLog audit;
 
     public TimerService(JdbcClient jdbc, TransactionTemplate transactions, InboxClock clock,
-            InboxProperties properties, IdGenerator ids, JsonMapper json) {
+            InboxProperties properties, IdGenerator ids, JsonMapper json, AuditLog audit) {
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.clock = clock;
         this.properties = properties;
         this.ids = ids;
         this.json = json;
+        this.audit = audit;
     }
 
     public Created create(AuthenticatedClient client, String tenantId, String inboxId, CreateTimerRequest request) {
@@ -130,7 +134,7 @@ public class TimerService {
                     .param("clientId", client.clientId()).param("now", Db.ts(now))
                     .update();
             if (inserted == 1) {
-                return new Created(get(tenantId, inboxId, timerId), true);
+                return new Created(get(tenantId, inboxId, timerId, null), true);
             }
             // The key is already scheduled: creating it again is a no-op that returns the existing timer.
             TimerView existing = jdbc.sql("SELECT " + TIMER_COLUMNS + """
@@ -143,15 +147,21 @@ public class TimerService {
         });
     }
 
-    /** The latest occurrence of a timer. */
-    public TimerView get(String tenantId, String inboxId, String timerId) {
+    /**
+     * The latest occurrence of a timer.
+     *
+     * @param clientId when set, only timers created by this client are visible (a producer sees its own)
+     */
+    public TimerView get(String tenantId, String inboxId, String timerId, String clientId) {
         List<TimerView> timers = jdbc.sql("SELECT " + TIMER_COLUMNS + """
                   FROM timer
                  WHERE timer_id = :timerId AND tenant_id = :tenant AND inbox_id = :inbox
+                   AND (CAST(:clientId AS text) IS NULL OR client_id = :clientId)
                  ORDER BY fire_at DESC
                  LIMIT 1
                 """)
                 .param("timerId", timerId).param("tenant", tenantId).param("inbox", inboxId)
+                .param("clientId", clientId)
                 .query((rs, n) -> map(rs)).list();
         if (timers.isEmpty()) {
             throw InboxException.notFound("no such timer in this inbox");
@@ -159,18 +169,32 @@ public class TimerService {
         return timers.getFirst();
     }
 
-    /** Cancels the scheduled occurrence. A timer that is firing right now wins the race and fires. */
-    public void cancel(String tenantId, String inboxId, String timerId) {
-        int cancelled = jdbc.sql("""
-                UPDATE timer SET state = 'cancelled', updated_at = :now
-                 WHERE timer_id = :timerId AND tenant_id = :tenant AND inbox_id = :inbox AND state = 'scheduled'
-                """)
-                .param("now", Db.ts(clock.now())).param("timerId", timerId).param("tenant", tenantId)
-                .param("inbox", inboxId)
-                .update();
-        if (cancelled == 0) {
-            throw InboxException.notFound("no scheduled timer with this id in this inbox");
-        }
+    /**
+     * Cancels the scheduled occurrence. A timer that is firing right now wins the race and fires.
+     *
+     * <p>A producer cancels the timers it created. An operator may cancel any timer of the tenant, and
+     * that is an operator action like any other: it is written to the audit log.
+     */
+    public void cancel(AuthenticatedClient client, String tenantId, String inboxId, String timerId) {
+        boolean operator = client.has(Role.OPERATOR);
+        Instant now = clock.now();
+        transactions.executeWithoutResult(tx -> {
+            int cancelled = jdbc.sql("""
+                    UPDATE timer SET state = 'cancelled', updated_at = :now
+                     WHERE timer_id = :timerId AND tenant_id = :tenant AND inbox_id = :inbox AND state = 'scheduled'
+                       AND (CAST(:clientId AS text) IS NULL OR client_id = :clientId)
+                    """)
+                    .param("now", Db.ts(now)).param("timerId", timerId).param("tenant", tenantId)
+                    .param("inbox", inboxId).param("clientId", operator ? null : client.clientId())
+                    .update();
+            if (cancelled == 0) {
+                throw InboxException.notFound("no scheduled timer with this id in this inbox");
+            }
+            if (operator) {
+                audit.record(tenantId, client.clientId(), client.clientId(), "timer_cancel",
+                        json.createObjectNode().put("inbox_id", inboxId).put("timer_id", timerId), null, null, now);
+            }
+        });
     }
 
     TimerView map(ResultSet rs) throws SQLException {

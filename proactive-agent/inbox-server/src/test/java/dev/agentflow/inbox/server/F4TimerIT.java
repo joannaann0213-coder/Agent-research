@@ -3,6 +3,7 @@ package dev.agentflow.inbox.server;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import dev.agentflow.inbox.api.AuditEntry;
 import dev.agentflow.inbox.api.ClaimedRun;
 import dev.agentflow.inbox.api.CreateTimerRequest;
 import dev.agentflow.inbox.api.EventDetail;
@@ -299,6 +300,38 @@ class F4TimerIT extends IntegrationTestBase {
         assertThat(scheduler.runOnce()).isZero();
         assertThat(acme.getTimer("u42", timerId).require().state()).isEqualTo("cancelled");
         assertThat(count("SELECT count(*) FROM event")).isZero();
+    }
+
+    @Test
+    void aProducerSeesAndCancelsOnlyItsOwnTimers() {
+        String timerId = acme.createTimer("u42", CreateTimerRequest.once(T0.plusSeconds(60), "{}")).require().timerId();
+
+        assertThat(acme2.getTimer("u42", timerId).status()).as("another producer of the same tenant").isEqualTo(404);
+        assertThat(acme2.cancelTimer("u42", timerId).status()).isEqualTo(404);
+        assertThat(acme.getTimer("u42", timerId).require().state()).isEqualTo("scheduled");
+
+        assertThat(acme.cancelTimer("u42", timerId).status()).isEqualTo(204);
+        assertThat(count("SELECT count(*) FROM admin_audit")).as("a producer cancelling its own timer is not an operator action")
+                .isZero();
+    }
+
+    @Test
+    void anOperatorSeesEveryTimerOfTheTenant_andItsCancelIsAudited() {
+        String timerId = acme.createTimer("u42", CreateTimerRequest.once(T0.plusSeconds(60), "{}")).require().timerId();
+        String path = "/v1/inbox/u42/timers/" + timerId + "?tenant_id=acme";
+
+        assertThat(ops.get(path, TimerView.class).require().state()).isEqualTo("scheduled");
+        assertThat(ops.delete(path, Void.class).status()).isEqualTo(204);
+        assertThat(acme.getTimer("u42", timerId).require().state()).isEqualTo("cancelled");
+
+        AuditEntry[] audit = ops.audit(ACME, 10).require();
+        assertThat(audit).hasSize(1);
+        assertThat(audit[0].action()).isEqualTo("timer_cancel");
+        assertThat(audit[0].actorClientId()).isEqualTo("ops");
+        assertThat(audit[0].target().get("timer_id").stringValue()).isEqualTo(timerId);
+
+        clock.advance(Duration.ofHours(1));
+        assertThat(scheduler.runOnce()).isZero();
     }
 
     @Test
