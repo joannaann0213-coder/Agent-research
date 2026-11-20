@@ -50,6 +50,7 @@ CREATE TABLE run (
     lease_expires_at    timestamptz,
     lease_deadline_at   timestamptz,                   -- lease_started_at + maximum lease duration
     next_attempt_at     timestamptz,                   -- when a queued run may be re-issued (retry backoff)
+    queued_reason       text,                          -- nack, lease_expired or suspend_timeout
     accepts_steer       boolean     NOT NULL DEFAULT false,
     next_run_seq        int         NOT NULL,          -- next ordinal for an event joining this run
     resume_key          text,

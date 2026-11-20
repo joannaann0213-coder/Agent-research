@@ -7,6 +7,8 @@ spring:
     password: ${INBOX_DB_PASSWORD:inbox}
     hikari:
       maximum-pool-size: ${INBOX_DB_POOL_SIZE:20}
+      # Nothing in this service should wait long on a row lock or sit idle inside a transaction.
+      connection-init-sql: "SET lock_timeout = '10s'; SET idle_in_transaction_session_timeout = '60s'"
   threads:
     virtual:
       enabled: true

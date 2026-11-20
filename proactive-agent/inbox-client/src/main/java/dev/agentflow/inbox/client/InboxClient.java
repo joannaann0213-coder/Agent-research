@@ -1,9 +1,17 @@
 package dev.agentflow.inbox.client;
 
+import dev.agentflow.inbox.api.AckRequest;
+import dev.agentflow.inbox.api.ClaimRequest;
+import dev.agentflow.inbox.api.ClaimedRun;
 import dev.agentflow.inbox.api.EventDetail;
+import dev.agentflow.inbox.api.HeartbeatRequest;
+import dev.agentflow.inbox.api.HeartbeatResponse;
 import dev.agentflow.inbox.api.HmacSigner;
 import dev.agentflow.inbox.api.InboxJson;
+import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.api.Problem;
+import dev.agentflow.inbox.api.RunOutcome;
+import dev.agentflow.inbox.api.RunView;
 import dev.agentflow.inbox.api.WriteEventRequest;
 import dev.agentflow.inbox.api.WriteEventResponse;
 import java.io.IOException;
@@ -68,6 +76,34 @@ public class InboxClient {
     public ApiResult<EventDetail> getEvent(String tenantId, String inboxId, String eventId) {
         return get("/v1/inbox/" + enc(inboxId) + "/events/" + enc(eventId) + "?tenant_id=" + enc(tenantId),
                 EventDetail.class);
+    }
+
+    // ---- runtime --------------------------------------------------------------------------------
+
+    /** 200 with a run, or 204 (body null) when nothing is claimable; see the X-Inbox-Reason header. */
+    public ApiResult<ClaimedRun> claim(ClaimRequest request) {
+        return post("/v1/runs/claim", request, ClaimedRun.class);
+    }
+
+    public ApiResult<HeartbeatResponse> heartbeat(String runId, HeartbeatRequest request) {
+        return post("/v1/runs/" + enc(runId) + "/heartbeat", request, HeartbeatResponse.class);
+    }
+
+    public ApiResult<RunOutcome> ack(String runId, AckRequest request) {
+        return post("/v1/runs/" + enc(runId) + "/ack", request, RunOutcome.class);
+    }
+
+    /** Acks every event that was delivered with the run. */
+    public ApiResult<RunOutcome> ackDone(ClaimedRun run) {
+        return ack(run.runId(), AckRequest.done(run.epoch(), run.lastRunSeq()));
+    }
+
+    public ApiResult<RunOutcome> nack(String runId, NackRequest request) {
+        return post("/v1/runs/" + enc(runId) + "/nack", request, RunOutcome.class);
+    }
+
+    public ApiResult<RunView> getRun(String runId) {
+        return get("/v1/runs/" + enc(runId), RunView.class);
     }
 
     // ---- plumbing -------------------------------------------------------------------------------

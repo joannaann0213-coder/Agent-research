@@ -1,10 +1,14 @@
 package dev.agentflow.inbox.server.support;
 
+import dev.agentflow.inbox.api.ClaimRequest;
+import dev.agentflow.inbox.api.ClaimedRun;
 import dev.agentflow.inbox.api.EventSource;
 import dev.agentflow.inbox.api.WriteEventRequest;
+import dev.agentflow.inbox.client.ApiResult;
 import dev.agentflow.inbox.client.InboxClient;
 import java.net.URI;
 import java.time.Duration;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -58,6 +62,20 @@ public abstract class IntegrationTestBase {
         runtime = client("runtime-1", "runtime-secret");
         ops = client("ops", "ops-secret");
         StatementCounter.reset();
+    }
+
+    @AfterEach
+    void checkInvariants() {
+        InvariantChecker.assertAll(jdbc);
+    }
+
+    /** One claim attempt on an inbox of tenant acme, without waiting. */
+    protected ApiResult<ClaimedRun> claim(String workerId, String inboxId) {
+        return runtime.claim(ClaimRequest.inbox(workerId, ACME, inboxId));
+    }
+
+    protected String write(String inboxId, WriteEventRequest.Builder event) {
+        return acme.writeEvent(inboxId, event.build()).require().eventId();
     }
 
     protected InboxClient client(String clientId, String secret) {
