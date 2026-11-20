@@ -2,6 +2,7 @@ package dev.agentflow.inbox.server.sweep;
 
 import dev.agentflow.inbox.server.config.InboxProperties;
 import dev.agentflow.inbox.server.time.InboxClock;
+import dev.agentflow.inbox.server.timer.TimerScheduler;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
@@ -26,6 +27,7 @@ public class BackgroundLoops {
     private final InboxProperties.Scheduling config;
     private final InboxClock clock;
     private final LeaseSweeper leaseSweeper;
+    private final TimerScheduler timerScheduler;
     private final ReclaimGate reclaimGate;
     private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2, runnable -> {
         Thread thread = new Thread(runnable, "inbox-background");
@@ -33,16 +35,19 @@ public class BackgroundLoops {
         return thread;
     });
 
-    public BackgroundLoops(InboxProperties properties, InboxClock clock, LeaseSweeper leaseSweeper) {
+    public BackgroundLoops(InboxProperties properties, InboxClock clock, LeaseSweeper leaseSweeper,
+            TimerScheduler timerScheduler) {
         this.config = properties.getScheduling();
         this.clock = clock;
         this.leaseSweeper = leaseSweeper;
+        this.timerScheduler = timerScheduler;
         this.reclaimGate = new ReclaimGate(properties.getLease().getDuration(), clock.now());
     }
 
     @PostConstruct
     void start() {
         schedule("lease sweep", config.getLeaseSweepInterval(), this::leaseSweep);
+        schedule("timer scheduler", config.getTimerInterval(), timerScheduler::runOnce);
     }
 
     @PreDestroy

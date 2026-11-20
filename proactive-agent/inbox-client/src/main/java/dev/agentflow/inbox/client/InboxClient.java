@@ -3,6 +3,7 @@ package dev.agentflow.inbox.client;
 import dev.agentflow.inbox.api.AckRequest;
 import dev.agentflow.inbox.api.ClaimRequest;
 import dev.agentflow.inbox.api.ClaimedRun;
+import dev.agentflow.inbox.api.CreateTimerRequest;
 import dev.agentflow.inbox.api.EventDetail;
 import dev.agentflow.inbox.api.HeartbeatRequest;
 import dev.agentflow.inbox.api.HeartbeatResponse;
@@ -12,6 +13,7 @@ import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.api.Problem;
 import dev.agentflow.inbox.api.RunOutcome;
 import dev.agentflow.inbox.api.RunView;
+import dev.agentflow.inbox.api.TimerView;
 import dev.agentflow.inbox.api.WriteEventRequest;
 import dev.agentflow.inbox.api.WriteEventResponse;
 import java.io.IOException;
@@ -76,6 +78,19 @@ public class InboxClient {
     public ApiResult<EventDetail> getEvent(String tenantId, String inboxId, String eventId) {
         return get("/v1/inbox/" + enc(inboxId) + "/events/" + enc(eventId) + "?tenant_id=" + enc(tenantId),
                 EventDetail.class);
+    }
+
+    /** 201 for a new timer, 200 when its timer_key was already scheduled. */
+    public ApiResult<TimerView> createTimer(String inboxId, CreateTimerRequest request) {
+        return post("/v1/inbox/" + enc(inboxId) + "/timers", request, TimerView.class);
+    }
+
+    public ApiResult<TimerView> getTimer(String inboxId, String timerId) {
+        return get("/v1/inbox/" + enc(inboxId) + "/timers/" + enc(timerId), TimerView.class);
+    }
+
+    public ApiResult<Void> cancelTimer(String inboxId, String timerId) {
+        return delete("/v1/inbox/" + enc(inboxId) + "/timers/" + enc(timerId), Void.class);
     }
 
     // ---- runtime --------------------------------------------------------------------------------
