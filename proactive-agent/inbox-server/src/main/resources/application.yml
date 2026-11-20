@@ -5,12 +5,32 @@ spring:
     url: ${INBOX_JDBC_URL:jdbc:postgresql://127.0.0.1:5432/inbox_dev}
     username: ${INBOX_DB_USER:inbox}
     password: ${INBOX_DB_PASSWORD:inbox}
+    hikari:
+      maximum-pool-size: ${INBOX_DB_POOL_SIZE:20}
   threads:
     virtual:
       enabled: true
+  jackson:
+    # The wire protocol: snake_case names, absent instead of null, and a typo in a field name is an
+    # error rather than a silently ignored field.
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: true
+
+server:
+  port: ${INBOX_PORT:8080}
 
 management:
   endpoints:
     web:
       exposure:
         include: health,prometheus
+
+# Callers are configured here in this build. Supply real secrets through the environment or a secret
+# store, for example:
+#   INBOX_AUTH_CLIENTS_0_ID=order-bot  INBOX_AUTH_CLIENTS_0_SECRET=...  INBOX_AUTH_CLIENTS_0_TENANT=acme
+#   INBOX_AUTH_CLIENTS_0_ROLES=PRODUCER
+inbox:
+  auth:
+    enabled: true
