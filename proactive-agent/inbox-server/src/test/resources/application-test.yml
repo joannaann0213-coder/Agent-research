@@ -29,6 +29,10 @@ inbox:
       - id: runtime-1
         secret: runtime-secret
         roles: RUNTIME
+      # an agent runtime that also writes its own follow-ups (producer "agent_self")
+      - id: agent-runtime
+        secret: agent-secret
+        roles: RUNTIME, PRODUCER
       - id: ops
         secret: ops-secret
         roles: OPERATOR

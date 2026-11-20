@@ -49,6 +49,8 @@ public abstract class IntegrationTestBase {
     protected InboxClient globex;
     /** The agent runtime (platform scope). */
     protected InboxClient runtime;
+    /** An agent runtime that may also write events, as the agent does when it schedules its own follow-up. */
+    protected InboxClient agent;
     /** An operator (platform scope). */
     protected InboxClient ops;
 
@@ -60,6 +62,7 @@ public abstract class IntegrationTestBase {
         acme2 = client("acme-bot-2", "acme-secret-2");
         globex = client("globex-bot", "globex-secret");
         runtime = client("runtime-1", "runtime-secret");
+        agent = client("agent-runtime", "agent-secret");
         ops = client("ops", "ops-secret");
         StatementCounter.reset();
     }

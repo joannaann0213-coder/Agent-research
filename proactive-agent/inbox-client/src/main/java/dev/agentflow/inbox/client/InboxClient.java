@@ -80,6 +80,12 @@ public class InboxClient {
         return post("/v1/inbox/" + enc(inboxId) + "/events", request, WriteEventResponse.class);
     }
 
+    /** As {@link #writeEvent(String, WriteEventRequest)} for a platform-scope producer, which must name the tenant. */
+    public ApiResult<WriteEventResponse> writeEvent(String tenantId, String inboxId, WriteEventRequest request) {
+        return post("/v1/inbox/" + enc(inboxId) + "/events?tenant_id=" + enc(tenantId), request,
+                WriteEventResponse.class);
+    }
+
     public ApiResult<EventDetail> getEvent(String inboxId, String eventId) {
         return get("/v1/inbox/" + enc(inboxId) + "/events/" + enc(eventId), EventDetail.class);
     }
