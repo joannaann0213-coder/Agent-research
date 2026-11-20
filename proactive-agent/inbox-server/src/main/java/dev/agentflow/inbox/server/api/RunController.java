@@ -8,6 +8,9 @@ import dev.agentflow.inbox.api.HeartbeatResponse;
 import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.api.RunOutcome;
 import dev.agentflow.inbox.api.RunView;
+import dev.agentflow.inbox.api.SteerRequest;
+import dev.agentflow.inbox.api.SteerResponse;
+import dev.agentflow.inbox.api.SuspendRequest;
 import dev.agentflow.inbox.server.auth.AuthenticatedClient;
 import dev.agentflow.inbox.server.claim.ClaimService;
 import dev.agentflow.inbox.server.claim.RunLifecycleService;
@@ -77,6 +80,20 @@ public class RunController {
     @PostMapping("/{runId}/nack")
     public RunOutcome nack(AuthenticatedClient client, @PathVariable String runId, @RequestBody NackRequest request) {
         return lifecycle.nack(client.tenantId(), runId, request);
+    }
+
+    /** Pulls events of the run's merge key that arrived after it started into the run. */
+    @PostMapping("/{runId}/steer")
+    public SteerResponse steer(AuthenticatedClient client, @PathVariable String runId,
+            @RequestBody SteerRequest request) {
+        return lifecycle.steer(client.tenantId(), runId, request);
+    }
+
+    /** The run waits for an answer; the answer arrives as an event carrying the resume key. */
+    @PostMapping("/{runId}/suspend")
+    public RunOutcome suspend(AuthenticatedClient client, @PathVariable String runId,
+            @RequestBody SuspendRequest request) {
+        return lifecycle.suspend(client.tenantId(), runId, request);
     }
 
     @GetMapping("/{runId}")

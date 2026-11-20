@@ -1,6 +1,7 @@
 package dev.agentflow.inbox.server.claim;
 
 import dev.agentflow.inbox.api.AckRequest;
+import dev.agentflow.inbox.api.ClaimedEvent;
 import dev.agentflow.inbox.api.HeartbeatRequest;
 import dev.agentflow.inbox.api.HeartbeatResponse;
 import dev.agentflow.inbox.api.Lane;
@@ -8,6 +9,9 @@ import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.api.ProblemCodes;
 import dev.agentflow.inbox.api.RunOutcome;
 import dev.agentflow.inbox.api.RunStatus;
+import dev.agentflow.inbox.api.SteerRequest;
+import dev.agentflow.inbox.api.SteerResponse;
+import dev.agentflow.inbox.api.SuspendRequest;
 import dev.agentflow.inbox.server.api.InboxException;
 import dev.agentflow.inbox.server.config.InboxProperties;
 import dev.agentflow.inbox.server.db.Db;
@@ -16,6 +20,7 @@ import dev.agentflow.inbox.server.time.InboxClock;
 import dev.agentflow.inbox.server.wake.WakeBus;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
 import org.slf4j.Logger;
@@ -58,15 +63,20 @@ public class RunLifecycleService {
     private final InboxProperties properties;
     private final WakeBus wakeBus;
     private final InboxMetrics metrics;
+    private final RunEventStore events;
+    private final RunSignals signals;
 
     public RunLifecycleService(JdbcClient jdbc, TransactionTemplate transactions, InboxClock clock,
-            InboxProperties properties, WakeBus wakeBus, InboxMetrics metrics) {
+            InboxProperties properties, WakeBus wakeBus, InboxMetrics metrics, RunEventStore events,
+            RunSignals signals) {
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.clock = clock;
         this.properties = properties;
         this.wakeBus = wakeBus;
         this.metrics = metrics;
+        this.events = events;
+        this.signals = signals;
     }
 
     // ---- heartbeat ------------------------------------------------------------------------------
@@ -103,9 +113,9 @@ public class RunLifecycleService {
             throw leaseLost(runId);
         }
         Renewed run = renewed.getFirst();
-        RunSignals.Signals signals = RunSignals.none();
+        RunSignals.Signals waiting = signals.read(run.tenantId(), run.inboxId(), runId, run.lane(), run.mergeKey());
         return new HeartbeatResponse(run.leaseExpiresAt(), run.leaseExpiresAt().equals(target),
-                signals.steerPending(), signals.interruptRequested(), signals.interruptEventId());
+                waiting.steerPending(), waiting.interruptRequested(), waiting.interruptEventId());
     }
 
     // ---- ack ------------------------------------------------------------------------------------
@@ -131,8 +141,8 @@ public class RunLifecycleService {
             Instant now = clock.now();
             String actor = run.workerActor();
             int cursor = request.lastRunSeq() == null ? run.nextRunSeq() - 1 : request.lastRunSeq();
-            finishEvents(runId, cursor, finalStatus, failed ? "fail" : "ack", actor, now, request.error());
-            releaseEvents(runId, cursor, actor, now);
+            events.finish(runId, cursor, finalStatus, failed ? "fail" : "ack", actor, request.error(), now);
+            events.release(runId, cursor, actor, now);
             jdbc.sql("""
                     UPDATE run
                        SET status = :status, slot_no = NULL, lease_expires_at = NULL, lease_deadline_at = NULL,
@@ -168,6 +178,170 @@ public class RunLifecycleService {
         });
         publishWake();
         return outcome;
+    }
+
+    // ---- steer ----------------------------------------------------------------------------------
+
+    /**
+     * Pulls same-key events that arrived after the run started into the run, and returns every event
+     * of the run beyond the worker's cursor. Only the lease holder can do this, and only when the run
+     * declared that it accepts steering; otherwise the events simply wait for the run to end.
+     */
+    public SteerResponse steer(String tenantScope, String runId, SteerRequest request) {
+        return withRun(tenantScope, runId, run -> {
+            if (run.status() != RunStatus.ACTIVE || run.epoch() != request.epoch()) {
+                throw leaseLost(runId);
+            }
+            int after = request.afterRunSeq() == null ? run.nextRunSeq() - 1 : request.afterRunSeq();
+            if (run.acceptsSteer() && run.mergeKey() != null) {
+                record Waiting(String eventId, int payloadBytes) {
+                }
+                List<Waiting> waiting = jdbc.sql("SELECT e.event_id, e.payload_bytes" + RunSignals.STEERABLE
+                        + " ORDER BY e.seq LIMIT :limit")
+                        .param("tenant", run.tenantId()).param("inbox", run.inboxId()).param("key", run.mergeKey())
+                        .param("limit", properties.getBatch().getMaxEvents())
+                        .query((rs, n) -> new Waiting(rs.getString("event_id"), rs.getInt("payload_bytes")))
+                        .list();
+                List<String> taken = new ArrayList<>();
+                long bytes = 0;
+                for (Waiting event : waiting) {
+                    if (!taken.isEmpty() && bytes + event.payloadBytes() > properties.getBatch().getMaxBytes()) {
+                        break;
+                    }
+                    taken.add(event.eventId());
+                    bytes += event.payloadBytes();
+                }
+                if (!taken.isEmpty()) {
+                    Instant now = clock.now();
+                    events.attach(runId, taken, run.nextRunSeq(), "steer", run.attempt(), "steer", run.workerActor(), now);
+                    jdbc.sql("UPDATE run SET next_run_seq = next_run_seq + :added, updated_at = :now WHERE run_id = :run")
+                            .param("added", taken.size()).param("now", Db.ts(now)).param("run", runId)
+                            .update();
+                }
+            }
+            List<ClaimedEvent> beyondCursor = events.claimedEvents(runId, after);
+            return new SteerResponse(beyondCursor);
+        });
+    }
+
+    // ---- suspend --------------------------------------------------------------------------------
+
+    /**
+     * The run stops to wait for an answer. It gives up its slot and its lease, so the inbox is free
+     * for other work, including new events of the same key. The events it consumed stay bound to it
+     * and stay {@code claimed}: they are not finished until the run is. The mandatory deadline is what
+     * keeps this from becoming a state an event can rest in forever.
+     */
+    public RunOutcome suspend(String tenantScope, String runId, SuspendRequest request) {
+        if (request.resumeKey() == null || request.resumeKey().isBlank() || request.resumeKey().length() > 256) {
+            throw InboxException.invalid("resume_key is required and may be at most 256 characters");
+        }
+        if (request.timeoutSeconds() == null || request.timeoutSeconds() <= 0) {
+            throw InboxException.invalid("timeout_seconds is required and must be positive: "
+                    + "a suspended run without a deadline could wait forever");
+        }
+        String policy = request.onTimeout() == null ? SuspendRequest.FINISH : request.onTimeout();
+        if (!SuspendRequest.FINISH.equals(policy) && !SuspendRequest.RESUME.equals(policy)) {
+            throw InboxException.invalid("on_timeout must be 'finish' or 'resume'");
+        }
+        Duration timeout = Duration.ofSeconds(request.timeoutSeconds());
+        if (timeout.compareTo(properties.getSuspend().getMaxTimeout()) > 0) {
+            timeout = properties.getSuspend().getMaxTimeout();
+        }
+        Duration boundedTimeout = timeout;
+
+        RunOutcome outcome = withRun(tenantScope, runId, run -> {
+            if (run.status() != RunStatus.ACTIVE || run.epoch() != request.epoch()) {
+                if (run.status() == RunStatus.SUSPENDED && run.epoch() == request.epoch()
+                        && request.resumeKey().equals(run.resumeKey())) {
+                    return outcome(run, null); // the same suspend again
+                }
+                throw leaseLost(runId);
+            }
+            int clash = jdbc.sql("""
+                    SELECT count(*) FROM run
+                     WHERE tenant_id = :tenant AND inbox_id = :inbox AND status = 'suspended' AND resume_key = :key
+                    """)
+                    .param("tenant", run.tenantId()).param("inbox", run.inboxId()).param("key", request.resumeKey())
+                    .query(Integer.class).single();
+            if (clash > 0) {
+                throw InboxException.conflict(ProblemCodes.RESUME_KEY_IN_USE,
+                        "another suspended run of this inbox already waits for resume_key '" + request.resumeKey() + "'");
+            }
+            Instant now = clock.now();
+            Instant deadline = now.plus(boundedTimeout);
+            int cursor = request.lastRunSeq() == null ? run.nextRunSeq() - 1 : request.lastRunSeq();
+            events.noteSuspended(runId, cursor, request.resumeKey(), deadline, run.workerActor(), now);
+            events.release(runId, cursor, run.workerActor(), now);
+            jdbc.sql("""
+                    UPDATE run
+                       SET status = 'suspended', slot_no = NULL, lease_expires_at = NULL, lease_deadline_at = NULL,
+                           resume_key = :key, suspend_deadline_at = :deadline, on_timeout = :policy,
+                           resume_reason = NULL, updated_at = :now
+                     WHERE run_id = :run
+                    """)
+                    .param("key", request.resumeKey()).param("deadline", Db.ts(deadline)).param("policy", policy)
+                    .param("now", Db.ts(now)).param("run", runId)
+                    .update();
+            return new RunOutcome(runId, "suspended", run.epoch(), run.attempt(), null);
+        });
+        publishWake();
+        return outcome;
+    }
+
+    /**
+     * A suspended run's deadline passed with no answer. With policy {@code finish} the inbox ends it
+     * here: its events are done, with the reason on record. With policy {@code resume} the run is
+     * handed back to the runtime, which wanted to be told. An answer that arrived before the deadline
+     * but has not been claimed yet still wins.
+     *
+     * @return true when the timeout was applied
+     */
+    public boolean timeOutSuspended(String runId, int epoch) {
+        Boolean applied = withRun(null, runId, run -> {
+            Instant now = clock.now();
+            if (run.status() != RunStatus.SUSPENDED || run.epoch() != epoch || run.suspendDeadlineAt().isAfter(now)) {
+                return false;
+            }
+            int answered = jdbc.sql("""
+                    SELECT count(*) FROM event
+                     WHERE tenant_id = :tenant AND inbox_id = :inbox AND status = 'pending' AND run_id IS NULL
+                       AND resume_key = :key AND received_at <= :deadline
+                    """)
+                    .param("tenant", run.tenantId()).param("inbox", run.inboxId()).param("key", run.resumeKey())
+                    .param("deadline", Db.ts(run.suspendDeadlineAt()))
+                    .query(Integer.class).single();
+            if (answered > 0) {
+                return false; // the next claim resumes the run with that answer
+            }
+            String actor = "system:suspend-sweeper";
+            if (SuspendRequest.RESUME.equals(run.onTimeout())) {
+                events.requeue(runId, "suspend_timeout", actor, now);
+                jdbc.sql("""
+                        UPDATE run
+                           SET status = 'queued', next_attempt_at = :now, queued_reason = 'suspend_timeout',
+                               resume_reason = 'timeout', resume_key = NULL, suspend_deadline_at = NULL, updated_at = :now
+                         WHERE run_id = :run
+                        """)
+                        .param("now", Db.ts(now)).param("run", runId)
+                        .update();
+            } else {
+                events.finish(runId, Integer.MAX_VALUE, "done", "suspend_timeout", actor, null, now);
+                jdbc.sql("""
+                        UPDATE run
+                           SET status = 'done', finished_at = :now, end_reason = 'suspend_timeout', resume_key = NULL,
+                               suspend_deadline_at = NULL, updated_at = :now
+                         WHERE run_id = :run
+                        """)
+                        .param("now", Db.ts(now)).param("run", runId)
+                        .update();
+            }
+            return true;
+        });
+        if (Boolean.TRUE.equals(applied)) {
+            publishWake();
+        }
+        return Boolean.TRUE.equals(applied);
     }
 
     // ---- lease expiry ---------------------------------------------------------------------------
@@ -228,19 +402,7 @@ public class RunLifecycleService {
             log.warn("run {} is dead after {} attempts ({})", run.runId(), run.attempt(), reason);
             return new RunOutcome(run.runId(), "dead", run.epoch(), run.attempt(), null);
         }
-        jdbc.sql("""
-                WITH moved AS (
-                    UPDATE event SET status = 'pending'
-                     WHERE run_id = :run AND status = 'claimed'
-                    RETURNING event_id, tenant_id, inbox_id, attempt
-                )
-                INSERT INTO event_transition (event_id, tenant_id, inbox_id, from_status, to_status, reason, actor,
-                                              run_id, attempt, at)
-                SELECT event_id, tenant_id, inbox_id, 'claimed', 'pending', :reason, :actor, :run, attempt, :now
-                  FROM moved
-                """)
-                .param("run", run.runId()).param("reason", reason).param("actor", actor).param("now", Db.ts(now))
-                .update();
+        events.requeue(run.runId(), reason, actor, now);
         jdbc.sql("""
                 UPDATE run
                    SET status = 'queued', slot_no = NULL, lease_expires_at = NULL, lease_deadline_at = NULL,
@@ -255,41 +417,6 @@ public class RunLifecycleService {
     }
 
     // ---- shared pieces --------------------------------------------------------------------------
-
-    /** Claimed events up to the cursor reach a final state. */
-    void finishEvents(String runId, int cursor, String toStatus, String reason, String actor, Instant now, String error) {
-        jdbc.sql("""
-                WITH moved AS (
-                    UPDATE event SET status = :to, finished_at = :now, last_error = CAST(:error AS text)
-                     WHERE run_id = :run AND status = 'claimed' AND run_seq <= :cursor
-                    RETURNING event_id, tenant_id, inbox_id, attempt
-                )
-                INSERT INTO event_transition (event_id, tenant_id, inbox_id, from_status, to_status, reason, actor,
-                                              run_id, attempt, at)
-                SELECT event_id, tenant_id, inbox_id, 'claimed', :to, :reason, :actor, :run, attempt, :now
-                  FROM moved
-                """)
-                .param("to", toStatus).param("now", Db.ts(now)).param("error", error).param("run", runId)
-                .param("cursor", cursor).param("reason", reason).param("actor", actor)
-                .update();
-    }
-
-    /** Claimed events beyond the cursor were never consumed: they leave the run and wait again. */
-    void releaseEvents(String runId, int cursor, String actor, Instant now) {
-        jdbc.sql("""
-                WITH moved AS (
-                    UPDATE event SET status = 'pending', run_id = NULL, run_seq = NULL, delivery_mode = NULL
-                     WHERE run_id = :run AND status = 'claimed' AND run_seq > :cursor
-                    RETURNING event_id, tenant_id, inbox_id, attempt
-                )
-                INSERT INTO event_transition (event_id, tenant_id, inbox_id, from_status, to_status, reason, actor,
-                                              run_id, attempt, at)
-                SELECT event_id, tenant_id, inbox_id, 'claimed', 'pending', 'released', :actor, :run, attempt, :now
-                  FROM moved
-                """)
-                .param("run", runId).param("cursor", cursor).param("actor", actor).param("now", Db.ts(now))
-                .update();
-    }
 
     /**
      * Runs {@code action} with the inbox row and then the run row locked, in that order.

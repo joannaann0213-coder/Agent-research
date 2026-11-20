@@ -13,6 +13,9 @@ import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.api.Problem;
 import dev.agentflow.inbox.api.RunOutcome;
 import dev.agentflow.inbox.api.RunView;
+import dev.agentflow.inbox.api.SteerRequest;
+import dev.agentflow.inbox.api.SteerResponse;
+import dev.agentflow.inbox.api.SuspendRequest;
 import dev.agentflow.inbox.api.TimerView;
 import dev.agentflow.inbox.api.WriteEventRequest;
 import dev.agentflow.inbox.api.WriteEventResponse;
@@ -115,6 +118,14 @@ public class InboxClient {
 
     public ApiResult<RunOutcome> nack(String runId, NackRequest request) {
         return post("/v1/runs/" + enc(runId) + "/nack", request, RunOutcome.class);
+    }
+
+    public ApiResult<SteerResponse> steer(String runId, SteerRequest request) {
+        return post("/v1/runs/" + enc(runId) + "/steer", request, SteerResponse.class);
+    }
+
+    public ApiResult<RunOutcome> suspend(String runId, SuspendRequest request) {
+        return post("/v1/runs/" + enc(runId) + "/suspend", request, RunOutcome.class);
     }
 
     public ApiResult<RunView> getRun(String runId) {

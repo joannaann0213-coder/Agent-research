@@ -27,6 +27,7 @@ public class BackgroundLoops {
     private final InboxProperties.Scheduling config;
     private final InboxClock clock;
     private final LeaseSweeper leaseSweeper;
+    private final SuspendSweeper suspendSweeper;
     private final TimerScheduler timerScheduler;
     private final ReclaimGate reclaimGate;
     private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2, runnable -> {
@@ -36,10 +37,11 @@ public class BackgroundLoops {
     });
 
     public BackgroundLoops(InboxProperties properties, InboxClock clock, LeaseSweeper leaseSweeper,
-            TimerScheduler timerScheduler) {
+            SuspendSweeper suspendSweeper, TimerScheduler timerScheduler) {
         this.config = properties.getScheduling();
         this.clock = clock;
         this.leaseSweeper = leaseSweeper;
+        this.suspendSweeper = suspendSweeper;
         this.timerScheduler = timerScheduler;
         this.reclaimGate = new ReclaimGate(properties.getLease().getDuration(), clock.now());
     }
@@ -47,6 +49,7 @@ public class BackgroundLoops {
     @PostConstruct
     void start() {
         schedule("lease sweep", config.getLeaseSweepInterval(), this::leaseSweep);
+        schedule("suspend sweep", config.getSuspendSweepInterval(), suspendSweeper::runOnce);
         schedule("timer scheduler", config.getTimerInterval(), timerScheduler::runOnce);
     }
 

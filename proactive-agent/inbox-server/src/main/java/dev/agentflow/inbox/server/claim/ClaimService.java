@@ -1,9 +1,7 @@
 package dev.agentflow.inbox.server.claim;
 
 import dev.agentflow.inbox.api.ClaimRequest;
-import dev.agentflow.inbox.api.ClaimedEvent;
 import dev.agentflow.inbox.api.ClaimedRun;
-import dev.agentflow.inbox.api.EventSource;
 import dev.agentflow.inbox.api.Lane;
 import dev.agentflow.inbox.api.RunStatus;
 import dev.agentflow.inbox.server.api.InboxException;
@@ -17,12 +15,10 @@ import dev.agentflow.inbox.server.wake.WakeBus;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import java.util.stream.Collectors;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Turns ready events into a run: the only way events leave the inbox.
@@ -67,11 +63,12 @@ public class ClaimService {
     private final IdGenerator ids;
     private final WakeBus wakeBus;
     private final InboxMetrics metrics;
-    private final JsonMapper json;
+    private final RunEventStore events;
     private final ClaimPlanner planner = new ClaimPlanner();
 
     public ClaimService(JdbcClient jdbc, TransactionTemplate transactions, InboxClock clock, InboxProperties properties,
-            InboxLimitsResolver limitsResolver, IdGenerator ids, WakeBus wakeBus, InboxMetrics metrics, JsonMapper json) {
+            InboxLimitsResolver limitsResolver, IdGenerator ids, WakeBus wakeBus, InboxMetrics metrics,
+            RunEventStore events) {
         this.jdbc = jdbc;
         this.transactions = transactions;
         this.clock = clock;
@@ -80,7 +77,7 @@ public class ClaimService {
         this.ids = ids;
         this.wakeBus = wakeBus;
         this.metrics = metrics;
-        this.json = json;
+        this.events = events;
     }
 
     /**
@@ -304,11 +301,10 @@ public class ClaimService {
                 .param("eligibleAt", Db.ts(plan.eligibleAt())).param("headId", head.eventId())
                 .query(String.class).single();
 
-        attach(runId, plan.events(), 1, "batch", 1, now);
-        recordClaimed(runId, 1, "claim", request.workerId(), now);
+        events.attach(runId, ids(plan.events()), 1, "batch", 1, "claim", actor(request), now);
 
         ClaimedRun run = new ClaimedRun(runId, 1, 1, ClaimedRun.KIND_START, null, tenantId, inboxId, plan.lane(),
-                plan.mergeKey(), traceId, acceptsSteer, leaseExpires, leaseDeadline, claimedEvents(runId, 1));
+                plan.mergeKey(), traceId, acceptsSteer, leaseExpires, leaseDeadline, events.claimedEvents(runId, 0));
         return new Granted(new Attempt(run, null, null), plan.lane(), plan.eligibleAt(), head.receivedAt(),
                 plan.events().size());
     }
@@ -334,27 +330,14 @@ public class ClaimService {
                 .single();
 
         // The same events as before: this is what keeps run_id + sequence a stable dedupe key downstream.
-        jdbc.sql("""
-                WITH moved AS (
-                    UPDATE event SET status = 'claimed', attempt = :attempt
-                     WHERE run_id = :run AND status = 'pending'
-                    RETURNING event_id, tenant_id, inbox_id, attempt
-                )
-                INSERT INTO event_transition (event_id, tenant_id, inbox_id, from_status, to_status, reason, actor,
-                                              run_id, attempt, at)
-                SELECT event_id, tenant_id, inbox_id, 'pending', 'claimed', 'redelivery', :actor, :run, attempt, :now
-                  FROM moved
-                """)
-                .param("run", plan.runId()).param("attempt", grant.attempt())
-                .param("actor", "worker:" + request.workerId()).param("now", Db.ts(now))
-                .update();
+        events.reclaim(plan.runId(), grant.attempt(), actor(request), now);
 
         // A run whose suspend timed out and asked to be told continues as a resume, not as a retry.
         boolean timedOutSuspend = "suspend_timeout".equals(grant.queuedReason());
         ClaimedRun run = new ClaimedRun(plan.runId(), grant.epoch(), grant.attempt(),
                 timedOutSuspend ? ClaimedRun.KIND_RESUME : ClaimedRun.KIND_REDELIVERY, grant.resumeReason(), tenantId,
                 inboxId, plan.lane(), grant.mergeKey(), grant.traceId(), acceptsSteer, leaseExpires, leaseDeadline,
-                claimedEvents(plan.runId(), 1));
+                events.claimedEvents(plan.runId(), 0));
         return new Granted(new Attempt(run, null, null), plan.lane(), null, null, run.events().size());
     }
 
@@ -381,64 +364,20 @@ public class ClaimService {
                         rs.getInt("first_seq")))
                 .single();
 
-        attach(plan.runId(), plan.events(), grant.firstSeq(), "resume", grant.attempt(), now);
-        recordClaimed(plan.runId(), grant.firstSeq(), "resume", request.workerId(), now);
+        events.attach(plan.runId(), ids(plan.events()), grant.firstSeq(), "resume", grant.attempt(), "resume",
+                actor(request), now);
 
         ClaimedRun run = new ClaimedRun(plan.runId(), grant.epoch(), grant.attempt(), ClaimedRun.KIND_RESUME, "event",
                 tenantId, inboxId, plan.lane(), grant.mergeKey(), grant.traceId(), acceptsSteer, leaseExpires,
-                leaseDeadline, claimedEvents(plan.runId(), grant.firstSeq()));
+                leaseDeadline, events.claimedEvents(plan.runId(), grant.firstSeq() - 1));
         return new Granted(new Attempt(run, null, null), plan.lane(), null, null, added);
     }
 
-    /** Binds unclaimed events to a run, numbering them from {@code firstSeq} in the order given. */
-    void attach(String runId, List<FreshEvent> events, int firstSeq, String mode, int attempt, Instant now) {
-        String idList = events.stream().map(FreshEvent::eventId).collect(Collectors.joining(","));
-        int updated = jdbc.sql("""
-                UPDATE event e
-                   SET status = 'claimed', run_id = :run, run_seq = CAST(:firstSeq + t.ord - 1 AS int),
-                       delivery_mode = :mode, attempt = :attempt,
-                       first_claimed_at = COALESCE(e.first_claimed_at, :now)
-                  FROM unnest(string_to_array(:ids, ',')) WITH ORDINALITY AS t(id, ord)
-                 WHERE e.event_id = t.id AND e.status = 'pending' AND e.run_id IS NULL
-                """)
-                .param("run", runId).param("firstSeq", firstSeq).param("mode", mode).param("attempt", attempt)
-                .param("now", Db.ts(now)).param("ids", idList)
-                .update();
-        if (updated != events.size()) {
-            // Cannot happen while the inbox lock is held; if it does, roll back rather than lose an event.
-            throw new IllegalStateException("claim planned " + events.size() + " events but bound " + updated);
-        }
+    private static List<String> ids(List<FreshEvent> events) {
+        return events.stream().map(FreshEvent::eventId).toList();
     }
 
-    void recordClaimed(String runId, int fromRunSeq, String reason, String workerId, Instant now) {
-        jdbc.sql("""
-                INSERT INTO event_transition (event_id, tenant_id, inbox_id, from_status, to_status, reason, actor,
-                                              run_id, attempt, at)
-                SELECT event_id, tenant_id, inbox_id, 'pending', 'claimed', :reason, :actor, run_id, attempt, :now
-                  FROM event
-                 WHERE run_id = :run AND status = 'claimed' AND run_seq >= :fromSeq
-                 ORDER BY run_seq
-                """)
-                .param("run", runId).param("fromSeq", fromRunSeq).param("reason", reason)
-                .param("actor", "worker:" + workerId).param("now", Db.ts(now))
-                .update();
-    }
-
-    /** The run's claimed events from {@code fromRunSeq} on, in run order, with their payloads. */
-    public List<ClaimedEvent> claimedEvents(String runId, int fromRunSeq) {
-        return jdbc.sql("""
-                SELECT event_id, seq, run_seq, delivery_mode, source, type, source_event_id, occurred_at, received_at,
-                       merge_key, resume_key, interrupt, payload, trace_id
-                  FROM event
-                 WHERE run_id = :run AND status = 'claimed' AND run_seq >= :fromSeq
-                 ORDER BY run_seq
-                """)
-                .param("run", runId).param("fromSeq", fromRunSeq)
-                .query((rs, n) -> new ClaimedEvent(rs.getString("event_id"), rs.getLong("seq"), rs.getInt("run_seq"),
-                        rs.getString("delivery_mode"), EventSource.fromWire(rs.getString("source")),
-                        rs.getString("type"), rs.getString("source_event_id"), Db.instant(rs, "occurred_at"),
-                        Db.instant(rs, "received_at"), rs.getString("merge_key"), rs.getString("resume_key"),
-                        rs.getBoolean("interrupt"), json.readTree(rs.getString("payload")), rs.getString("trace_id")))
-                .list();
+    private static String actor(ClaimRequest request) {
+        return "worker:" + request.workerId();
     }
 }
