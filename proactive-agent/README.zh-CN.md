@@ -115,7 +115,7 @@ scripts/inbox-curl.sh order-bot order-bot-secret GET /v1/inbox/u42/events/01M7WZ
 | `inbox.suspend.max-timeout` | `30d` | 挂起超时的上限 |
 | `inbox.timers.min-cron-period` | `60s` | cron 定时器的最小触发间隔 |
 | `inbox.interrupt.keywords` | `stop, cancel, 停止, 取消` | 会置上打断标记的对话文本 |
-| `inbox.scheduling.enabled` | `true` | 是否运行后台循环（清扫器、定时器调度、水位指标） |
+| `inbox.scheduling.enabled` | `true` | 是否运行后台循环（清扫器、定时器调度器、仪表指标） |
 | `inbox.wake.enabled` | `true` | 给长轮询领取方的进程内唤醒提示 |
 
 Lane 上限、静默窗口和合批上限都可以通过运维 API 按收件箱单独覆盖。

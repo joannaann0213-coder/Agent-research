@@ -88,7 +88,7 @@ mvn -pl inbox-server -am verify -Dit.test=F5BatchingIT \
 
 | 场景 | 测试 | 证明了什么 |
 | --- | --- | --- |
-| A. 一条业务告警，一次回复 | `ScenarioAE2E` | 写入、唤醒、领取、超过 60 秒的心跳、一条发件箱消息、ack；写入、领取和发件箱三处是同一个 `trace_id` |
+| A. 一条业务告警，一次回复 | `ScenarioAE2E` | 写入、唤醒、领取、靠心跳续租使 run 运行超过 60 秒、一条发件箱消息、ack；写入、领取和发件箱三处是同一个 `trace_id` |
 | B. 连续五条用户消息 | `ScenarioBE2E` | 一个 run，一次回复，并且反映了全部五条 |
 | C. 挂起等待审批 | `ScenarioCE2E` | Run 发出请求、挂起，并在获批后继续；拒绝也是一种答复；没有答复时 run 静默结束；在变更已经生效之后崩溃，既不会再生效一次，也不会再通知一次 |
 | D. Worker 崩溃 | `ScenarioDE2E` | 一个独立 JVM 里的 worker 在 run 进行到一半时被强制杀掉。租约过期后，同一个 `run_id` 带着更高的 epoch 再次下发，而回复只发出一次 |
