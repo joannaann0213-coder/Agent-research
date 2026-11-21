@@ -99,6 +99,7 @@ Health is at `/actuator/health` and metrics at `/actuator/prometheus`.
 | [Architecture](docs/en/architecture.md) | The proactive agent as a whole and where the inbox sits |
 | [Event Inbox design](docs/en/event-inbox-design.md) | How the inbox is built: invariants, data model, claim rules, decisions |
 | [API](docs/en/api.md) | Every endpoint, request signing, error codes, the runtime contract |
+| [Integration guide](docs/en/integration.md) | How to connect a connector (MCP-based systems included) and an agent, step by step, with Java and Python examples |
 | [Testing](docs/en/testing.md) | How to run the tests and which test proves which acceptance check |
 
 ## Configuration

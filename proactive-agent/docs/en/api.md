@@ -4,7 +4,8 @@
 
 The Event Inbox speaks JSON over HTTP under `/v1`. Producers write events and timers, the runtime
 claims runs and ends them, and operators replay and configure. The examples on this page are real
-responses captured from a running server.
+responses captured from a running server. Which calls to make, in what order, when connecting a
+connector or an agent is in the [Integration guide](integration.md).
 
 ## Conventions
 

@@ -93,6 +93,7 @@ scripts/inbox-curl.sh order-bot order-bot-secret GET /v1/inbox/u42/events/01M7WZ
 | [架构](docs/zh/architecture.md) | 主动式 agent 的整体，以及收件箱在其中的位置 |
 | [事件收件箱设计](docs/zh/event-inbox-design.md) | 收件箱是怎么实现的：不变量、数据模型、领取规则、决策 |
 | [API](docs/zh/api.md) | 全部接口、请求签名、错误码、运行时契约 |
+| [接入指南](docs/zh/integration.md) | 一步步说明如何接入 connector（包括基于 MCP 的第三方系统）和 agent，附 Java 和 Python 示例 |
 | [测试](docs/zh/testing.md) | 怎么运行测试，以及每一项验收由哪个测试证明 |
 
 ## 配置
