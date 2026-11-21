@@ -94,7 +94,7 @@ and scenario D, which kills a real process.
 
 | Scenario | Test | What it proves |
 | --- | --- | --- |
-| A. A business alert, one reply | `ScenarioAE2E` | Write, wake, claim, heartbeats beyond 60 s, one outbox message, ack; the same `trace_id` at the write, the claim and the outbox |
+| A. A business alert, one reply | `ScenarioAE2E` | Write, wake, claim, heartbeats that keep the run alive past 60 s, one outbox message, ack; the same `trace_id` at the write, the claim and the outbox |
 | B. Five user messages in a row | `ScenarioBE2E` | One run, one reply that reflects all five |
 | C. Suspend for approval | `ScenarioCE2E` | The run asks, suspends and continues on approval; a rejection is an answer too; with no answer the run ends silently; a crash after applying the change neither applies nor announces it twice |
 | D. A worker crash | `ScenarioDE2E` | A worker in its own JVM is force-killed in the middle of a run. After the lease expires the same `run_id` is delivered again with a higher epoch, and the reply is sent once |
@@ -138,7 +138,8 @@ back.
 
 - Roadmap stage M2 (F11) is not built.
 - Nothing was run in Docker or on more than one service instance. The background loops are written to
-  be safe on every instance; the tests run several timer schedulers at once and race the sweepers
-  against workers, all inside one process.
+  be safe on every instance. The tests run several timer schedulers at once and race the suspend
+  sweeper against a claiming worker; the lease sweeper is only interleaved with worker calls step by
+  step. All of this happens inside one process.
 - There is no production-scale load test. The 50-thread single-flight test and the latency measurement
   are the largest loads applied.

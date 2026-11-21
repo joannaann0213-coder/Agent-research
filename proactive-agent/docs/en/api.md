@@ -8,8 +8,12 @@ responses captured from a running server.
 
 ## Conventions
 
-- Field names are `snake_case`. A field without a value is left out, not sent as `null`.
-- An unknown field is an error (400), so a typo in a field name is never silently ignored.
+- Field names are `snake_case`. A field without a value is left out, not sent as `null`. JSON that the
+  service stores as a document comes back as stored: an event's `payload`, and the `params` of an
+  `inbox_config` audit entry, which lists a cap that was left out, and so went back to its default, as
+  `null`.
+- An unknown field is an error (400), so a typo in a field name is never silently ignored. That holds
+  inside an inbox's `settings` too.
 - Timestamps are ISO-8601 in UTC, for example `2026-11-20T17:27:39.671132Z`.
 - Ids are ULIDs: 26 characters that sort by creation time.
 - Errors are `application/problem+json` with a stable, machine-readable `code`.
@@ -190,7 +194,7 @@ scripts/inbox-curl.sh order-bot order-bot-secret POST /v1/inbox/u42/timers \
 {"timer_id":"01M7X00EY2556QDKT50BS0CKKB","tenant_id":"acme","inbox_id":"u42","kind":"cron",
  "state":"scheduled","fire_at":"2026-11-23T01:00:00Z","cron":"0 9 * * 1-5","time_zone":"Asia/Shanghai",
  "timer_key":"daily-report","event_type":"timer.due","lane":"background","payload":{"report":"daily"},
- "catch_up":false,"missed_count":0,"created_at":"2026-11-20T17:28:01.726884Z"}
+ "created_at":"2026-11-20T17:28:01.726884Z"}
 ```
 
 The answer is 201 for a new timer and 200 when the `timer_key` was already scheduled. The payload of a
@@ -201,8 +205,9 @@ The answer is 201 for a new timer and 200 when the `timer_key` was already sched
  "catch_up":false,"missed_count":0,"payload":{"report":"daily"}}
 ```
 
-- `GET /v1/inbox/{inbox_id}/timers/{timer_id}` returns the latest occurrence. Its `state` is
-  `scheduled`, `fired`, `missed` or `cancelled`.
+- `GET /v1/inbox/{inbox_id}/timers/{timer_id}` returns the timer as its latest occurrence shows it, in
+  the state `scheduled`, `fired` or `cancelled`. For a cron timer that is the next scheduled occurrence;
+  whether a firing was a catch-up shows in the payload of the `timer.due` event it produced.
 - `DELETE /v1/inbox/{inbox_id}/timers/{timer_id}` cancels the scheduled occurrence and answers 204. It
   answers 404 when nothing is scheduled. A timer that is firing right now wins the race and fires.
 - A producer sees and cancels the timers it created. An operator sees every timer of the tenant and
@@ -262,7 +267,8 @@ X-Inbox-Retry-After-Ms: 1472
 | `window` | The next batch is still inside its quiet window |
 | `backoff` | The next run is waiting out its retry backoff |
 
-`X-Inbox-Retry-After-Ms` is present when time alone will change the answer.
+`X-Inbox-Retry-After-Ms` is present when time alone will change the answer: a quiet window closes or a
+retry backoff ends.
 
 ### Heartbeat
 
@@ -383,6 +389,10 @@ back to the service default.
 | `cap_interactive`, `cap_background`, `cap_batch` | Concurrent runs per lane, 1 to 100 |
 | `max_active_runs` | Inbox-wide cap on concurrent runs. 1 gives strict "one run per inbox" |
 | `settings` | Per-lane `quiet_window_ms` and `max_wait_ms`, and batch caps `max_events` and `max_bytes` |
+
+Any other key in `settings` is refused with 400, and so is a value out of range: `quiet_window_ms` and
+`max_wait_ms` take 0 to 86,400,000 (one day), `max_events` and `max_bytes` at least 1. Batch caps apply
+to the whole inbox, not per lane.
 
 ```json
 {"tenant_id":"acme","max_active_runs":1,"operator":"alice",

@@ -4,11 +4,13 @@ import java.time.Instant;
 import tools.jackson.databind.JsonNode;
 
 /**
- * One occurrence of a timer. A cron timer keeps its {@code timerId} across occurrences; the view shows
- * the latest one.
+ * A timer as its latest occurrence shows it. A one-off timer has a single occurrence. A cron timer
+ * keeps its {@code timerId} across occurrences, and its view is the next scheduled occurrence, or the
+ * cancelled one. Whether a firing was a catch-up after an outage is recorded in the payload of the
+ * {@code timer.due} event it produced ({@code catch_up}, {@code missed_count}).
  *
- * @param state {@code scheduled}, {@code fired}, {@code missed} or {@code cancelled}
- * @param catchUp true when this occurrence fired late, standing in for {@code missedCount} missed ones
+ * @param state {@code scheduled}, {@code fired} or {@code cancelled}
+ * @param firedEventId the event this occurrence produced, once it fired
  */
 public record TimerView(
         String timerId,
@@ -26,7 +28,5 @@ public record TimerView(
         JsonNode payload,
         String firedEventId,
         Instant firedAt,
-        boolean catchUp,
-        int missedCount,
         Instant createdAt) {
 }

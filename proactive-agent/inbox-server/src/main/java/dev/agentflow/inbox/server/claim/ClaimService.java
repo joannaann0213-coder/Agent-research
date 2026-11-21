@@ -15,6 +15,7 @@ import dev.agentflow.inbox.server.wake.WakeBus;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.stream.Collectors;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
@@ -152,7 +153,36 @@ public class ClaimService {
                 break;
             }
         }
+        // Runs waiting out a backoff are not candidates: nothing is claimable in their inboxes yet. When
+        // the first of them is due is still what the claimer needs to know, because time alone will
+        // give it work then.
+        Instant backoffEnds = earliestBackoffEnd(tenantScope, request.lanes());
+        if (backoffEnds != null && (retryAt == null || backoffEnds.isBefore(retryAt))) {
+            retryAt = backoffEnds;
+            reason = ClaimPlan.Reason.BACKOFF;
+        }
         return Attempt.nothing(reason, retryAt);
+    }
+
+    /** When the earliest retry backoff ends among the queued runs this claimer could take; null if none. */
+    private Instant earliestBackoffEnd(String tenantScope, List<Lane> lanes) {
+        String laneList = lanes == null || lanes.isEmpty()
+                ? null : lanes.stream().map(Lane::wire).collect(Collectors.joining(","));
+        return jdbc.sql("""
+                SELECT next_attempt_at
+                  FROM run
+                 WHERE status = 'queued' AND next_attempt_at > :now
+                   AND (CAST(:tenant AS text) IS NULL OR tenant_id = :tenant)
+                   AND (CAST(:lanes AS text) IS NULL OR lane = ANY(string_to_array(:lanes, ',')))
+                 ORDER BY next_attempt_at
+                 LIMIT 1
+                """)
+                .param("now", Db.ts(clock.now()))
+                .param("tenant", tenantScope)
+                .param("lanes", laneList)
+                .query((rs, n) -> Db.instant(rs, "next_attempt_at"))
+                .optional()
+                .orElse(null);
     }
 
     /**

@@ -29,11 +29,12 @@ worker 代替 agent，使整套契约可以端到端地跑通。
 cd proactive-agent
 
 # 1. 数据库：启动本地集群，创建角色 "inbox" 以及数据库 inbox_dev / inbox_test。
-#    如果要用别的 PostgreSQL，改为设置 INBOX_JDBC_URL、INBOX_DB_USER 和 INBOX_DB_PASSWORD。
+#    如果要用别的 PostgreSQL，跳过这一步：为服务设置 INBOX_JDBC_URL、INBOX_DB_USER 和 INBOX_DB_PASSWORD，
+#    为测试设置 INBOX_TEST_JDBC_URL、INBOX_TEST_DB_USER 和 INBOX_TEST_DB_PASSWORD。
 scripts/pg-local.sh
 
-# 2. 构建并运行全部测试（大约一分钟）。
-mvn verify
+# 2. 构建、运行全部测试，并把各模块安装到本地 Maven 仓库，scripts/run-worker.sh 从那里找到它们（大约一分钟）。
+mvn install
 
 # 3. 启动服务，配置三个调用方：一个生产方、运行时和一个运维人员。
 export INBOX_AUTH_CLIENTS_0_ID=order-bot  INBOX_AUTH_CLIENTS_0_SECRET=order-bot-secret \

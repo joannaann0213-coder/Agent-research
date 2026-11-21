@@ -7,8 +7,9 @@
 
 ## 约定
 
-- 字段名用 `snake_case`。没有值的字段直接省略，不发 `null`。
-- 未知字段是错误（400），所以字段名里的笔误绝不会被悄悄忽略。
+- 字段名用 `snake_case`。没有值的字段直接省略，不发 `null`。服务以文档形式保存的 JSON 按保存时的原样返回：事件的
+  `payload`，以及 `inbox_config` 审计条目的 `params`，其中被省略、因而回到默认值的上限显示为 `null`。
+- 未知字段是错误（400），所以字段名里的笔误绝不会被悄悄忽略。收件箱的 `settings` 内部也是如此。
 - 时间戳是 UTC 的 ISO-8601 格式，例如 `2026-11-20T17:27:39.671132Z`。
 - Id 是 ULID：26 个字符，按创建时间有序。
 - 错误以 `application/problem+json` 返回，带一个稳定的、机器可读的 `code`。
@@ -180,7 +181,7 @@ scripts/inbox-curl.sh order-bot order-bot-secret POST /v1/inbox/u42/timers \
 {"timer_id":"01M7X00EY2556QDKT50BS0CKKB","tenant_id":"acme","inbox_id":"u42","kind":"cron",
  "state":"scheduled","fire_at":"2026-11-23T01:00:00Z","cron":"0 9 * * 1-5","time_zone":"Asia/Shanghai",
  "timer_key":"daily-report","event_type":"timer.due","lane":"background","payload":{"report":"daily"},
- "catch_up":false,"missed_count":0,"created_at":"2026-11-20T17:28:01.726884Z"}
+ "created_at":"2026-11-20T17:28:01.726884Z"}
 ```
 
 新建定时器时回答 201；`timer_key` 已经在排期中时回答 200。`timer.due` 事件的 payload 把定时器的 payload 包了一层：
@@ -190,8 +191,8 @@ scripts/inbox-curl.sh order-bot order-bot-secret POST /v1/inbox/u42/timers \
  "catch_up":false,"missed_count":0,"payload":{"report":"daily"}}
 ```
 
-- `GET /v1/inbox/{inbox_id}/timers/{timer_id}` 返回最近的一次触发。它的 `state` 是
-  `scheduled`、`fired`、`missed` 或 `cancelled`。
+- `GET /v1/inbox/{inbox_id}/timers/{timer_id}` 按最近的一次触发返回这个定时器，状态为 `scheduled`、`fired` 或
+  `cancelled`。对 cron 定时器来说，那就是下一次已排期的触发；某次触发是否为补触发，体现在它所产生的 `timer.due` 事件的 payload 里。
 - `DELETE /v1/inbox/{inbox_id}/timers/{timer_id}` 取消已排期的那一次触发，回答 204。没有已排期的触发时回答
   404。此刻正在触发的定时器会赢得这场竞争，照常触发。
 - 生产方只能看到并取消自己创建的定时器。运维人员能看到租户的每一个定时器，也可以取消其中任何一个；这样的取消会写入审计日志。
@@ -248,7 +249,7 @@ X-Inbox-Retry-After-Ms: 1472
 | `window` | 下一批还在静默窗口内 |
 | `backoff` | 下一个 run 正在等它的重试退避结束 |
 
-只靠时间流逝答案就会改变时，才会带 `X-Inbox-Retry-After-Ms`。
+只靠时间流逝答案就会改变时，才会带 `X-Inbox-Retry-After-Ms`：静默窗口关闭，或者重试退避结束。
 
 ### 心跳
 
@@ -355,6 +356,9 @@ run，并返回该 run 在 `after_run_seq` 之后的全部事件。所以响应�
 | `cap_interactive`, `cap_background`, `cap_batch` | 每条 lane 的并发 run 数，1 到 100 |
 | `max_active_runs` | 收件箱级的并发 run 总上限。设为 1 即为严格的“一个收件箱一个 run” |
 | `settings` | 每条 lane 的 `quiet_window_ms` 和 `max_wait_ms`，以及合批上限 `max_events` 和 `max_bytes` |
+
+`settings` 里的其他任何键都会以 400 拒绝，超出范围的值也一样：`quiet_window_ms` 和 `max_wait_ms` 取 0 到
+86,400,000（一天），`max_events` 和 `max_bytes` 至少为 1。合批上限作用于整个收件箱，不分 lane。
 
 ```json
 {"tenant_id":"acme","max_active_runs":1,"operator":"alice",

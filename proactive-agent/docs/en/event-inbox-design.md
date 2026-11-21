@@ -103,7 +103,9 @@ On the happy path the write is one SQL statement.
 4. Insert the first history row (`accepted`).
 
 Because the inbox row lock is held until commit, the next writer gets the next `seq` only after this
-one is visible. Sequence order is therefore commit order, and a reader never sees `seq` 6 without 5.
+one is visible. Sequence order is therefore commit order: a reader that sees `seq` 6 also sees every
+lower `seq` that exists. Numbers can have gaps, because a writer that loses a race on the same
+idempotency key has already taken one.
 
 | Result | Status | Body |
 | --- | --- | --- |
@@ -178,8 +180,10 @@ to some lanes. Inside a lane there are three kinds of candidate.
 | Start a new run | A group of unclaimed events is eligible (see Batching) |
 
 Work flagged as an interrupt goes first; after that the candidate with the lowest head `seq` wins.
-Ordering is strict per merge key: a queued run goes before any younger event of its key. A key that is
-in backoff or still inside its quiet window does not block other keys of the lane.
+Ordering is strict per merge key within a lane: a queued run goes before any younger event of its key
+in that lane. Across lanes the higher-priority lane goes first, and key exclusivity still allows one
+active run per key. A key that is in backoff or still inside its quiet window does not block other keys
+of the lane.
 
 When nothing can be claimed the answer is 204 with the reason and, when time alone will change the
 answer, a retry hint.
@@ -205,8 +209,8 @@ these is true.
 - An event of the group is flagged as an interrupt.
 
 A batch takes events in `seq` order up to the caps, and the head is always taken; the rest waits for
-the next run. An event without a merge key is its own run and does not wait. Windows and caps can be
-set per inbox and per lane.
+the next run. An event without a merge key is its own run and does not wait. Windows can be set per
+inbox and per lane, batch caps per inbox.
 
 ## State machines
 
@@ -425,9 +429,10 @@ Clients and secrets come from configuration in this build. Request signing is de
 - **Lock order** is the same everywhere: timer row, inbox row, run row, event rows.
 - **Every change of delivery state holds the inbox row lock.** The one exception is heartbeat, a single
   guarded update of the run row.
-- **Guards, not assumptions.** Each statement names the state it expects (`status = 'active' AND
-  epoch = :epoch`), so whichever of "ack" and "lease expired" gets the lock first wins and the other
-  finds nothing to change.
+- **Re-check, never assume.** Every change re-checks the state it expects before it writes: heartbeat
+  in its one statement (`status = 'active' AND epoch = :epoch`), the other run operations on the run
+  row they hold locked, and every event statement by naming the status it moves from. Whichever of
+  "ack" and "lease expired" gets the lock first wins; the other finds the run already changed.
 - **Time comes from an injected application clock** and is passed into SQL; no statement uses `now()`.
   Leases, windows, backoff and timers are therefore deterministic in tests. Nodes must be
   NTP-synchronised. Clock skew can only cause an early re-delivery, which at-least-once already allows;
@@ -436,8 +441,8 @@ Clients and secrets come from configuration in this build. Request signing is de
 
 ## Observability
 
-Metrics are published at `/actuator/prometheus`, tagged by tenant and lane. None carries the inbox id,
-which would be unbounded.
+Metrics are published at `/actuator/prometheus`, tagged by tenant and, except for the replay counter,
+by lane. None carries the inbox id, which would be unbounded.
 
 | Metric | Kind | Measures |
 | --- | --- | --- |
@@ -465,7 +470,7 @@ The source design left eleven points open or stated them two ways. This is what 
 | 4 | The fate of a suspended run's events | They stay `claimed` and bound to the run, which holds no slot and no lease. They finish when the resumed run acks, or at the deadline |
 | 5 | A null `ready_at` never matches the claim filter | `ready_at` is always set. Future events live only in `timer`. Retry backoff lives on the run, so events stay immutable |
 | 6 | The quiet window is longer than the claim-latency target | Latency is measured from the moment the batch became eligible. `max_wait` bounds a trickle |
-| 7 | What one claim takes | One merge group: the head plus same-key events, up to 20 events or 256 KB. FIFO is strict per key only |
+| 7 | What one claim takes | One merge group: the head plus same-key events, up to 20 events or 256 KB. FIFO is strict per key within a lane |
 | 8 | `failed` is called final but is retried | Two verbs. `nack` retries with backoff and ends in `dead`. `ack(failed)` is final. Replay: `failed` freely; `done` and `dead` need `force` |
 | 9 | No channel for steer and interrupt | The runtime pulls. Heartbeat returns signals, `steer` binds and returns events, and ack carries a cursor |
 | 10 | Missing fields | `payload_hash` on events; `cron_expr` and `time_zone` on timers |

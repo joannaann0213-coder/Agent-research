@@ -44,11 +44,10 @@ public class InboxAdminService {
         checkCap("cap_batch", request.capBatch());
         checkCap("max_active_runs", request.maxActiveRuns());
         JsonNode settings = request.settings() == null ? json.createObjectNode() : request.settings();
-        if (!settings.isObject()) {
-            throw InboxException.invalid("settings must be a JSON object");
-        }
         try {
-            // Reject settings the claim path could not read, before they are stored.
+            // Reject what the claim path would not use, before it is stored: an unknown key or a value
+            // out of range is an error, never a setting that silently does nothing.
+            limitsResolver.validate(settings);
             limitsResolver.resolve(request.capInteractive(), request.capBackground(), request.capBatch(),
                     request.maxActiveRuns(), settings.toString());
         } catch (RuntimeException e) {

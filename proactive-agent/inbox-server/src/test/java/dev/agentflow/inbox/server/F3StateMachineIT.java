@@ -3,10 +3,12 @@ package dev.agentflow.inbox.server;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.agentflow.inbox.api.AckRequest;
+import dev.agentflow.inbox.api.ClaimRequest;
 import dev.agentflow.inbox.api.ClaimedRun;
 import dev.agentflow.inbox.api.EventDetail;
 import dev.agentflow.inbox.api.HeartbeatRequest;
 import dev.agentflow.inbox.api.HeartbeatResponse;
+import dev.agentflow.inbox.api.Lane;
 import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.api.ProblemCodes;
 import dev.agentflow.inbox.api.RunOutcome;
@@ -114,6 +116,29 @@ class F3StateMachineIT extends IntegrationTestBase {
         assertThat(detail.transitions().getLast().reason()).isEqualTo("attempts_exhausted");
         assertThat(detail.transitions()).filteredOn(t -> t.reason().equals("nack")).hasSize(4);
         assertThat(detail.transitions()).filteredOn(t -> t.reason().equals("redelivery")).hasSize(4);
+    }
+
+    @Test
+    void aClaimWithoutAnInboxIsToldWhenTheBackoffEnds() {
+        write("u42", webhook("order-1", "{}"));
+        ClaimedRun run = runtime.claim(ClaimRequest.any("worker-1")).require();
+        runtime.nack(run.runId(), new NackRequest(run.epoch(), "downstream timeout", null)).require();
+
+        // Nothing is claimable anywhere, but time alone will change that, so the claimer is told when.
+        ApiResult<ClaimedRun> early = runtime.claim(ClaimRequest.any("worker-2"));
+        assertThat(early.status()).isEqualTo(204);
+        assertThat(early.header(RunController.HEADER_REASON)).contains("backoff");
+        assertThat(early.header(RunController.HEADER_RETRY_AFTER_MS)).contains("2000");
+
+        // A claimer that does not serve the run's lane has nothing to wait for.
+        ApiResult<ClaimedRun> otherLane = runtime.claim(ClaimRequest.any("worker-2").withLanes(Lane.BATCH));
+        assertThat(otherLane.header(RunController.HEADER_REASON)).contains("empty");
+        assertThat(otherLane.header(RunController.HEADER_RETRY_AFTER_MS)).isEmpty();
+
+        clock.advance(Duration.ofSeconds(2));
+        ClaimedRun again = runtime.claim(ClaimRequest.any("worker-2")).require();
+        assertThat(again.runId()).isEqualTo(run.runId());
+        assertThat(again.kind()).isEqualTo(ClaimedRun.KIND_REDELIVERY);
     }
 
     @Test

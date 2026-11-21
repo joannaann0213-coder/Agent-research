@@ -34,11 +34,13 @@ You need JDK 21, Maven 3.9 and PostgreSQL 16.
 cd proactive-agent
 
 # 1. Database: starts a local cluster and creates role "inbox" and databases inbox_dev / inbox_test.
-#    To use another PostgreSQL, set INBOX_JDBC_URL, INBOX_DB_USER and INBOX_DB_PASSWORD instead.
+#    To use another PostgreSQL, skip this and set INBOX_JDBC_URL, INBOX_DB_USER and INBOX_DB_PASSWORD
+#    for the service, and INBOX_TEST_JDBC_URL, INBOX_TEST_DB_USER and INBOX_TEST_DB_PASSWORD for the tests.
 scripts/pg-local.sh
 
-# 2. Build and run all tests (about a minute).
-mvn verify
+# 2. Build, run all tests and install the modules in the local Maven repository, where
+#    scripts/run-worker.sh finds them (about a minute).
+mvn install
 
 # 3. Start the service with three callers: a producer, the runtime and an operator.
 export INBOX_AUTH_CLIENTS_0_ID=order-bot  INBOX_AUTH_CLIENTS_0_SECRET=order-bot-secret \

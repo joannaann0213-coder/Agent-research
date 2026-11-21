@@ -6,7 +6,7 @@
 #
 # Useful options:  --max-runs N   --wait-ms MILLIS   --behaviour reply|reply-then-hang
 # INBOX_URL selects the server (default http://127.0.0.1:8080); OUTBOX_DIR the outbox directory.
-# Build first with:  mvn -q -DskipTests -DskipITs install
+# Build and install the modules first:  mvn install   (add -DskipTests to skip the tests)
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
@@ -16,12 +16,25 @@ fi
 client_id="$1"; secret="$2"; shift 2
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+classes="$root/inbox-client/target/classes"
 classpath_file="$root/inbox-client/target/worker.classpath"
+hint="build and install the modules first: (cd '$root' && mvn install)"
+
+if [ ! -d "$classes" ]; then
+  echo "run-worker.sh: $classes does not exist; $hint" >&2
+  exit 1
+fi
 if [ ! -f "$classpath_file" ]; then
-  mvn -q -f "$root/pom.xml" -pl inbox-client dependency:build-classpath -Dmdep.outputFile="$classpath_file" >/dev/null
+  # The client's dependencies, inbox-api among them, are resolved from the local Maven repository.
+  if ! mvn -q -f "$root/pom.xml" -pl inbox-client dependency:build-classpath \
+      -Dmdep.outputFile="$classpath_file" >&2; then
+    rm -f "$classpath_file"
+    echo "run-worker.sh: could not resolve the worker's classpath; $hint" >&2
+    exit 1
+  fi
 fi
 
-exec java -cp "$root/inbox-client/target/classes:$(cat "$classpath_file")" \
+exec java -cp "$classes:$(cat "$classpath_file")" \
   dev.agentflow.inbox.client.ScriptedWorkerMain \
   --base-url "${INBOX_URL:-http://127.0.0.1:8080}" \
   --client-id "$client_id" --secret "$secret" \

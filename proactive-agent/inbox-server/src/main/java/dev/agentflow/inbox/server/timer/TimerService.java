@@ -40,7 +40,7 @@ public class TimerService {
 
     static final String TIMER_COLUMNS = """
             timer_id, tenant_id, inbox_id, kind, state, fire_at, cron_expr, time_zone, timer_key, event_type,
-            merge_key, lane, payload, fired_event_id, fired_at, catch_up, missed_count, created_at
+            merge_key, lane, payload, fired_event_id, fired_at, created_at
             """;
 
     /** A timer and whether this call created it. */
@@ -202,7 +202,6 @@ public class TimerService {
                 rs.getString("kind"), rs.getString("state"), Db.instant(rs, "fire_at"), rs.getString("cron_expr"),
                 rs.getString("time_zone"), rs.getString("timer_key"), rs.getString("event_type"),
                 rs.getString("merge_key"), Lane.fromWire(rs.getString("lane")), json.readTree(rs.getString("payload")),
-                rs.getString("fired_event_id"), Db.instant(rs, "fired_at"), rs.getBoolean("catch_up"),
-                rs.getInt("missed_count"), Db.instant(rs, "created_at"));
+                rs.getString("fired_event_id"), Db.instant(rs, "fired_at"), Db.instant(rs, "created_at"));
     }
 }
