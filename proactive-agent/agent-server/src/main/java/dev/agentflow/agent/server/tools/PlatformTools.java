@@ -16,6 +16,9 @@ public final class PlatformTools {
     public static final String READ_EVENTS = "read_events";
     public static final String NOTIFY_USER = "notify_user";
     public static final String ASK_USER = "ask_user";
+    public static final String SCHEDULE_FOLLOWUP = "schedule_followup";
+
+    public static final int MAX_NOTE = 1000;
 
     public static final int MAX_QUESTION = 2000;
     public static final int MAX_OPTIONS = 10;
@@ -86,6 +89,33 @@ public final class PlatformTools {
                                     }
                                   },
                                   "required": ["question"],
+                                  "additionalProperties": false
+                                }""")),
+                new AgentSpec.CustomTool(SCHEDULE_FOLLOWUP, """
+                        Sets a follow-up for yourself. At the time you give, you are woken up in the background, \
+                        here, with the note you leave now, and can check on something or tell the user with \
+                        notify_user. Use it for what you promised to do later, or to look again at something that \
+                        takes time. It runs once; what repeats is set up by the application. Give either \
+                        in_minutes or at.""",
+                        Json.STORED.readTree("""
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "note": {
+                                      "type": "string",
+                                      "description": "For yourself: what you are to do then, and what you need to know to do it. At most 1000 characters."
+                                    },
+                                    "in_minutes": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "description": "How many minutes from now. At most 30 days."
+                                    },
+                                    "at": {
+                                      "type": "string",
+                                      "description": "When, in ISO-8601 with a time zone, for example 2026-11-23T09:00:00+08:00."
+                                    }
+                                  },
+                                  "required": ["note"],
                                   "additionalProperties": false
                                 }""")));
     }

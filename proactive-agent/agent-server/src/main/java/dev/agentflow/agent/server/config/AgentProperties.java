@@ -19,6 +19,7 @@ public class AgentProperties {
     private final Sweep sweep = new Sweep();
     private final Notify notify = new Notify();
     private final Actions actions = new Actions();
+    private final Followups followups = new Followups();
     private final Scheduling scheduling = new Scheduling();
 
     public Admin getAdmin() {
@@ -59,6 +60,10 @@ public class AgentProperties {
 
     public Actions getActions() {
         return actions;
+    }
+
+    public Followups getFollowups() {
+        return followups;
     }
 
     public Scheduling getScheduling() {
@@ -461,6 +466,43 @@ public class AgentProperties {
 
         public void setTtl(Duration ttl) {
             this.ttl = ttl;
+        }
+    }
+
+    /** The follow-ups an agent sets itself. */
+    public static class Followups {
+
+        /** How many follow-ups may come one after the other, each set by the turn of the one before. */
+        private int maxChain = 5;
+
+        /** How many follow-ups may wait on one line at a time. */
+        private int maxPending = 5;
+
+        /** How far ahead a follow-up may be set. */
+        private Duration maxDelay = Duration.ofDays(30);
+
+        public int getMaxChain() {
+            return maxChain;
+        }
+
+        public void setMaxChain(int maxChain) {
+            this.maxChain = maxChain;
+        }
+
+        public int getMaxPending() {
+            return maxPending;
+        }
+
+        public void setMaxPending(int maxPending) {
+            this.maxPending = maxPending;
+        }
+
+        public Duration getMaxDelay() {
+            return maxDelay;
+        }
+
+        public void setMaxDelay(Duration maxDelay) {
+            this.maxDelay = maxDelay;
         }
     }
 

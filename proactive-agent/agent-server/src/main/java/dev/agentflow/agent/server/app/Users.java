@@ -56,6 +56,13 @@ public class Users {
                 .query(Long.class).single();
     }
 
+    /** The position of the user's latest message, 0 when there is none. */
+    public long lastSeq(String appId, String userId) {
+        return jdbc.sql("SELECT next_seq - 1 FROM app_user WHERE app_id = :appId AND user_id = :userId")
+                .param("appId", appId).param("userId", userId)
+                .query(Long.class).optional().orElse(0L);
+    }
+
     /** Takes the lock of the user's row, so that everything about this user happens one at a time until the transaction ends. */
     public void lock(String appId, String userId) {
         jdbc.sql("SELECT 1 FROM app_user WHERE app_id = :appId AND user_id = :userId FOR UPDATE")

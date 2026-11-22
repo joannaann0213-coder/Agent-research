@@ -32,6 +32,8 @@ tags:
     description: What the application's own systems tell the agent about a user, so that the agent can speak first.
   - name: Actions
     description: What the agent waits for people to decide. Approvals of tool calls, and questions to the user.
+  - name: Schedules
+    description: What the agent is to do at a given time, once or again and again.
   - name: Users
     description: The end users of an application, and the tokens their clients use.
   - name: Admin
@@ -351,6 +353,155 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/conversations/{conversation_id}/stop:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - name: conversation_id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Conversations]
+      operationId: stopConversation
+      summary: Stop the reply
+      description: |
+        Stops the agent's reply in a conversation. The user's messages so far are not answered any
+        more: a reply under way stops a moment later and is dropped, and one that has not begun does
+        not begin. What the conversation waits for people to decide is withdrawn. A message sent after
+        the stop is answered as usual. Other conversations and work in the background go on.
+
+        An API key may call this for any user of its application, a user token for its own user.
+      responses:
+        '202':
+          description: The stop is on record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StopResult'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/schedules:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Schedules]
+      operationId: createSchedule
+      summary: Set up a schedule
+      description: |
+        Has the agent do something for the user at a given time: once, at `at`, or again and again, on
+        a `cron` rule read in the user's `time_zone`. When the time comes the agent works on it in the
+        background, with the application's `instructions`, and tells the user with a notification if
+        it finds that it should.
+
+        Schedules of the same `subject` are handled by an agent that remembers the earlier runs, and
+        share it with events of that subject. A schedule runs at most once a minute. After an outage,
+        a repeating schedule runs once for what it missed, and the agent is told that it comes late.
+
+        The call is idempotent on `schedule_id`: the same id with the same content returns the
+        schedule with 200; with other content it is a 409.
+
+        Only an API key may set a schedule up: the agent takes its instructions as the application's.
+        The agent also sets follow-ups for itself, which are listed here too.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScheduleRequest'
+            example:
+              schedule_id: morning-brief
+              name: Morning brief
+              instructions: Look at the user's open orders and tell them about anything that needs them today.
+              cron: 0 8 * * 1-5
+              time_zone: Asia/Shanghai
+              subject: orders
+      responses:
+        '201':
+          description: Set up.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleView'
+        '200':
+          description: Set up before, with the same content.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScheduleView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: |
+            `conflict`: the `schedule_id` was already used for another schedule of the user, or the
+            subject is handled by another agent than the one named.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Schedules]
+      operationId: listSchedules
+      summary: The user's schedules
+      description: |
+        Returns the user's active schedules, oldest first: the application's, and the follow-ups the
+        agent set itself. An API key or the user's own token may call this.
+      responses:
+        '200':
+          description: The schedules.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SchedulePage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/schedules/{schedule_id}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - name: schedule_id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      tags: [Schedules]
+      operationId: cancelSchedule
+      summary: Cancel a schedule
+      description: |
+        The schedule does not run again. Cancelling one that ended already changes nothing. An API key
+        or the user's own token may call this, so that users can stop what the agent does for them.
+      responses:
+        '204':
+          description: Cancelled.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
 
@@ -1121,6 +1272,115 @@ components:
         deduped:
           type: boolean
           description: True when an event with this id had been accepted before; that one is returned.
+
+    StopResult:
+      type: object
+      required: [conversation_id, stopped_through, in_progress]
+      properties:
+        conversation_id:
+          type: string
+        stopped_through:
+          type: integer
+          format: int64
+          description: The user's messages up to this `seq` are not answered any more.
+        in_progress:
+          type: boolean
+          description: Whether a reply was under way, or messages were waiting for one.
+
+    CreateScheduleRequest:
+      type: object
+      additionalProperties: false
+      required: [name, instructions]
+      properties:
+        schedule_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$'
+          description: The caller's id for the schedule, unique for the user. The service makes one up when it is absent.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: A short name, for lists.
+        instructions:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: What the agent is to do when the time comes. The agent takes them as the application's instructions.
+        at:
+          type: string
+          format: date-time
+          description: When, for a schedule that runs once. In the future, at most 366 days ahead.
+        cron:
+          type: string
+          description: When, for a schedule that repeats. Five fields, minute first, for example `0 8 * * 1-5`.
+        time_zone:
+          type: string
+          description: The IANA zone the cron rule is read in, for example `Asia/Shanghai`. UTC when absent. Only with `cron`.
+        subject:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$'
+          description: The line the agent works on, as for events. `schedule-<schedule_id>` when absent.
+        agent:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'
+          description: The key of the agent that does it. `default` when absent.
+        conversation_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$'
+          description: The conversation in which the user is told, if the agent tells them. `default` when absent.
+
+    ScheduleView:
+      type: object
+      required: [schedule_id, created_by, kind, agent, conversation_id, state, created_at]
+      properties:
+        schedule_id:
+          type: string
+        created_by:
+          type: string
+          enum: [app, agent]
+          description: '`agent` for a follow-up the agent set itself.'
+        kind:
+          type: string
+          enum: [once, cron]
+        name:
+          type: string
+        instructions:
+          type: string
+        note:
+          type: string
+          description: For a follow-up, the agent's note to itself.
+        at:
+          type: string
+          format: date-time
+        cron:
+          type: string
+        time_zone:
+          type: string
+        subject:
+          type: string
+          description: The subject it runs on. Absent for a follow-up in a conversation.
+        agent:
+          type: string
+        conversation_id:
+          type: string
+        state:
+          type: string
+          enum: [active, done, cancelled]
+        last_fired_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    SchedulePage:
+      type: object
+      required: [schedules]
+      properties:
+        schedules:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScheduleView'
 
     ActionTool:
       type: object

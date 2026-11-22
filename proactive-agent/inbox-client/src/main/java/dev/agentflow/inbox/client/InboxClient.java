@@ -109,6 +109,21 @@ public class InboxClient {
         return delete("/v1/inbox/" + enc(inboxId) + "/timers/" + enc(timerId), Void.class);
     }
 
+    /** As {@link #createTimer(String, CreateTimerRequest)} for a platform-scope producer, which must name the tenant. */
+    public ApiResult<TimerView> createTimer(String tenantId, String inboxId, CreateTimerRequest request) {
+        return post("/v1/inbox/" + enc(inboxId) + "/timers?tenant_id=" + enc(tenantId), request, TimerView.class);
+    }
+
+    /** As {@link #getTimer(String, String)} for a platform-scope caller, which must name the tenant. */
+    public ApiResult<TimerView> getTimer(String tenantId, String inboxId, String timerId) {
+        return get("/v1/inbox/" + enc(inboxId) + "/timers/" + enc(timerId) + "?tenant_id=" + enc(tenantId), TimerView.class);
+    }
+
+    /** As {@link #cancelTimer(String, String)} for a platform-scope producer, which must name the tenant. */
+    public ApiResult<Void> cancelTimer(String tenantId, String inboxId, String timerId) {
+        return delete("/v1/inbox/" + enc(inboxId) + "/timers/" + enc(timerId) + "?tenant_id=" + enc(tenantId), Void.class);
+    }
+
     // ---- runtime --------------------------------------------------------------------------------
 
     /** 200 with a run, or 204 (body null) when nothing is claimable; see the X-Inbox-Reason header. */

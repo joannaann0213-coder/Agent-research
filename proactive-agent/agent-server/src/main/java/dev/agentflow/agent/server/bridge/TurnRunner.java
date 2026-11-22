@@ -23,6 +23,7 @@ import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.events.AppEvents;
 import dev.agentflow.agent.server.events.AppEvents.AppEvent;
 import dev.agentflow.agent.server.profile.AgentProfiles;
+import dev.agentflow.agent.server.schedules.Schedules;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.agent.server.tools.PlatformTools;
 import dev.agentflow.inbox.api.AckRequest;
@@ -133,6 +134,7 @@ public class TurnRunner {
     private final Threads threads;
     private final Messages messages;
     private final AppEvents appEvents;
+    private final Schedules schedules;
     private final Actions actions;
     private final Users users;
     private final TurnTools tools;
@@ -145,14 +147,15 @@ public class TurnRunner {
     private final Duration actionTtl;
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
-            Actions actions, Users users, TurnTools tools, AgentProfiles profiles, TransactionTemplate tx, AgentClock clock,
-            Patience patience, TurnHooks hooks, AgentProperties properties) {
+            Schedules schedules, Actions actions, Users users, TurnTools tools, AgentProfiles profiles, TransactionTemplate tx,
+            AgentClock clock, Patience patience, TurnHooks hooks, AgentProperties properties) {
         this.cma = cma;
         this.inbox = inbox;
         this.turns = turns;
         this.threads = threads;
         this.messages = messages;
         this.appEvents = appEvents;
+        this.schedules = schedules;
         this.actions = actions;
         this.users = users;
         this.tools = tools;
@@ -193,9 +196,11 @@ public class TurnRunner {
 
     private Settlement work(ClaimedRun run, RunLease lease) {
         boolean resumed = ClaimedRun.KIND_RESUME.equals(run.kind());
-        if (!resumed && !run.events().isEmpty()
-                && run.events().stream().allMatch(event -> Actions.DOORBELL.equals(event.type()))) {
-            // Rings that came after the turn they were to wake had ended. There is nothing to do.
+        Work fresh = resumed ? null : workOf(run);
+        if (!resumed && fresh == null && !run.events().isEmpty() && run.events().stream()
+                .allMatch(event -> Actions.DOORBELL.equals(event.type()) || Schedules.TIMER_EVENT.equals(event.type()))) {
+            // Rings that came after the turn they were to wake had ended, or a schedule that was cancelled
+            // after it fell due. There is nothing to do.
             return new Settlement.Done();
         }
         Turn turn = turns.open(run, config.getDeadline()).orElseThrow(() -> new StaleTurnException(run.runId(), run.epoch()));
@@ -207,10 +212,15 @@ public class TurnRunner {
         }
 
         // A resumed run is handed only what woke it. What the turn works on is on record since its first delivery.
-        Work work = turn.work() != null ? load(run, turn.work()) : workOf(run);
+        Work work = turn.work() != null ? load(run, turn.work()) : fresh;
         if (work == null || run.mergeKey() == null
                 || threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).isEmpty()) {
             return fail(run, "the run holds nothing this service can work on");
+        }
+        if (work instanceof Work.Chat chat && chat.messages().isEmpty()) {
+            // The user stopped the reply before the turn began.
+            turns.finish(turn, Turns.DONE, "stopped", null);
+            return new Settlement.Done();
         }
         if (turn.work() == null) {
             turn = turns.work(turn, stored(work));
@@ -298,6 +308,10 @@ public class TurnRunner {
                 Reading reading = new Reading(turn.inputEventId());
                 after(tail.stored(), turn.boundaryEventId(), turn.boundaryAt()).forEach(event -> see(thread, reading, event));
                 if (!reading.inputSeen) {
+                    if (stopped(thread, work)) {
+                        turns.finish(turn, Turns.DONE, "stopped", null);
+                        return new Settlement.Done();
+                    }
                     String inputId = sendInput(turn, thread, input(thread, work));
                     hooks.at(Point.INPUT_SENT, run);
                     turns.input(turn, inputId);
@@ -311,7 +325,11 @@ public class TurnRunner {
                     if (!clock.now().isBefore(deadline)) {
                         return giveUp(run, turn, thread);
                     }
-                    if (answerWaitingCalls(run, turn, thread, work, reading)) {
+                    if (!reading.stopping && stopped(thread, work)) {
+                        reading.stopping = true;
+                        stop(run, thread);
+                    }
+                    if (!reading.stopping && answerWaitingCalls(run, turn, thread, work, reading)) {
                         return park(run, turn);
                     }
                     patience.next(tail, config.getPoll()).ifPresent(event -> see(thread, reading, event));
@@ -433,6 +451,7 @@ public class TurnRunner {
     private Work workOf(ClaimedRun run) {
         List<MessageView> said = new ArrayList<>();
         List<AppEvent> happened = new ArrayList<>();
+        List<Work.Due> due = new ArrayList<>();
         for (ClaimedEvent event : run.events()) {
             if (Messages.EVENT_TYPE.equals(event.type())) {
                 String conversationId = event.payload().path("conversation_id").asString(null);
@@ -445,13 +464,84 @@ public class TurnRunner {
                 if (eventId != null) {
                     appEvents.find(run.tenantId(), run.inboxId(), eventId).ifPresent(happened::add);
                 }
+            } else if (Schedules.TIMER_EVENT.equals(event.type())) {
+                // A timer of a schedule. One that was cancelled after it fell due is left out.
+                String scheduleId = event.payload().path("payload").path("schedule_id").asString(null);
+                if (scheduleId != null) {
+                    Instant dueAt = parseInstant(event.payload().path("fire_at").asString(null), event.occurredAt());
+                    boolean late = event.payload().path("catch_up").asBoolean(false);
+                    schedules.find(run.tenantId(), run.inboxId(), scheduleId)
+                            .filter(schedule -> Schedules.ACTIVE.equals(schedule.state()))
+                            .ifPresent(schedule -> due.add(new Work.Due(schedule, dueAt, late)));
+                }
             }
         }
         if (!said.isEmpty()) {
-            said.sort(Comparator.comparingLong(MessageView::seq));
-            return new Work.Chat(said);
+            // Messages the user stopped before this turn began are not answered.
+            long stoppedThrough = run.mergeKey() == null ? 0 : threads.stoppedThrough(run.tenantId(), run.inboxId(), run.mergeKey());
+            return new Work.Chat(said.stream().filter(message -> message.seq() > stoppedThrough)
+                    .sorted(Comparator.comparingLong(MessageView::seq)).toList());
         }
-        return happened.isEmpty() ? null : new Work.Task(happened);
+        return happened.isEmpty() && due.isEmpty() ? null : new Work.Task(happened, due);
+    }
+
+    private static Instant parseInstant(String text, Instant otherwise) {
+        try {
+            return text == null ? otherwise : Instant.parse(text);
+        } catch (java.time.format.DateTimeParseException e) {
+            return otherwise;
+        }
+    }
+
+    /** Whether the user stopped the reply that this turn is for. Only a conversation's reply can be stopped. */
+    private boolean stopped(Threads.Thread thread, Work work) {
+        return work instanceof Work.Chat chat && !chat.messages().isEmpty()
+                && threads.stoppedThrough(thread.appId(), thread.userId(), thread.mergeKey()) >= chat.messages().getLast().seq();
+    }
+
+    /** Interrupts the session for a stop. When that fails, the turn reads on to its end all the same, and its reply is dropped. */
+    private void stop(ClaimedRun run, Threads.Thread thread) {
+        log.info("run {}: the user stopped the reply", run.runId());
+        try {
+            platform(() -> cma.send(thread.sessionId(), List.of(new Outgoing.Interrupt())));
+        } catch (CmaException e) {
+            log.warn("run {}: the session could not be interrupted for a stop: {}", run.runId(), e.getMessage());
+        }
+    }
+
+    /**
+     * The notice that starts a turn in the background. What happened in the application's systems,
+     * and the agent's notes to itself, are read with read_events. The instructions of a schedule the
+     * application set up are the application's, and are given here.
+     */
+    private static String background(Work.Task task) {
+        StringBuilder text = new StringBuilder("[From the service that runs you, not from the user. The user is not here and "
+                + "sees nothing of what you write in this turn.]\n");
+        int events = task.events().size();
+        int followups = task.followups().size();
+        if (events > 0 && followups == 0) {
+            text.append(events == 1 ? "An event from the application's systems is" : events + " events from the application's systems are")
+                    .append(" waiting for you. Call read_events to get ").append(events == 1 ? "it" : "them")
+                    .append(", then decide what to do.");
+        } else if (events == 0 && followups > 0) {
+            text.append(followups == 1 ? "A follow-up you set for yourself is due" : followups + " follow-ups you set for yourself are due")
+                    .append(". Call read_events to see ").append(followups == 1 ? "your note" : "your notes")
+                    .append(", then decide what to do.");
+        } else if (events > 0) {
+            text.append(events == 1 ? "An event from the application's systems is" : events + " events from the application's systems are")
+                    .append(" waiting for you, and ").append(followups == 1 ? "a follow-up you set for yourself is due"
+                            : followups + " follow-ups you set for yourself are due")
+                    .append(". Call read_events to get them, then decide what to do.");
+        }
+        for (Work.Due item : task.scheduled()) {
+            text.append(text.charAt(text.length() - 1) == '\n' ? "" : "\n")
+                    .append("It is time for \"").append(item.schedule().name()).append("\", which the application scheduled")
+                    .append(item.late() ? " for " + item.dueAt() + "; it comes late, because the service was not running then"
+                            : "")
+                    .append(". The application's instructions for it: ").append(item.schedule().instructions());
+        }
+        return text.append("\nIf the user needs to know or to do something, tell them with notify_user. If not, end the turn "
+                + "without it.").toString();
     }
 
     /** What the turn works on, for its row: the ids of the messages or events, not what they say. */
@@ -468,6 +558,9 @@ public class TurnRunner {
                 stored.put("kind", "task");
                 ArrayNode list = stored.putArray("events");
                 task.events().forEach(event -> list.add(event.eventId()));
+                ArrayNode due = stored.putArray("due");
+                task.due().forEach(item -> due.addObject().put("schedule_id", item.schedule().scheduleId())
+                        .put("due_at", item.dueAt().toString()).put("late", item.late()));
             }
         }
         return stored;
@@ -487,7 +580,12 @@ public class TurnRunner {
         for (JsonNode eventId : stored.path("events")) {
             appEvents.find(run.tenantId(), run.inboxId(), eventId.asString()).ifPresent(happened::add);
         }
-        return happened.isEmpty() ? null : new Work.Task(happened);
+        List<Work.Due> due = new ArrayList<>();
+        for (JsonNode item : stored.path("due")) {
+            schedules.find(run.tenantId(), run.inboxId(), item.path("schedule_id").asString()).ifPresent(schedule ->
+                    due.add(new Work.Due(schedule, Instant.parse(item.path("due_at").asString()), item.path("late").asBoolean())));
+        }
+        return happened.isEmpty() && due.isEmpty() ? null : new Work.Task(happened, due);
     }
 
     /**
@@ -501,15 +599,7 @@ public class TurnRunner {
     private String input(Threads.Thread thread, Work work) {
         return switch (work) {
             case Work.Chat chat -> said(thread, chat.messages());
-            case Work.Task task -> {
-                int count = task.events().size();
-                yield "[From the service that runs you, not from the user. The user is not here and sees nothing of what "
-                        + "you write in this turn.]\n"
-                        + (count == 1 ? "An event from the application's systems is" : count + " events from the application's systems are")
-                        + " waiting for you. Call read_events to get " + (count == 1 ? "it" : "them")
-                        + ", then decide what to do. If the user needs to know or to do something, tell them with "
-                        + "notify_user. If not, end the turn without it.";
-            }
+            case Work.Task task -> background(task);
         };
     }
 
@@ -801,6 +891,10 @@ public class TurnRunner {
             String outcome;
             String note = null;
             switch (work) {
+                case Work.Chat chat when reading.stopping -> {
+                    // The user stopped the reply: what the agent wrote is not given to them.
+                    outcome = "stopped";
+                }
                 case Work.Chat chat -> {
                     // What the agent wrote last is its answer to the user.
                     if (wrote) {
@@ -817,6 +911,8 @@ public class TurnRunner {
                     boolean notified = messages.notificationsOf(thread.appId(), thread.userId(), run.runId()) > 0;
                     outcome = notified ? "notified" : refused ? "refused" : "silent";
                     note = !wrote ? null : last.length() <= NOTE_CHARS ? last : last.substring(0, NOTE_CHARS) + "…";
+                    schedules.fired(thread.appId(), thread.userId(),
+                            task.due().stream().map(item -> item.schedule().scheduleId()).toList());
                 }
             }
             if (reading.lastEventId != null) {
@@ -955,6 +1051,8 @@ public class TurnRunner {
         private Instant lastEventAt;
         /** The position of the last notification that an answer of read_events told the session about, in this delivery. */
         private Long syncedTo;
+        /** The user stopped the reply; the session has been told to stop. */
+        private boolean stopping;
 
         Reading(String inputId) {
             this.inputId = inputId;

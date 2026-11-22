@@ -30,10 +30,11 @@ public class Threads {
      * @param sessionAgent the agent version the session was created on, or {@code null}
      * @param lastEventId the last event of the session that a finished turn has seen, or {@code null}
      * @param syncedSeq for a conversation: the position of the last notification its session has read
+     * @param stoppedThrough for a conversation: the user's messages up to this position are not answered any more
      */
     public record Thread(String appId, String userId, String mergeKey, String kind, String conversationId,
             String agentKey, int generation, String sessionId, AgentRef sessionAgent, String lastEventId,
-            Instant lastEventAt, long syncedSeq) {
+            Instant lastEventAt, long syncedSeq, long stoppedThrough) {
 
         public boolean chat() {
             return CHAT.equals(kind);
@@ -87,7 +88,7 @@ public class Threads {
     public Optional<Thread> find(String appId, String userId, String mergeKey) {
         return jdbc.sql("""
                 SELECT app_id, user_id, merge_key, kind, conversation_id, agent_key, generation, cma_session_id,
-                       cma_agent_id, cma_agent_version, last_event_id, last_event_at, synced_seq
+                       cma_agent_id, cma_agent_version, last_event_id, last_event_at, synced_seq, stopped_through
                   FROM thread WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
                 """)
                 .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
@@ -143,6 +144,24 @@ public class Threads {
                 .update();
     }
 
+    /** Stops the conversation's messages up to position {@code seq}: they are not answered any more. */
+    public void stopThrough(Thread thread, long seq) {
+        jdbc.sql("""
+                UPDATE thread SET stopped_through = GREATEST(stopped_through, :seq), updated_at = :now
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
+                """)
+                .param("seq", seq).param("now", Db.ts(clock.now())).param("appId", thread.appId())
+                .param("userId", thread.userId()).param("mergeKey", thread.mergeKey())
+                .update();
+    }
+
+    /** How far the conversation's messages are stopped, as it stands now. */
+    public long stoppedThrough(String appId, String userId, String mergeKey) {
+        return jdbc.sql("SELECT stopped_through FROM thread WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey")
+                .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
+                .query(Long.class).optional().orElse(0L);
+    }
+
     /** Notes that the conversation's session has read the notifications up to position {@code seq}. */
     public void synced(Thread thread, long seq) {
         jdbc.sql("""
@@ -173,6 +192,7 @@ public class Threads {
         return new Thread(rs.getString("app_id"), rs.getString("user_id"), rs.getString("merge_key"), rs.getString("kind"),
                 rs.getString("conversation_id"), rs.getString("agent_key"), rs.getInt("generation"),
                 rs.getString("cma_session_id"), agentId == null ? null : new AgentRef(agentId, rs.getInt("cma_agent_version")),
-                rs.getString("last_event_id"), Db.instant(rs, "last_event_at"), rs.getLong("synced_seq"));
+                rs.getString("last_event_id"), Db.instant(rs, "last_event_at"), rs.getLong("synced_seq"),
+                rs.getLong("stopped_through"));
     }
 }
