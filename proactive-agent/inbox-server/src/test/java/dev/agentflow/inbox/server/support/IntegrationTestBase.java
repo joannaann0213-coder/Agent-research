@@ -6,6 +6,8 @@ import dev.agentflow.inbox.api.EventSource;
 import dev.agentflow.inbox.api.WriteEventRequest;
 import dev.agentflow.inbox.client.ApiResult;
 import dev.agentflow.inbox.client.InboxClient;
+import dev.agentflow.inbox.server.api.OpenApiController;
+import dev.agentflow.testkit.openapi.OpenApiTraffic;
 import java.net.URI;
 import java.time.Duration;
 import org.junit.jupiter.api.AfterEach;
@@ -19,7 +21,8 @@ import org.springframework.test.context.ActiveProfiles;
 
 /**
  * Base of every database test: the real service on a random port against a real PostgreSQL, with a
- * clock that only moves when the test moves it. Each test starts from empty tables.
+ * clock that only moves when the test moves it. Each test starts from empty tables, and ends with a
+ * check of the stored state and of the HTTP traffic it produced.
  *
  * <p>The database comes from {@code INBOX_TEST_JDBC_URL} (default: the local {@code inbox_test}
  * database that {@code scripts/pg-local.sh} creates).
@@ -28,6 +31,9 @@ import org.springframework.test.context.ActiveProfiles;
 @ActiveProfiles("test")
 @Import(TestBeans.class)
 public abstract class IntegrationTestBase {
+
+    /** The published API specification, and a record of the traffic the tests put through it. */
+    public static final OpenApiTraffic OPENAPI = OpenApiTraffic.forClasspathSpec(OpenApiController.SPECIFICATION);
 
     protected static final String ACME = "acme";
     protected static final String GLOBEX = "globex";
@@ -70,6 +76,12 @@ public abstract class IntegrationTestBase {
     @AfterEach
     void checkInvariants() {
         InvariantChecker.assertAll(jdbc);
+    }
+
+    /** Every request the test made, and every response it got, has to match the published specification. */
+    @AfterEach
+    void checkTrafficAgainstTheSpecification() {
+        OPENAPI.assertNoViolations();
     }
 
     /** One claim attempt on an inbox of tenant acme, without waiting. */

@@ -91,6 +91,7 @@ Health is at `/actuator/health` and metrics at `/actuator/prometheus`.
 | `inbox-api` | Wire types shared by server and clients, canonical JSON, request signing |
 | `inbox-server` | The service: write API, claim and run lifecycle, timers, replay, metrics |
 | `inbox-client` | Plain Java client, `ScriptedWorker`, stub outboxes, a command-line worker |
+| `openapi-testkit` | Test support: checks a service's HTTP traffic in tests against its OpenAPI document |
 
 ## Documentation
 
@@ -98,7 +99,7 @@ Health is at `/actuator/health` and metrics at `/actuator/prometheus`.
 | --- | --- |
 | [Architecture](docs/en/architecture.md) | The proactive agent as a whole and where the inbox sits |
 | [Event Inbox design](docs/en/event-inbox-design.md) | How the inbox is built: invariants, data model, claim rules, decisions |
-| [API](docs/en/api.md) | Every endpoint, request signing, error codes, the runtime contract |
+| [API](docs/en/api.md) | Every endpoint, request signing, error codes, the runtime contract, and where to get the OpenAPI document |
 | [Integration guide](docs/en/integration.md) | How to connect a connector (MCP-based systems included) and an agent, step by step, with Java and Python examples |
 | [Testing](docs/en/testing.md) | How to run the tests and which test proves which acceptance check |
 

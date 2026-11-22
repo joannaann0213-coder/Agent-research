@@ -1,0 +1,87 @@
+openapi: 3.0.3
+info:
+  title: Flawed
+  version: 1.0.0
+tags:
+  - name: Things
+security:
+  - Key: []
+  - Ghost: []
+paths:
+  /v1/things:
+    post:
+      tags: [Things]
+      operationId: createThing
+      summary: Create a thing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewThing'
+            example:
+              name: lamp
+              size: big
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Thing'
+              examples:
+                lamp:
+                  value:
+                    name: lamp
+  /v1/things/{thing_id}:
+    get:
+      tags: [Things, Misc]
+      operationId: createThing
+      responses:
+        '404':
+          description: No such thing.
+  /v1/boxes/{box_id}:
+    parameters:
+      - name: box_id
+        in: path
+        schema:
+          type: string
+      - name: shelf_id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      summary: Remove a box
+      responses:
+        '204':
+          description: Removed.
+components:
+  securitySchemes:
+    Key:
+      type: apiKey
+      in: header
+      name: X-Key
+    Spare:
+      type: apiKey
+      in: header
+      name: X-Spare
+  schemas:
+    NewThing:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        size:
+          type: integer
+    Thing:
+      type: object
+      required: [thing_id, name]
+      properties:
+        thing_id:
+          type: string
+        name:
+          type: string
+    Orphan:
+      type: object

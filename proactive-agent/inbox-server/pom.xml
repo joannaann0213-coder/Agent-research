@@ -58,6 +58,12 @@
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <dependency>
+      <!-- Checks the requests and responses of the integration tests against the API specification. -->
+      <groupId>dev.agentflow</groupId>
+      <artifactId>openapi-testkit</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

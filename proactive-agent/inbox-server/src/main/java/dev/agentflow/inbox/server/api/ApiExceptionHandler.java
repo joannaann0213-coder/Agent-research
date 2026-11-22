@@ -9,6 +9,7 @@ import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.transaction.TransactionException;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -54,10 +55,30 @@ public class ApiExceptionHandler {
                 "the event store is unavailable; retry with the same idempotency key");
     }
 
+    /**
+     * Everything else. A request that the web framework itself refuses before a controller sees it (a
+     * media type it cannot read, a response type the caller does not accept) is the caller's error and
+     * gets the same format as every other one; only what is left is an internal error.
+     */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ProblemDetail> handleUnexpected(Exception e) {
+        if (e instanceof ErrorResponse refused && refused.getStatusCode().is4xxClientError()) {
+            HttpStatus status = HttpStatus.resolve(refused.getStatusCode().value());
+            if (status != null) {
+                String detail = refused.getBody().getDetail();
+                return problem(status, codeFor(status), detail != null ? detail : status.getReasonPhrase());
+            }
+        }
         log.error("unexpected failure", e);
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, ProblemCodes.INTERNAL, "internal error");
+    }
+
+    private static String codeFor(HttpStatus status) {
+        return switch (status) {
+            case NOT_FOUND -> ProblemCodes.NOT_FOUND;
+            case CONTENT_TOO_LARGE -> ProblemCodes.PAYLOAD_TOO_LARGE;
+            default -> ProblemCodes.INVALID_REQUEST;
+        };
     }
 
     private static ResponseEntity<ProblemDetail> problem(HttpStatus status, String code, String detail) {

@@ -7,6 +7,19 @@ claims runs and ends them, and operators replay and configure. The examples on t
 responses captured from a running server. Which calls to make, in what order, when connecting a
 connector or an agent is in the [Integration guide](integration.md).
 
+## OpenAPI specification
+
+The same API is described by an OpenAPI 3.0 document, for tools that generate clients or import
+collections. A running service serves it at `GET /openapi.yaml`, without a signature. Its source is
+[`inbox-server/src/main/resources/openapi/inbox.yaml`](../../inbox-server/src/main/resources/openapi/inbox.yaml).
+
+```bash
+curl http://localhost:8080/openapi.yaml
+```
+
+The document cannot drift away from the service: the build checks every request and every response
+of the integration tests against it. See [Testing](testing.md#the-api-specification).
+
 ## Conventions
 
 - Field names are `snake_case`. A field without a value is left out, not sent as `null`. JSON that the
@@ -82,6 +95,7 @@ tenant is reported as 404.
 | 401 | `unauthenticated` | Missing, wrong or stale signature |
 | 403 | `forbidden` | The client's role does not allow this endpoint, or it named another tenant |
 | 404 | `not_found` | No such inbox, event, run or timer in this tenant |
+| 405, 406, 415 | `invalid_request` | The path does not allow the method, the caller accepts no JSON, or the body was not sent as JSON |
 | 409 | `idempotency_conflict` | The idempotency key was already used for a different event |
 | 409 | `lease_lost` | The run is no longer held under this epoch. Stop working on it |
 | 409 | `resume_key_in_use` | Another suspended run of this inbox waits for the same resume key |

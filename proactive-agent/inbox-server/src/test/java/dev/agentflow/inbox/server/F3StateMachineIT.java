@@ -13,6 +13,8 @@ import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.api.ProblemCodes;
 import dev.agentflow.inbox.api.RunOutcome;
 import dev.agentflow.inbox.api.RunView;
+import dev.agentflow.inbox.api.SteerRequest;
+import dev.agentflow.inbox.api.SuspendRequest;
 import dev.agentflow.inbox.api.TransitionView;
 import dev.agentflow.inbox.client.ApiResult;
 import dev.agentflow.inbox.server.api.RunController;
@@ -280,6 +282,32 @@ class F3StateMachineIT extends IntegrationTestBase {
         assertThat(runtime.ack(run.runId(), new AckRequest(run.epoch(), "maybe", 1, null)).status()).isEqualTo(400);
 
         assertThat(count("SELECT count(*) FROM event_transition WHERE reason = 'ack'")).isEqualTo(1);
+    }
+
+    @Test
+    void everyCallOnARunThatDoesNotExistIs404() {
+        String noSuchRun = "01NOSUCHRUN000000000000000";
+
+        assertThat(runtime.getRun(noSuchRun).status()).isEqualTo(404);
+        assertThat(runtime.heartbeat(noSuchRun, new HeartbeatRequest(1, null)).status()).isEqualTo(404);
+        assertThat(runtime.steer(noSuchRun, new SteerRequest(1, null)).status()).isEqualTo(404);
+        assertThat(runtime.nack(noSuchRun, new NackRequest(1, "gone", null)).status()).isEqualTo(404);
+        assertThat(runtime.suspend(noSuchRun, new SuspendRequest(1, "approval:1", 60L, null, null)).status()).isEqualTo(404);
+        ApiResult<RunOutcome> ack = runtime.ack(noSuchRun, AckRequest.done(1, 1));
+        assertThat(ack.status()).isEqualTo(404);
+        assertThat(ack.code()).isEqualTo(ProblemCodes.NOT_FOUND);
+    }
+
+    @Test
+    void aNackUnderAnotherEpochIsRefused_andTheRunStaysWithItsWorker() {
+        write("u42", webhook("order-1", "{}"));
+        ClaimedRun run = claim("worker-1", "u42").require();
+
+        ApiResult<RunOutcome> stale = runtime.nack(run.runId(), new NackRequest(run.epoch() + 1, "not mine", null));
+        assertThat(stale.status()).isEqualTo(409);
+        assertThat(stale.code()).isEqualTo(ProblemCodes.LEASE_LOST);
+        assertThat(runtime.getRun(run.runId()).require().status()).isEqualTo("active");
+        assertThat(runtime.ackDone(run).require().status()).isEqualTo("done");
     }
 
     @Test

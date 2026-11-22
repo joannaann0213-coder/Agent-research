@@ -44,6 +44,7 @@ mvn -pl inbox-server -am verify -Dit.test=F5BatchingIT \
 | 端到端 | `*E2E` | Failsafe，PostgreSQL | 设计里的一个场景，由 `ScriptedWorker` 代替 agent |
 | 测量 | `WriteLatencyPerf` | 只在需要时运行 | 对照设计目标测量写入延迟 |
 | 文档 | `DocsParityTest` | Surefire | 中英文文档结构一致，链接可用 |
+| 契约 | `OpenApiContractIT`、`OpenApiSchemaTest` | Failsafe 和 Surefire | 用运行中的服务和传输类型核对 OpenAPI 文档 |
 
 ## 测试如何保持确定性
 
@@ -67,6 +68,22 @@ mvn -pl inbox-server -am verify -Dit.test=F5BatchingIT \
 | 最后一条迁移记录就是事件的当前状态 | 状态与历史一致 |
 | 同一个收件箱里每个合并键最多一个 active run | 单飞 |
 | 数据库没有报告新的死锁 | 加锁顺序成立 |
+
+## API 规范
+
+OpenAPI 文档会拿服务本身来核对，所以它不可能描述一套并不存在的 API。改了 API 却没改文档，构建就会失败。
+
+| 检查 | 在哪里 | 什么情况会让构建失败 |
+| --- | --- | --- |
+| 流量 | 每个集成测试之后 | 响应不符合它的 schema、响应里有 schema 没列出的字段、返回了该操作没列出的状态码、被接受的请求不符合文档 |
+| 覆盖 | 最后运行的 `OpenApiContractIT` | 有操作没被任何测试调用；有列出的状态码没被任何测试触发；控制器有文档里没有的路径，或者反过来 |
+| 清单 | `OpenApiSchemaTest` | Schema 的字段与 `inbox-api` 里对应的传输类型不一致；枚举的取值与代码不一致 |
+| 自洽 | `OpenApiSchemaTest` | 引用了不存在的组件、有组件没被用到、有操作缺少 `operationId`、有示例不符合它自己的 schema |
+
+有两处是有意放宽的。被服务拒绝的请求不拿文档来核对，因为这类测试本来就是要发一个错误的请求；它的响应仍然要核对。覆盖检查也不要求每个操作都出现
+400、401 和 403，因为它们由公共层产生。
+
+这些检查放在 `openapi-testkit` 模块里。它对收件箱一无所知，本仓库的其他服务也会复用它。
 
 ## 验收项
 

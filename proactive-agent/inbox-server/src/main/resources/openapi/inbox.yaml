@@ -1,0 +1,1671 @@
+openapi: 3.0.3
+info:
+  title: Event Inbox API
+  version: 0.1.0
+  description: |
+    The Event Inbox is the inbound gate of a proactive agent. Producers append events to a per-user
+    inbox, the agent runtime claims ready events as a run and ends the run explicitly, and operators
+    replay and configure.
+
+    **202 means accepted, not processed.** An accepted event is durable and is delivered at least once.
+
+    Conventions:
+
+    - Field names are `snake_case`. A field without a value is left out, not sent as `null`.
+    - An unknown field in a request is an error (400).
+    - Timestamps are ISO-8601 in UTC.
+    - Errors are `application/problem+json` with a stable, machine-readable `code`.
+
+    Every `/v1` request is signed with HMAC-SHA256. The signature is computed with the client's secret
+    over these five lines, joined with a line feed: `v1`, the value of `X-Timestamp`, the upper-case
+    method, the path with its query string exactly as sent, and the hex SHA-256 of the body. It is sent
+    as `X-Signature: hmac-sha256=<hex>`. A timestamp more than 300 seconds from the server clock is
+    refused.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: Events
+    description: Producers write events and read back the ones they wrote.
+  - name: Timers
+    description: One-off and cron timers. A due timer writes a `timer.due` event into the inbox.
+  - name: Runs
+    description: The agent runtime claims a run and drives it to an explicit end.
+  - name: Admin
+    description: Operator tools. Everything here that changes state is written to the audit log.
+security:
+  - ClientId: []
+    Timestamp: []
+    Signature: []
+
+paths:
+  /v1/inbox/{inbox_id}/events:
+    parameters:
+      - $ref: '#/components/parameters/InboxId'
+      - $ref: '#/components/parameters/TenantId'
+    post:
+      tags: [Events]
+      operationId: writeEvent
+      summary: Write an event
+      description: |
+        Appends one event to the inbox. Role: `PRODUCER`.
+
+        The write is idempotent on `source_event_id`: the same key with the same content returns the
+        earlier event with `deduped: true`; the same key with different content is a 409. Retry a 503
+        or a network error with the same key.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WriteEventRequest'
+            example:
+              source: biz_webhook
+              source_event_id: order-1234-v7
+              type: order.paid.v1
+              merge_key: order:1234
+              payload: {order_id: '1234', amount: 299}
+      responses:
+        '202':
+          description: 'Accepted now, or accepted before (`deduped: true`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteEventResponse'
+              example:
+                event_id: 01M7WZZSCQPP6KTQPVXCBECVHK
+                deduped: false
+                status: pending
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: The idempotency key was already used for a different event (`idempotency_conflict`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Events]
+      operationId: listEvents
+      summary: List events
+      description: |
+        Lists the inbox's events in arrival order. Role: `PRODUCER` (sees the events it wrote) or
+        `OPERATOR` (sees every event of the tenant).
+      parameters:
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/EventStatus'
+        - name: source
+          in: query
+          schema:
+            $ref: '#/components/schemas/EventSource'
+        - name: from
+          in: query
+          description: Start of the range on the time received (inclusive).
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          description: End of the range on the time received (exclusive).
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: The events, oldest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EventView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/inbox/{inbox_id}/events/{event_id}:
+    parameters:
+      - $ref: '#/components/parameters/InboxId'
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/TenantId'
+    get:
+      tags: [Events]
+      operationId: getEvent
+      summary: Read an event with its history
+      description: |
+        Returns the event and every state change it went through, oldest first. A deferred event
+        that has not fired yet has the status `scheduled` and no history. Role: `PRODUCER` (own
+        events) or `OPERATOR`.
+      responses:
+        '200':
+          description: The event and its transitions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventDetail'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/inbox/{inbox_id}/timers:
+    parameters:
+      - $ref: '#/components/parameters/InboxId'
+      - $ref: '#/components/parameters/TenantId'
+    post:
+      tags: [Timers]
+      operationId: createTimer
+      summary: Create a timer
+      description: |
+        Creates a one-off or a cron timer. Creating a timer whose `timer_key` is already scheduled
+        returns that timer with 200. Role: `PRODUCER`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTimerRequest'
+            example:
+              kind: cron
+              cron: 0 9 * * 1-5
+              time_zone: Asia/Shanghai
+              timer_key: daily-report
+              payload: {report: daily}
+      responses:
+        '200':
+          description: The `timer_key` was already scheduled; the existing timer is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimerView'
+        '201':
+          description: The timer was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimerView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/inbox/{inbox_id}/timers/{timer_id}:
+    parameters:
+      - $ref: '#/components/parameters/InboxId'
+      - name: timer_id
+        in: path
+        required: true
+        schema:
+          type: string
+      - $ref: '#/components/parameters/TenantId'
+    get:
+      tags: [Timers]
+      operationId: getTimer
+      summary: Read a timer
+      description: |
+        Returns the timer as its latest occurrence shows it. Role: `PRODUCER` (own timers) or
+        `OPERATOR`.
+      responses:
+        '200':
+          description: The timer.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimerView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Timers]
+      operationId: cancelTimer
+      summary: Cancel a timer
+      description: |
+        Cancels the scheduled occurrence. A timer that is firing right now wins the race and fires.
+        Role: `PRODUCER` (own timers) or `OPERATOR` (any timer; written to the audit log).
+      responses:
+        '204':
+          description: Cancelled.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Nothing is scheduled under this id (`not_found`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/runs/claim:
+    post:
+      tags: [Runs]
+      operationId: claimRun
+      summary: Claim a run
+      description: |
+        Asks for one run to execute. Answers 200 with a run, or 204 when there is nothing to claim;
+        204 is ordinary scheduling, not an error. With `wait_ms` the server holds the request until
+        work arrives, a quiet window closes or a backoff ends. Role: `RUNTIME`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClaimRequest'
+            example:
+              worker_id: worker-1
+              accepts_steer: false
+              wait_ms: 20000
+      responses:
+        '200':
+          description: A run, with its events and a lease.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimedRun'
+        '204':
+          description: Nothing to claim.
+          headers:
+            X-Inbox-Reason:
+              description: Why there is nothing to claim.
+              schema:
+                type: string
+                enum: [empty, busy, window, backoff]
+            X-Inbox-Retry-After-Ms:
+              description: |
+                Present when time alone will change the answer: milliseconds until a quiet window
+                closes or a retry backoff ends.
+              schema:
+                type: integer
+                format: int64
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/runs/{run_id}:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    get:
+      tags: [Runs]
+      operationId: getRun
+      summary: Read a run
+      description: Returns the run with the events bound to it. Role `RUNTIME` or `OPERATOR`.
+      responses:
+        '200':
+          description: The run.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunView'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/runs/{run_id}/heartbeat:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      tags: [Runs]
+      operationId: heartbeatRun
+      summary: Renew the lease
+      description: |
+        Extends the lease to one lease duration from now, never beyond the cap fixed when the lease
+        was granted, and reports what is waiting behind the run. Role: `RUNTIME`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HeartbeatRequest'
+      responses:
+        '200':
+          description: The lease and the signals.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HeartbeatResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/LeaseLost'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/runs/{run_id}/steer:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      tags: [Runs]
+      operationId: steerRun
+      summary: Pull later events of the same merge key into the run
+      description: |
+        Binds waiting events of the run's merge key to the run and returns every event of the run
+        beyond `after_run_seq`, so a lost response can be fetched again. Nothing joins a run that did
+        not declare `accepts_steer` or has no merge key. Role: `RUNTIME`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SteerRequest'
+      responses:
+        '200':
+          description: The run's events beyond the cursor, in run order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SteerResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/LeaseLost'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/runs/{run_id}/ack:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      tags: [Runs]
+      operationId: ackRun
+      summary: End the run
+      description: |
+        Ends the run as `done`, or as `failed` for a final failure that must not be retried. Events up
+        to `last_run_seq` share the outcome; later ones go back to the queue. Repeating the call with
+        the same epoch returns the earlier outcome. Role: `RUNTIME`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AckRequest'
+            example:
+              epoch: 1
+              outcome: done
+              last_run_seq: 1
+      responses:
+        '200':
+          description: The run's state now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunOutcome'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/LeaseLost'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/runs/{run_id}/nack:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      tags: [Runs]
+      operationId: nackRun
+      summary: Ask for a retry
+      description: |
+        The same run, with the same events, is issued again after a backoff; at the attempt limit the
+        run and its events are `dead`. Role: `RUNTIME`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NackRequest'
+      responses:
+        '200':
+          description: The run's state now (`queued` with `next_attempt_at`, or `dead`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunOutcome'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/LeaseLost'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/runs/{run_id}/suspend:
+    parameters:
+      - $ref: '#/components/parameters/RunId'
+    post:
+      tags: [Runs]
+      operationId: suspendRun
+      summary: Suspend the run to wait for an answer
+      description: |
+        The run gives up its slot and its lease and waits for an event that carries `resume_key`. The
+        next claim hands the same run back with that event. A timeout is mandatory. Role: `RUNTIME`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SuspendRequest'
+            example:
+              epoch: 1
+              resume_key: approval:7788
+              timeout_seconds: 86400
+              on_timeout: finish
+              last_run_seq: 1
+      responses:
+        '200':
+          description: The run's state now (`suspended`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunOutcome'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: |
+            `lease_lost`: the run is no longer held under this epoch. `resume_key_in_use`: another
+            suspended run of this inbox waits for the same resume key.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/replay:
+    post:
+      tags: [Admin]
+      operationId: replayEvents
+      summary: Replay finished events
+      description: |
+        Puts finished events back in the queue. Exactly one selector is used: `event_id`; or
+        `inbox_id` with `from` and `to`; or `source` with `from` and `to`. A `failed` event replays
+        freely; `done` and `dead` need `force`; events in flight are never replayed. Role: `OPERATOR`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReplayRequest'
+            example:
+              tenant_id: acme
+              event_id: 01M7WZZSCQPP6KTQPVXCBECVHK
+              reason: customer asked for a re-run
+              operator: alice
+              dry_run: true
+      responses:
+        '200':
+          description: What was replayed and what was skipped.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReplayResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/events/{event_id}/dead:
+    parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+    post:
+      tags: [Admin]
+      operationId: deadLetterEvent
+      summary: Dead-letter a waiting event
+      description: |
+        Takes an event that is waiting unclaimed out of the queue. It can be replayed later with
+        `force`. Role: `OPERATOR`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeadLetterRequest'
+      responses:
+        '204':
+          description: The event is `dead`.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The event is not waiting unclaimed (`conflict`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/inboxes/{inbox_id}:
+    parameters:
+      - $ref: '#/components/parameters/InboxId'
+    get:
+      tags: [Admin]
+      operationId: getInboxStatus
+      summary: Read an inbox's limits and backlog
+      description: Returns the inbox's configuration and what is waiting. Role `OPERATOR`.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+      responses:
+        '200':
+          description: The inbox.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboxStatus'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/inboxes/{inbox_id}/config:
+    parameters:
+      - $ref: '#/components/parameters/InboxId'
+    put:
+      tags: [Admin]
+      operationId: configureInbox
+      summary: Replace an inbox's limits
+      description: |
+        Replaces the inbox's overrides; a field that is left out goes back to the service default.
+        Creates the inbox when it does not exist yet. Role: `OPERATOR`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InboxConfigRequest'
+            example:
+              tenant_id: acme
+              max_active_runs: 1
+              operator: alice
+              settings:
+                lanes:
+                  interactive: {quiet_window_ms: 3000}
+                batch: {max_events: 20}
+      responses:
+        '200':
+          description: The inbox after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboxStatus'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/audit:
+    get:
+      tags: [Admin]
+      operationId: listAudit
+      summary: List operator actions
+      description: |
+        Lists operator actions, newest first: `replay`, `manual_dead`, `inbox_config` and
+        `timer_cancel`. Role: `OPERATOR`.
+      parameters:
+        - $ref: '#/components/parameters/TenantId'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        '200':
+          description: The audit entries, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditEntry'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+components:
+  securitySchemes:
+    ClientId:
+      type: apiKey
+      in: header
+      name: X-Client-Id
+      description: The caller's client id.
+    Timestamp:
+      type: apiKey
+      in: header
+      name: X-Timestamp
+      description: Unix time in seconds; accepted within 300 seconds of the server clock.
+    Signature:
+      type: apiKey
+      in: header
+      name: X-Signature
+      description: '`hmac-sha256=` followed by the hex HMAC-SHA256 signature of the request.'
+
+  parameters:
+    InboxId:
+      name: inbox_id
+      in: path
+      required: true
+      description: The inbox, usually the id of the person the agent serves.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$'
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+    TenantId:
+      name: tenant_id
+      in: query
+      description: |
+        The tenant. A client that belongs to a tenant always acts inside it and may leave this out;
+        a platform-scope client names the tenant here.
+      schema:
+        type: string
+
+  responses:
+    InvalidRequest:
+      description: Malformed JSON, an unknown field, or a missing or invalid value (`invalid_request`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthenticated:
+      description: Missing, wrong or stale signature (`unauthenticated`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Forbidden:
+      description: The client's role does not allow this call, or it named another tenant (`forbidden`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: No such inbox, event, run or timer in this tenant (`not_found`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    LeaseLost:
+      description: The run is no longer held under this epoch; stop working on it (`lease_lost`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            detail: run 01M7X001ND6S05N2BHWQV128TR is no longer held under this epoch; stop working on it
+            instance: /v1/runs/01M7X001ND6S05N2BHWQV128TR/heartbeat
+            status: 409
+            title: Conflict
+            code: lease_lost
+    PayloadTooLarge:
+      description: The payload or the request body is too large (`payload_too_large`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unavailable:
+      description: |
+        The event store is unavailable (`database_unavailable`). Retry with the same idempotency key.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error:
+      description: Any other error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    Problem:
+      type: object
+      description: Error body. `code` is the stable, machine-readable part.
+      required: [status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          enum:
+            - invalid_request
+            - unauthenticated
+            - forbidden
+            - not_found
+            - idempotency_conflict
+            - payload_too_large
+            - database_unavailable
+            - lease_lost
+            - resume_key_in_use
+            - conflict
+            - internal_error
+
+    Lane:
+      type: string
+      description: Priority channel of an inbox; each lane has its own concurrency cap.
+      enum: [interactive, background, batch]
+
+    EventSource:
+      type: string
+      description: Who produced an event.
+      enum: [biz_webhook, connector, timer, conversation, rule, agent_self]
+
+    EventStatus:
+      type: string
+      description: Delivery state of an event.
+      enum: [pending, claimed, done, failed, dead]
+
+    RunStatus:
+      type: string
+      description: |
+        State of a run. `active` holds a lane slot and a lease; `queued` waits to be issued again;
+        `suspended` waits for an answer; `done`, `failed` and `dead` are final.
+      enum: [active, queued, suspended, done, failed, dead]
+
+    WriteEventRequest:
+      type: object
+      additionalProperties: false
+      required: [source, type, payload]
+      properties:
+        source:
+          $ref: '#/components/schemas/EventSource'
+        source_event_id:
+          type: string
+          maxLength: 256
+          description: |
+            Idempotency key: the source's own id for this change. Without it the server fingerprints
+            the event. The prefixes `fp1:` and `timer:` are reserved.
+        type:
+          type: string
+          maxLength: 256
+          description: Semantic type with namespace and version, for example `order.paid.v1`.
+        occurred_at:
+          type: string
+          format: date-time
+          description: When it happened at the source.
+        ready_at:
+          type: string
+          format: date-time
+          description: When it may run. Absent or past means now; a future value defers the event.
+        merge_key:
+          type: string
+          maxLength: 256
+          description: |
+            Batching key. Events with the same key are handled by one run at a time and can share a run.
+        lane:
+          $ref: '#/components/schemas/Lane'
+        payload:
+          description: Any JSON value except `null`, at most 64 KB in canonical form.
+        resume_key:
+          type: string
+          maxLength: 256
+          description: Set on a reply that should wake a suspended run.
+        interrupt:
+          type: boolean
+          description: |
+            Asks the run that is handling this key to yield. Defaults to a stop-word check on
+            conversation messages.
+        trace_id:
+          type: string
+          maxLength: 256
+          description: Passed through to the runtime. Generated when absent.
+
+    WriteEventResponse:
+      type: object
+      required: [event_id, deduped, status]
+      properties:
+        event_id:
+          type: string
+        deduped:
+          type: boolean
+          description: True when this key had been accepted before; the earlier event is returned.
+        status:
+          type: string
+          description: '`pending`, a later state when deduped, or `scheduled` for a deferred event.'
+        fingerprinted:
+          type: boolean
+          description: True when no `source_event_id` was sent and the server derived one.
+        warning:
+          type: string
+
+    EventView:
+      type: object
+      description: An event as stored, with its current delivery state.
+      required:
+        - event_id
+        - tenant_id
+        - inbox_id
+        - client_id
+        - source
+        - source_event_id
+        - type
+        - payload
+        - ready_at
+        - lane
+        - interrupt
+        - status
+        - attempt
+        - max_attempts
+      properties:
+        event_id:
+          type: string
+        tenant_id:
+          type: string
+        inbox_id:
+          type: string
+        seq:
+          type: integer
+          format: int64
+          description: Position in the inbox; sequence order is commit order. Absent until a deferred event fires.
+        client_id:
+          type: string
+        source:
+          $ref: '#/components/schemas/EventSource'
+        source_event_id:
+          type: string
+        dedupe_kind:
+          type: string
+          enum: [provided, fingerprint]
+        type:
+          type: string
+        payload:
+          description: The event body.
+        occurred_at:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+        ready_at:
+          type: string
+          format: date-time
+        merge_key:
+          type: string
+        lane:
+          $ref: '#/components/schemas/Lane'
+        resume_key:
+          type: string
+        interrupt:
+          type: boolean
+        trace_id:
+          type: string
+        timer_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, claimed, done, failed, dead, scheduled]
+        attempt:
+          type: integer
+        max_attempts:
+          type: integer
+        run_id:
+          type: string
+        run_seq:
+          type: integer
+        delivery_mode:
+          type: string
+          enum: [batch, steer, resume]
+        first_claimed_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+
+    TransitionView:
+      type: object
+      description: One row of an event's append-only history.
+      required: [to_status, reason, actor, at]
+      properties:
+        from_status:
+          type: string
+        to_status:
+          type: string
+        reason:
+          type: string
+          description: |
+            `accepted`, `claim`, `redelivery`, `steer`, `resume`, `ack`, `fail`, `nack`,
+            `lease_expired`, `attempts_exhausted`, `suspended`, `suspend_timeout`, `released`,
+            `replay` or `manual_dead`.
+        actor:
+          type: string
+          description: '`client:<id>`, `worker:<id>`, `system:<job>` or `operator:<name>`.'
+        run_id:
+          type: string
+        attempt:
+          type: integer
+        detail:
+          type: object
+          additionalProperties: true
+        at:
+          type: string
+          format: date-time
+
+    EventDetail:
+      type: object
+      required: [event, transitions]
+      properties:
+        event:
+          $ref: '#/components/schemas/EventView'
+        transitions:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransitionView'
+
+    CreateTimerRequest:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [once, cron]
+        fire_at:
+          type: string
+          format: date-time
+          description: When a `once` timer fires.
+        cron:
+          type: string
+          description: Five fields (minute first) or six (second first). At most one firing per 60 seconds.
+        time_zone:
+          type: string
+          description: IANA zone the cron is evaluated in, for example `Asia/Shanghai`. UTC by default.
+        timer_key:
+          type: string
+          description: Idempotency key. Creating a timer whose key is already scheduled returns that timer.
+        merge_key:
+          type: string
+          description: Batching key of the events the timer produces.
+        lane:
+          $ref: '#/components/schemas/Lane'
+        payload:
+          description: Carried into every event the timer produces. At most 32 KB.
+
+    TimerView:
+      type: object
+      description: A timer as its latest occurrence shows it.
+      required: [timer_id, tenant_id, inbox_id, kind, state, fire_at, event_type, lane, payload, created_at]
+      properties:
+        timer_id:
+          type: string
+        tenant_id:
+          type: string
+        inbox_id:
+          type: string
+        kind:
+          type: string
+          enum: [once, cron]
+        state:
+          type: string
+          enum: [scheduled, fired, cancelled]
+        fire_at:
+          type: string
+          format: date-time
+        cron:
+          type: string
+        time_zone:
+          type: string
+        timer_key:
+          type: string
+        event_type:
+          type: string
+        merge_key:
+          type: string
+        lane:
+          $ref: '#/components/schemas/Lane'
+        payload:
+          description: The payload the timer carries into its events.
+        fired_event_id:
+          type: string
+        fired_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
+    ClaimRequest:
+      type: object
+      additionalProperties: false
+      required: [worker_id]
+      properties:
+        worker_id:
+          type: string
+          description: Who is asking. Recorded as the lease owner and in the event history.
+        tenant_id:
+          type: string
+          description: Restricts the search to one tenant. Required when `inbox_id` is given.
+        inbox_id:
+          type: string
+          description: Claim from this inbox only. Absent means any inbox with work, oldest first.
+        lanes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Lane'
+          description: Restricts the claim to these lanes. Absent means all, highest priority first.
+        accepts_steer:
+          type: boolean
+          description: Whether same-key events that arrive later may be pulled into the run.
+        wait_ms:
+          type: integer
+          format: int64
+          description: How long to wait for work before answering 204. At most 30,000.
+
+    ClaimedEvent:
+      type: object
+      description: An event as handed to the runtime inside a run.
+      required: [event_id, seq, run_seq, delivery_mode, source, type, source_event_id, received_at, interrupt, payload, trace_id]
+      properties:
+        event_id:
+          type: string
+        seq:
+          type: integer
+          format: int64
+        run_seq:
+          type: integer
+          description: Position of the event inside its run, from 1. The cursor used by ack and suspend.
+        delivery_mode:
+          type: string
+          enum: [batch, steer, resume]
+        source:
+          $ref: '#/components/schemas/EventSource'
+        type:
+          type: string
+        source_event_id:
+          type: string
+        occurred_at:
+          type: string
+          format: date-time
+        received_at:
+          type: string
+          format: date-time
+        merge_key:
+          type: string
+        resume_key:
+          type: string
+        interrupt:
+          type: boolean
+        payload:
+          description: The event body.
+        trace_id:
+          type: string
+
+    ClaimedRun:
+      type: object
+      description: A run granted to a worker - a batch of already merged events plus a lease.
+      required: [run_id, epoch, attempt, kind, tenant_id, inbox_id, lane, trace_id, accepts_steer, lease_expires_at, lease_deadline_at, events]
+      properties:
+        run_id:
+          type: string
+          description: Stable for the life of the run; a redelivery keeps it.
+        epoch:
+          type: integer
+          description: Fencing token of this lease grant. Every later call on the run carries it.
+        attempt:
+          type: integer
+          description: Failure budget used so far (1 on the first delivery).
+        kind:
+          type: string
+          enum: [start, redelivery, resume]
+        resume_reason:
+          type: string
+          enum: [event, timeout]
+        tenant_id:
+          type: string
+        inbox_id:
+          type: string
+        lane:
+          $ref: '#/components/schemas/Lane'
+        merge_key:
+          type: string
+        trace_id:
+          type: string
+        accepts_steer:
+          type: boolean
+        lease_expires_at:
+          type: string
+          format: date-time
+        lease_deadline_at:
+          type: string
+          format: date-time
+        events:
+          type: array
+          description: |
+            For `start` and `redelivery`, every event of the run. For a resume after an answer, the
+            answering events. For a resume after a timeout, every event of the run.
+          items:
+            $ref: '#/components/schemas/ClaimedEvent'
+
+    HeartbeatRequest:
+      type: object
+      additionalProperties: false
+      required: [epoch]
+      properties:
+        epoch:
+          type: integer
+        accepts_steer:
+          type: boolean
+          description: Changes whether the run takes steered events. Absent leaves it as it is.
+
+    HeartbeatResponse:
+      type: object
+      required: [lease_expires_at, extended, steer_pending, interrupt_requested]
+      properties:
+        lease_expires_at:
+          type: string
+          format: date-time
+        extended:
+          type: boolean
+          description: False once the lease cap is reached; the run is reclaimed at `lease_expires_at` unless it ends first.
+        steer_pending:
+          type: integer
+          description: Same-key events waiting to be pulled in with a steer call.
+        interrupt_requested:
+          type: boolean
+          description: An interrupt-flagged event is waiting behind this run.
+        interrupt_event_id:
+          type: string
+
+    SteerRequest:
+      type: object
+      additionalProperties: false
+      required: [epoch]
+      properties:
+        epoch:
+          type: integer
+        after_run_seq:
+          type: integer
+          description: Highest `run_seq` the worker has already seen. Absent means only what joins now.
+
+    SteerResponse:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimedEvent'
+
+    AckRequest:
+      type: object
+      additionalProperties: false
+      required: [epoch, outcome]
+      properties:
+        epoch:
+          type: integer
+        outcome:
+          type: string
+          enum: [done, failed]
+        last_run_seq:
+          type: integer
+          description: Highest `run_seq` the worker consumed. Absent means every event.
+        error:
+          type: string
+          description: Short reason when the outcome is `failed`.
+
+    NackRequest:
+      type: object
+      additionalProperties: false
+      required: [epoch]
+      properties:
+        epoch:
+          type: integer
+        reason:
+          type: string
+        retry_after_ms:
+          type: integer
+          format: int64
+          description: Overrides the exponential backoff; capped at 5 minutes.
+
+    SuspendRequest:
+      type: object
+      additionalProperties: false
+      required: [epoch, resume_key, timeout_seconds]
+      properties:
+        epoch:
+          type: integer
+        resume_key:
+          type: string
+          maxLength: 256
+          description: What the answering event will carry. Unique among the inbox's suspended runs.
+        timeout_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          description: How long to wait; capped at 30 days.
+        on_timeout:
+          type: string
+          enum: [finish, resume]
+          description: '`finish` (default) ends the run silently at the deadline; `resume` hands it back.'
+        last_run_seq:
+          type: integer
+
+    RunOutcome:
+      type: object
+      required: [run_id, status, epoch, attempt]
+      properties:
+        run_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/RunStatus'
+        epoch:
+          type: integer
+        attempt:
+          type: integer
+        next_attempt_at:
+          type: string
+          format: date-time
+          description: When a nacked run may be issued again.
+
+    RunView:
+      type: object
+      description: A run and the events bound to it.
+      required: [run_id, tenant_id, inbox_id, lane, status, epoch, attempt, max_attempts, accepts_steer, trace_id, created_at, events]
+      properties:
+        run_id:
+          type: string
+        tenant_id:
+          type: string
+        inbox_id:
+          type: string
+        lane:
+          $ref: '#/components/schemas/Lane'
+        merge_key:
+          type: string
+        status:
+          $ref: '#/components/schemas/RunStatus'
+        slot_no:
+          type: integer
+        epoch:
+          type: integer
+        attempt:
+          type: integer
+        max_attempts:
+          type: integer
+        lease_owner:
+          type: string
+        lease_expires_at:
+          type: string
+          format: date-time
+        lease_deadline_at:
+          type: string
+          format: date-time
+        next_attempt_at:
+          type: string
+          format: date-time
+        queued_reason:
+          type: string
+          enum: [nack, lease_expired, suspend_timeout]
+        accepts_steer:
+          type: boolean
+        resume_key:
+          type: string
+        suspend_deadline_at:
+          type: string
+          format: date-time
+        on_timeout:
+          type: string
+          enum: [finish, resume]
+        resume_reason:
+          type: string
+          enum: [event, timeout]
+        trace_id:
+          type: string
+        end_reason:
+          type: string
+        last_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventView'
+
+    ReplayRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        tenant_id:
+          type: string
+          description: The tenant; required for a platform-scope client.
+        event_id:
+          type: string
+        inbox_id:
+          type: string
+        source:
+          $ref: '#/components/schemas/EventSource'
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        force:
+          type: boolean
+          description: Required to replay an event that is `done` or `dead`.
+        reason:
+          type: string
+          description: Why. Recorded with every replayed event and in the audit log.
+        operator:
+          type: string
+          description: The person doing it. Defaults to the client id.
+        dry_run:
+          type: boolean
+          description: Report what would be replayed without changing anything.
+
+    ReplayResponse:
+      type: object
+      required: [replayed, skipped, dry_run]
+      properties:
+        replayed:
+          type: array
+          items:
+            type: string
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [event_id, status, why]
+            properties:
+              event_id:
+                type: string
+              status:
+                type: string
+              why:
+                type: string
+                enum: [needs_force, in_flight]
+        dry_run:
+          type: boolean
+
+    DeadLetterRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        tenant_id:
+          type: string
+        reason:
+          type: string
+        operator:
+          type: string
+
+    InboxSettings:
+      type: object
+      description: Per-lane windows and inbox-wide batch caps. Any other key is refused.
+      additionalProperties: false
+      properties:
+        lanes:
+          type: object
+          additionalProperties: false
+          properties:
+            interactive:
+              $ref: '#/components/schemas/LaneWindows'
+            background:
+              $ref: '#/components/schemas/LaneWindows'
+            batch:
+              $ref: '#/components/schemas/LaneWindows'
+        batch:
+          type: object
+          additionalProperties: false
+          properties:
+            max_events:
+              type: integer
+              minimum: 1
+            max_bytes:
+              type: integer
+              minimum: 1
+
+    LaneWindows:
+      type: object
+      additionalProperties: false
+      properties:
+        quiet_window_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 86400000
+        max_wait_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 86400000
+
+    InboxConfigRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        tenant_id:
+          type: string
+        cap_interactive:
+          type: integer
+          minimum: 1
+          maximum: 100
+        cap_background:
+          type: integer
+          minimum: 1
+          maximum: 100
+        cap_batch:
+          type: integer
+          minimum: 1
+          maximum: 100
+        max_active_runs:
+          type: integer
+          minimum: 1
+          maximum: 100
+          description: Inbox-wide cap on concurrent runs. 1 gives strict "one run per inbox".
+        settings:
+          $ref: '#/components/schemas/InboxSettings'
+        operator:
+          type: string
+
+    InboxStatus:
+      type: object
+      required: [tenant_id, inbox_id, settings, pending, retrying, claimed, dead, active_runs, queued_runs, suspended_runs]
+      properties:
+        tenant_id:
+          type: string
+        inbox_id:
+          type: string
+        cap_interactive:
+          type: integer
+        cap_background:
+          type: integer
+        cap_batch:
+          type: integer
+        max_active_runs:
+          type: integer
+        settings:
+          $ref: '#/components/schemas/InboxSettings'
+        pending:
+          type: integer
+          format: int64
+          description: Unclaimed events waiting to be picked up.
+        retrying:
+          type: integer
+          format: int64
+          description: Events bound to a run that is waiting to be issued again.
+        claimed:
+          type: integer
+          format: int64
+          description: Events held by an active or suspended run.
+        dead:
+          type: integer
+          format: int64
+        active_runs:
+          type: integer
+          format: int64
+        queued_runs:
+          type: integer
+          format: int64
+        suspended_runs:
+          type: integer
+          format: int64
+
+    AuditEntry:
+      type: object
+      description: One operator action.
+      required: [audit_id, actor_client_id, action, target, at]
+      properties:
+        audit_id:
+          type: string
+        tenant_id:
+          type: string
+        actor_client_id:
+          type: string
+        operator:
+          type: string
+        action:
+          type: string
+          enum: [replay, manual_dead, inbox_config, timer_cancel]
+        target:
+          type: object
+          additionalProperties: true
+        params:
+          type: object
+          additionalProperties: true
+          description: Stored as sent. A cap that was left out of an `inbox_config` request is listed as `null`.
+        result:
+          type: object
+          additionalProperties: true
+        at:
+          type: string
+          format: date-time

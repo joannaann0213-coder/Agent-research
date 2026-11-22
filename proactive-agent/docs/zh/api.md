@@ -6,6 +6,18 @@
 并结束它们，运维人员做重放和配置。本页的示例都是从一个运行中的服务上抓到的真实响应。接入 connector 或 agent
 时该调用哪些接口、按什么顺序，见[接入指南](integration.md)。
 
+## OpenAPI 规范
+
+同一套 API 另有一份 OpenAPI 3.0 文档，供生成客户端或导入接口集合的工具使用。运行中的服务在 `GET /openapi.yaml`
+提供它，不需要签名。源文件是
+[`inbox-server/src/main/resources/openapi/inbox.yaml`](../../inbox-server/src/main/resources/openapi/inbox.yaml)。
+
+```bash
+curl http://localhost:8080/openapi.yaml
+```
+
+这份文档不会和服务脱节：构建时会用它校验集成测试里的每一个请求和每一个响应。见[测试](testing.md#api-规范)。
+
 ## 约定
 
 - 字段名用 `snake_case`。没有值的字段直接省略，不发 `null`。服务以文档形式保存的 JSON 按保存时的原样返回：事件的
@@ -72,6 +84,7 @@ signature=$(printf 'v1\n%s\n%s\n%s\n%s' "$timestamp" "$method" "$path" "$body_ha
 | 401 | `unauthenticated` | 签名缺失、错误或已过期 |
 | 403 | `forbidden` | Client 的角色不允许调用这个接口，或者它指了别的租户 |
 | 404 | `not_found` | 这个租户里没有这样的收件箱、事件、run 或定时器 |
+| 405、406、415 | `invalid_request` | 这个路径不支持该方法、调用方不接受 JSON，或者请求体不是以 JSON 发送的 |
 | 409 | `idempotency_conflict` | 这个幂等键已经被另一条不同的事件用过 |
 | 409 | `lease_lost` | 这个 run 已不在该 epoch 之下被持有。停止处理它 |
 | 409 | `resume_key_in_use` | 这个收件箱里另一个挂起的 run 在等同一个 resume key |

@@ -46,6 +46,7 @@ mvn -pl inbox-server -am verify -Dit.test=F5BatchingIT \
 | End to end | `*E2E` | Failsafe, PostgreSQL | A scenario from the design, with `ScriptedWorker` standing in for the agent |
 | Measurement | `WriteLatencyPerf` | On request only | Write latency against the design target |
 | Documentation | `DocsParityTest` | Surefire | The English and Chinese documents have the same structure and working links |
+| Contract | `OpenApiContractIT`, `OpenApiSchemaTest` | Failsafe and Surefire | The OpenAPI document against the running service and against the wire types |
 
 ## How the tests stay deterministic
 
@@ -73,6 +74,25 @@ and scenario D, which kills a real process.
 | The last recorded transition is the event's current state | State and history agree |
 | At most one active run per merge key in an inbox | Single flight |
 | The database reports no new deadlock | The lock order holds |
+
+## The API specification
+
+The OpenAPI document is checked against the service, so it cannot describe an API that does not
+exist. A change to the API that is not made in the document fails the build.
+
+| Check | Where | What fails the build |
+| --- | --- | --- |
+| Traffic | After every integration test | A response that does not match its schema, a response field the schema does not list, a status the operation does not list, an accepted request that breaks the document |
+| Coverage | `OpenApiContractIT`, which runs last | An operation that no test called; a listed status that no test produced; a controller mapping that the document lacks, or the reverse |
+| Inventory | `OpenApiSchemaTest` | A schema whose fields differ from its wire type in `inbox-api`; an enum whose values differ from the code |
+| Soundness | `OpenApiSchemaTest` | A reference to a missing component, a component nothing uses, an operation without an `operationId`, an example that does not match its own schema |
+
+Two limits are deliberate. A request that the service refuses is not checked against the document,
+because a wrong request is usually the point of such a test; the response to it is checked. And
+coverage does not ask for 400, 401 and 403 on every operation, because shared layers produce them.
+
+The checks live in the module `openapi-testkit`. It knows nothing about the Inbox and is reused for
+the other services of this repository.
 
 ## Acceptance checks
 

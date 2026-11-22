@@ -344,6 +344,9 @@ class F4TimerIT extends IntegrationTestBase {
                 .status()).isEqualTo(400);
         assertThat(acme.createTimer("u42", new CreateTimerRequest("sometimes", T0, null, null, null, null, null, null))
                 .status()).isEqualTo(400);
+        String oversized = "{\"blob\":\"" + "x".repeat(33 * 1024) + "\"}";
+        assertThat(acme.createTimer("u42", CreateTimerRequest.once(T0.plusSeconds(60), oversized)).status())
+                .as("a timer carries at most 32 KB").isEqualTo(413);
         assertThat(count("SELECT count(*) FROM timer")).isZero();
 
         String timerId = acme.createTimer("u42", CreateTimerRequest.once(T0.plusSeconds(60), "{}")).require().timerId();

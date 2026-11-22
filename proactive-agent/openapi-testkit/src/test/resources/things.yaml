@@ -1,0 +1,133 @@
+openapi: 3.0.3
+info:
+  title: Things
+  version: 1.0.0
+tags:
+  - name: Things
+paths:
+  /v1/things:
+    post:
+      tags: [Things]
+      operationId: createThing
+      summary: Create a thing
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NewThing'
+            example:
+              name: lamp
+              size: 2
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Thing'
+        '400':
+          $ref: '#/components/responses/Problem'
+        '409':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/things/{thing_id}:
+    parameters:
+      - name: thing_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Things]
+      operationId: getThing
+      summary: Read a thing
+      parameters:
+        - name: view
+          in: query
+          schema:
+            type: string
+            enum: [short, full]
+      responses:
+        '200':
+          description: The thing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Thing'
+        '404':
+          $ref: '#/components/responses/Problem'
+        default:
+          $ref: '#/components/responses/Problem'
+  /v1/things/latest:
+    get:
+      tags: [Things]
+      operationId: latestThing
+      summary: Read the newest thing
+      responses:
+        '200':
+          description: The newest thing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Thing'
+        '204':
+          description: There is none.
+  /v1/things/{thing_id}/changes:
+    parameters:
+      - name: thing_id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      tags: [Things]
+      operationId: streamChanges
+      summary: Follow the changes of a thing
+      responses:
+        '200':
+          description: A stream of changes.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+components:
+  responses:
+    Problem:
+      description: An error.
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            required: [status, code]
+            properties:
+              status:
+                type: integer
+              code:
+                type: string
+              detail:
+                type: string
+  schemas:
+    NewThing:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        size:
+          type: integer
+          minimum: 1
+    Thing:
+      type: object
+      required: [thing_id, name]
+      properties:
+        thing_id:
+          type: string
+        name:
+          type: string
+        size:
+          type: integer
+        made_at:
+          type: string
+          format: date-time
