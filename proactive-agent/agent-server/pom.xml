@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>dev.agentflow</groupId>
+    <artifactId>proactive-agent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>agent-server</artifactId>
+  <name>agent-server</name>
+  <description>The agent service: opens a proactive agent to applications. It takes messages and business events, runs the agent on Claude Managed Agents through the Event Inbox, and delivers what the agent says.</description>
+
+  <dependencies>
+    <dependency>
+      <groupId>dev.agentflow</groupId>
+      <artifactId>agent-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>dev.agentflow</groupId>
+      <artifactId>agent-cma</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>dev.agentflow</groupId>
+      <artifactId>inbox-client</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-webmvc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-jdbc</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-flyway</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-postgresql</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.postgresql</groupId>
+      <artifactId>postgresql</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-registry-prometheus</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- Checks the requests and responses of the integration tests against the API specification. -->
+      <groupId>dev.agentflow</groupId>
+      <artifactId>openapi-testkit</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <!-- The tests start a real Event Inbox in their own JVM, with its hand-driven clock. -->
+      <groupId>dev.agentflow</groupId>
+      <artifactId>inbox-server</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>dev.agentflow</groupId>
+      <artifactId>inbox-server</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <classifier>exec</classifier>
+        </configuration>
+      </plugin>
+      <plugin>
+        <!-- Database tests are *IT and *E2E and run in the verify phase; *Test needs no database. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <includes>
+            <include>**/*IT.java</include>
+            <include>**/*E2E.java</include>
+          </includes>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

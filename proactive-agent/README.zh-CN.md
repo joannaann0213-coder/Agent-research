@@ -43,7 +43,7 @@ export INBOX_AUTH_CLIENTS_1_ID=runtime-1  INBOX_AUTH_CLIENTS_1_SECRET=runtime-se
        INBOX_AUTH_CLIENTS_1_ROLES=RUNTIME
 export INBOX_AUTH_CLIENTS_2_ID=ops        INBOX_AUTH_CLIENTS_2_SECRET=ops-secret \
        INBOX_AUTH_CLIENTS_2_ROLES=OPERATOR
-java -jar inbox-server/target/inbox-server-0.1.0-SNAPSHOT.jar
+java -jar inbox-server/target/inbox-server-0.1.0-SNAPSHOT-exec.jar
 ```
 
 在另一个终端里写入一条事件。`scripts/inbox-curl.sh` 会替你给请求签名。
@@ -87,6 +87,8 @@ scripts/inbox-curl.sh order-bot order-bot-secret GET /v1/inbox/u42/events/01M7WZ
 | `inbox-client` | 纯 Java 客户端、`ScriptedWorker`、桩发件箱、命令行 worker |
 | `openapi-testkit` | 测试支持：用服务的 OpenAPI 文档核对测试中的 HTTP 流量 |
 | `agent-cma` | 通往 Claude Managed Agents 的端口：agent 服务使用的接口、基于官方 Java SDK 的适配器，以及一个可脚本化的进程内替身 |
+| `agent-api` | Agent API 的传输类型，agent 服务与它的客户端共用 |
+| `agent-server` | Agent 服务（建设中）：目前有应用、API key 和用户 token |
 
 ## 文档
 

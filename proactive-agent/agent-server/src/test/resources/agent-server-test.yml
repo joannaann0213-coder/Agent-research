@@ -1,0 +1,24 @@
+spring:
+  datasource:
+    url: ${AGENT_TEST_JDBC_URL:jdbc:postgresql://127.0.0.1:5432/agent_test}
+    username: ${AGENT_TEST_DB_USER:agent}
+    password: ${AGENT_TEST_DB_PASSWORD:agent}
+    hikari:
+      maximum-pool-size: 20
+  flyway:
+    clean-disabled: false
+
+agent:
+  # Deterministic tests run the background loops by hand, one pass at a time.
+  scheduling:
+    enabled: false
+  relay:
+    immediate: false
+  admin:
+    keys:
+      - test-admin-key-0123456789abcdef0123456789
+  tokens:
+    secrets:
+      - test-token-secret-0123456789abcdef0123456789
+  inbox:
+    secret: agent-inbox-secret

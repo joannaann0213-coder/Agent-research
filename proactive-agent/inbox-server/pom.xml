@@ -69,8 +69,30 @@
   <build>
     <plugins>
       <plugin>
+        <!-- The runnable jar is inbox-server-<version>-exec.jar. The plain jar stays the main artifact,
+             because the agent service's tests start the Inbox in their own JVM and depend on it. -->
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <classifier>exec</classifier>
+        </configuration>
+      </plugin>
+      <plugin>
+        <!-- The test support of the Inbox (hand-driven clock, clean schema, invariant checks) for those tests. -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <executions>
+          <execution>
+            <goals>
+              <goal>test-jar</goal>
+            </goals>
+            <configuration>
+              <includes>
+                <include>dev/agentflow/inbox/server/support/**</include>
+              </includes>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
       <plugin>
         <!-- Database tests are *IT and *E2E and run in the verify phase; *Test needs no database. -->

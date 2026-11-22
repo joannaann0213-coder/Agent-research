@@ -1,0 +1,516 @@
+openapi: 3.0.3
+info:
+  title: Agent API
+  version: 0.1.0
+  description: |
+    The Agent API opens a proactive agent to applications. An application sends its users' messages
+    and its own business events; the agent answers, and can also speak first.
+
+    Conventions:
+
+    - Field names are `snake_case`. A field without a value is left out, not sent as `null`.
+    - An unknown field in a request is an error (400).
+    - Timestamps are ISO-8601 in UTC.
+    - Errors are `application/problem+json` with a stable, machine-readable `code`.
+
+    Every `/v1` request carries a credential as `Authorization: Bearer <credential>`. There are three
+    kinds. An **API key** (`afk.…`) identifies an application's back end. A **user token** (`aft.…`) is
+    issued by that back end for one of its users, expires within the hour, and lets the user's own
+    client call the API for that user only. An **administration key** opens `/v1/admin` and nothing
+    else.
+servers:
+  - url: http://localhost:8090
+    description: Local development
+tags:
+  - name: Service
+    description: About the caller and the service.
+  - name: Users
+    description: The end users of an application, and the tokens their clients use.
+  - name: Admin
+    description: Operator tools, for the people who run the service.
+security:
+  - Bearer: []
+
+paths:
+  /v1/whoami:
+    get:
+      tags: [Service]
+      operationId: whoami
+      summary: Check a credential
+      description: Says who the service takes the caller for. Any valid credential may call it.
+      responses:
+        '200':
+          description: The caller.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Whoami'
+              example:
+                kind: user
+                app_id: acme
+                user_id: u42
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/tokens:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Users]
+      operationId: issueUserToken
+      summary: Issue a user token
+      description: |
+        Returns a token for one user, to hand to that user's client. The user need not exist yet. Only
+        an API key may call this: the application's back end is the one that knows who the user is.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueTokenRequest'
+            example:
+              ttl_seconds: 600
+      responses:
+        '201':
+          description: The token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedToken'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Users]
+      operationId: revokeUserTokens
+      summary: Revoke a user's tokens
+      description: |
+        Invalidates every token of the user that is out, for example when the user signs out
+        everywhere. Tokens issued afterwards work. Only an API key may call this.
+      responses:
+        '204':
+          description: Revoked.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/apps:
+    post:
+      tags: [Admin]
+      operationId: createApp
+      summary: Register an application
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAppRequest'
+            example:
+              app_id: acme
+              name: Acme Support
+      responses:
+        '201':
+          description: The application.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: An application with that id exists already (`conflict`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Admin]
+      operationId: listApps
+      summary: List applications
+      responses:
+        '200':
+          description: The applications, by id.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AppView'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/apps/{app_id}:
+    parameters:
+      - $ref: '#/components/parameters/AppId'
+    get:
+      tags: [Admin]
+      operationId: getApp
+      summary: Read an application
+      responses:
+        '200':
+          description: The application.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppView'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+    patch:
+      tags: [Admin]
+      operationId: updateApp
+      summary: Rename or suspend an application
+      description: |
+        Changes the name, the status, or both. While an application is `suspended` its API keys and
+        its users' tokens are refused; nothing is deleted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateAppRequest'
+            example:
+              status: suspended
+      responses:
+        '200':
+          description: The application after the change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/apps/{app_id}/keys:
+    parameters:
+      - $ref: '#/components/parameters/AppId'
+    post:
+      tags: [Admin]
+      operationId: createApiKey
+      summary: Create an API key
+      description: |
+        Returns a new API key of the application. The key is in this response and nowhere else
+        afterwards: the service keeps only a hash of it. An application can have several keys, which
+        is how a key is replaced without downtime.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKeyRequest'
+            example:
+              label: production back end
+      responses:
+        '201':
+          description: The key, shown once.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreatedKey'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Admin]
+      operationId: listApiKeys
+      summary: List API keys
+      description: Lists the application's keys, oldest first, without their secrets. Revoked keys are included.
+      responses:
+        '200':
+          description: The keys.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/KeyView'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/admin/apps/{app_id}/keys/{key_id}:
+    parameters:
+      - $ref: '#/components/parameters/AppId'
+      - name: key_id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      tags: [Admin]
+      operationId: revokeApiKey
+      summary: Revoke an API key
+      description: The key stops working at once. Revoking a key twice is fine.
+      responses:
+        '204':
+          description: Revoked.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+components:
+  securitySchemes:
+    Bearer:
+      type: http
+      scheme: bearer
+      description: An API key, a user token or an administration key.
+
+  parameters:
+    AppId:
+      name: app_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z0-9][a-z0-9_-]{1,39}$'
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      description: The application's own id for the user.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$'
+
+  responses:
+    InvalidRequest:
+      description: Malformed JSON, an unknown field, or a missing or invalid value (`invalid_request`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Unauthenticated:
+      description: The credential is missing, unknown, expired or revoked (`unauthenticated`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: unknown or revoked API key
+            code: unauthenticated
+    Forbidden:
+      description: |
+        The credential is valid but not for this call (`forbidden`): the wrong kind of credential, a
+        user token used for another user, or a suspended application.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    NotFound:
+      description: No such object in this application (`not_found`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    Error:
+      description: Any other error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    Problem:
+      type: object
+      description: Error body. `code` is the stable, machine-readable part.
+      required: [status, code]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        code:
+          type: string
+          enum:
+            - invalid_request
+            - unauthenticated
+            - forbidden
+            - not_found
+            - conflict
+            - payload_too_large
+            - rate_limited
+            - unavailable
+            - internal_error
+
+    Whoami:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          enum: [admin, app, user]
+        app_id:
+          type: string
+          description: Absent for an administrator.
+        user_id:
+          type: string
+          description: Present for a user token only.
+
+    IssueTokenRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+          description: How long the token is valid. 15 minutes when absent; at most 1 hour unless the service is configured otherwise.
+
+    IssuedToken:
+      type: object
+      required: [token, expires_at]
+      properties:
+        token:
+          type: string
+          description: 'Sent as `Authorization: Bearer <token>`.'
+        expires_at:
+          type: string
+          format: date-time
+
+    CreateAppRequest:
+      type: object
+      additionalProperties: false
+      required: [app_id, name]
+      properties:
+        app_id:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{1,39}$'
+          description: Chosen by the operator. It cannot be changed.
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+
+    UpdateAppRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+        status:
+          type: string
+          enum: [active, suspended]
+
+    AppView:
+      type: object
+      required: [app_id, name, status, created_at]
+      properties:
+        app_id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum: [active, suspended]
+        created_at:
+          type: string
+          format: date-time
+
+    CreateKeyRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        label:
+          type: string
+          maxLength: 200
+          description: What the key is for, to tell keys apart later.
+
+    CreatedKey:
+      type: object
+      required: [key_id, api_key, created_at]
+      properties:
+        key_id:
+          type: string
+        api_key:
+          type: string
+          description: The key itself. Shown this once.
+        label:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    KeyView:
+      type: object
+      required: [key_id, created_at]
+      properties:
+        key_id:
+          type: string
+        label:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          description: When the key last authenticated a request, to the minute.
+        revoked_at:
+          type: string
+          format: date-time
+          description: Absent while the key is valid.

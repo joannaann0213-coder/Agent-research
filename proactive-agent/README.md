@@ -49,7 +49,7 @@ export INBOX_AUTH_CLIENTS_1_ID=runtime-1  INBOX_AUTH_CLIENTS_1_SECRET=runtime-se
        INBOX_AUTH_CLIENTS_1_ROLES=RUNTIME
 export INBOX_AUTH_CLIENTS_2_ID=ops        INBOX_AUTH_CLIENTS_2_SECRET=ops-secret \
        INBOX_AUTH_CLIENTS_2_ROLES=OPERATOR
-java -jar inbox-server/target/inbox-server-0.1.0-SNAPSHOT.jar
+java -jar inbox-server/target/inbox-server-0.1.0-SNAPSHOT-exec.jar
 ```
 
 In a second terminal, write an event. `scripts/inbox-curl.sh` signs the request for you.
@@ -93,6 +93,8 @@ Health is at `/actuator/health` and metrics at `/actuator/prometheus`.
 | `inbox-client` | Plain Java client, `ScriptedWorker`, stub outboxes, a command-line worker |
 | `openapi-testkit` | Test support: checks a service's HTTP traffic in tests against its OpenAPI document |
 | `agent-cma` | The port to Claude Managed Agents: the interface the agent service uses, its adapter over the official Java SDK, and a scriptable in-process stand-in |
+| `agent-api` | Wire types of the Agent API, shared by the agent service and its clients |
+| `agent-server` | The agent service (under construction): applications, API keys and user tokens so far |
 
 ## Documentation
 

@@ -1,0 +1,44 @@
+# The agent service reads agent-server.yml, not application.yml: its tests run an Event Inbox in the
+# same JVM, and each of the two must find only its own file on the classpath.
+spring:
+  application:
+    name: agent-server
+  datasource:
+    url: ${AGENT_JDBC_URL:jdbc:postgresql://127.0.0.1:5432/agent_dev}
+    username: ${AGENT_DB_USER:agent}
+    password: ${AGENT_DB_PASSWORD:agent}
+    hikari:
+      maximum-pool-size: ${AGENT_DB_POOL_SIZE:20}
+      connection-init-sql: "SET lock_timeout = '10s'; SET idle_in_transaction_session_timeout = '60s'"
+  flyway:
+    # A directory of its own, for the same reason as the file name above.
+    locations: classpath:db/agent
+  threads:
+    virtual:
+      enabled: true
+  jackson:
+    # The wire protocol: snake_case names, absent instead of null, and a typo in a field name is an
+    # error rather than a silently ignored field.
+    property-naming-strategy: SNAKE_CASE
+    default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: true
+
+server:
+  port: ${AGENT_PORT:8090}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus
+
+# Secrets come from the environment or a secret store, never from this file:
+#   AGENT_ADMIN_KEYS_0        a key for the administration API (at least 32 characters)
+#   AGENT_TOKENS_SECRETS_0    the secret that signs user tokens (at least 32 characters); to rotate, put
+#                             the new one first and keep the old one until its tokens have expired
+#   AGENT_INBOX_SECRET        the secret of this service's client in the Event Inbox
+agent:
+  inbox:
+    base-url: ${AGENT_INBOX_URL:http://127.0.0.1:8080}
+    client-id: agent-server

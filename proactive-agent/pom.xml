@@ -15,7 +15,7 @@
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
   <name>proactive-agent</name>
-  <description>Proactive agent infrastructure. First module: the Event Inbox (roadmap stages M0 and M1).</description>
+  <description>Proactive agent infrastructure: the Event Inbox, and the agent service that opens a proactive agent to applications.</description>
 
   <modules>
     <module>inbox-api</module>
@@ -23,6 +23,8 @@
     <module>openapi-testkit</module>
     <module>inbox-server</module>
     <module>agent-cma</module>
+    <module>agent-api</module>
+    <module>agent-server</module>
   </modules>
 
   <properties>
@@ -48,6 +50,27 @@
       <dependency>
         <groupId>dev.agentflow</groupId>
         <artifactId>openapi-testkit</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>dev.agentflow</groupId>
+        <artifactId>inbox-server</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>dev.agentflow</groupId>
+        <artifactId>inbox-server</artifactId>
+        <version>${project.version}</version>
+        <type>test-jar</type>
+      </dependency>
+      <dependency>
+        <groupId>dev.agentflow</groupId>
+        <artifactId>agent-cma</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>dev.agentflow</groupId>
+        <artifactId>agent-api</artifactId>
         <version>${project.version}</version>
       </dependency>
     </dependencies>
