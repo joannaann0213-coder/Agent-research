@@ -86,6 +86,7 @@ scripts/inbox-curl.sh order-bot order-bot-secret GET /v1/inbox/u42/events/01M7WZ
 | `inbox-server` | 服务本身：写入 API、领取与 run 生命周期、定时器、重放、指标 |
 | `inbox-client` | 纯 Java 客户端、`ScriptedWorker`、桩发件箱、命令行 worker |
 | `openapi-testkit` | 测试支持：用服务的 OpenAPI 文档核对测试中的 HTTP 流量 |
+| `agent-cma` | 通往 Claude Managed Agents 的端口：agent 服务使用的接口、基于官方 Java SDK 的适配器，以及一个可脚本化的进程内替身 |
 
 ## 文档
 

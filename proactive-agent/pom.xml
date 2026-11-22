@@ -22,6 +22,7 @@
     <module>inbox-client</module>
     <module>openapi-testkit</module>
     <module>inbox-server</module>
+    <module>agent-cma</module>
   </modules>
 
   <properties>
@@ -29,6 +30,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <swagger-request-validator.version>2.46.1</swagger-request-validator.version>
+    <anthropic-java.version>3.12.0</anthropic-java.version>
   </properties>
 
   <dependencyManagement>

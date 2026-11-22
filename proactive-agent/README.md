@@ -92,6 +92,7 @@ Health is at `/actuator/health` and metrics at `/actuator/prometheus`.
 | `inbox-server` | The service: write API, claim and run lifecycle, timers, replay, metrics |
 | `inbox-client` | Plain Java client, `ScriptedWorker`, stub outboxes, a command-line worker |
 | `openapi-testkit` | Test support: checks a service's HTTP traffic in tests against its OpenAPI document |
+| `agent-cma` | The port to Claude Managed Agents: the interface the agent service uses, its adapter over the official Java SDK, and a scriptable in-process stand-in |
 
 ## Documentation
 
