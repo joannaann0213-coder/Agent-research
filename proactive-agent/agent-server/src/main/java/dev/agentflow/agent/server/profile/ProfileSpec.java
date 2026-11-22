@@ -7,6 +7,7 @@ import dev.agentflow.agent.cma.AgentSpec;
 import dev.agentflow.agent.cma.AgentSpec.ToolPolicy;
 import dev.agentflow.agent.cma.EnvironmentSpec;
 import dev.agentflow.agent.server.core.Json;
+import dev.agentflow.agent.server.tools.PlatformTools;
 import dev.agentflow.inbox.api.CanonicalJson;
 import dev.agentflow.inbox.api.Hashing;
 import java.nio.charset.StandardCharsets;
@@ -34,7 +35,7 @@ record ProfileSpec(AgentSpec agent, EnvironmentSpec environment) {
                 .map(server -> new AgentSpec.McpServer(server.name(), server.url(), policy(server)))
                 .toList();
         AgentSpec agent = new AgentSpec(appId + "/" + agentKey, config.name(), config.model(), config.effort(),
-                PlatformPrompt.compose(config.instructions()), tools, servers, List.of(), tags);
+                PlatformPrompt.compose(config.instructions()), tools, servers, PlatformTools.definitions(), tags);
 
         // A container exists even for an agent without container tools, so its network is closed
         // unless the profile opens it.

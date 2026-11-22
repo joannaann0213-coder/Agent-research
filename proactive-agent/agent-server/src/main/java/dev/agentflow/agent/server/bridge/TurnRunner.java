@@ -16,6 +16,8 @@ import dev.agentflow.agent.server.bridge.Turns.Turn;
 import dev.agentflow.agent.server.chat.Messages;
 import dev.agentflow.agent.server.chat.Threads;
 import dev.agentflow.agent.server.config.AgentProperties;
+import dev.agentflow.agent.server.events.AppEvents;
+import dev.agentflow.agent.server.events.AppEvents.AppEvent;
 import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.inbox.api.AckRequest;
@@ -42,8 +44,10 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * Turns one run of the Event Inbox into one turn of a session on the agent platform, and the
- * session's answer into the agent's reply.
+ * Turns one run of the Event Inbox into one turn of a session on the agent platform, and what the
+ * agent does in it into what the user gets: its answer, when the user said something; a
+ * notification or nothing at all, when the turn is about something that happened in the
+ * application's systems.
  *
  * <p>The run is the unit of work and of retry. Whatever a turn has done is on record, in its
  * {@code turn} row and in the session itself, so a run that is delivered again continues where it
@@ -58,8 +62,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li>Open the stream, then read what the session holds after the boundary. If the input is not
  *       there, send it.
  *   <li>Read until the session is idle after having processed the input, or until the turn's deadline.
- *       Tool calls that wait for an answer get one on the way.
- *   <li>Store the reply and end the turn in one transaction, then tell the Inbox.
+ *       Tool calls that wait for an answer get one on the way; the tools of this service are run here.
+ *   <li>Store the result and end the turn in one transaction, then tell the Inbox.
  * </ol>
  *
  * <p>A call to the platform that fails for a passing reason is tried again a few times here, while
@@ -73,6 +77,7 @@ public class TurnRunner {
     private static final Logger log = LoggerFactory.getLogger(TurnRunner.class);
 
     private static final int TRANSCRIPT_CHARS_PER_MESSAGE = 2000;
+    private static final int NOTE_CHARS = 2000;
 
     private sealed interface Settlement {
         record Done() implements Settlement {
@@ -101,6 +106,8 @@ public class TurnRunner {
     private final Turns turns;
     private final Threads threads;
     private final Messages messages;
+    private final AppEvents appEvents;
+    private final TurnTools tools;
     private final AgentProfiles profiles;
     private final TransactionTemplate tx;
     private final AgentClock clock;
@@ -108,14 +115,16 @@ public class TurnRunner {
     private final TurnHooks hooks;
     private final AgentProperties.Turn config;
 
-    public TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages,
-            AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, Patience patience, TurnHooks hooks,
-            AgentProperties properties) {
+    TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
+            TurnTools tools, AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, Patience patience,
+            TurnHooks hooks, AgentProperties properties) {
         this.cma = cma;
         this.inbox = inbox;
         this.turns = turns;
         this.threads = threads;
         this.messages = messages;
+        this.appEvents = appEvents;
+        this.tools = tools;
         this.profiles = profiles;
         this.tx = tx;
         this.clock = clock;
@@ -159,15 +168,15 @@ public class TurnRunner {
             return new Settlement.Failed(turn.error());
         }
 
-        List<MessageView> inputs = inputs(run);
-        if (inputs.isEmpty() || run.mergeKey() == null
+        Work work = workOf(run);
+        if (work == null || run.mergeKey() == null
                 || threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).isEmpty()) {
             return fail(run, "the run holds nothing this service can work on");
         }
         for (int session = 1; ; session++) {
             Threads.Thread thread = threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).orElseThrow();
             try {
-                return inSession(run, lease, turn, thread, inputs);
+                return inSession(run, lease, turn, thread, work);
             } catch (SessionLost lost) {
                 log.warn("run {}: {}", run.runId(), lost.getMessage());
                 threads.dropSession(lost.thread);
@@ -178,7 +187,7 @@ public class TurnRunner {
         }
     }
 
-    private Settlement inSession(ClaimedRun run, RunLease lease, Turn opened, Threads.Thread line, List<MessageView> inputs) {
+    private Settlement inSession(ClaimedRun run, RunLease lease, Turn opened, Threads.Thread line, Work work) {
         Threads.Thread thread = withSession(run, line);
         Turn turn = turns.inSession(opened, thread.generation(), thread.sessionId());
         try {
@@ -192,7 +201,7 @@ public class TurnRunner {
                 Reading reading = new Reading(turn.inputEventId());
                 after(tail.stored(), turn.boundaryEventId(), turn.boundaryAt()).forEach(event -> see(thread, reading, event));
                 if (!reading.inputSeen) {
-                    String inputId = sendInput(turn, thread, input(thread, inputs));
+                    String inputId = sendInput(turn, thread, input(thread, work));
                     hooks.at(Point.INPUT_SENT, run);
                     turns.input(turn, inputId);
                     reading.inputId = inputId;
@@ -205,10 +214,10 @@ public class TurnRunner {
                     if (!clock.now().isBefore(deadline)) {
                         return giveUp(run, turn, thread);
                     }
-                    answerWaitingCalls(thread, reading);
+                    answerWaitingCalls(run, turn, thread, work, reading);
                     patience.next(tail, config.getPoll()).ifPresent(event -> see(thread, reading, event));
                 }
-                return finish(run, turn, thread, reading);
+                return finish(run, turn, thread, work, reading);
             }
         } catch (CmaException e) {
             if (e.kind() == CmaException.Kind.NOT_FOUND) {
@@ -316,42 +325,91 @@ public class TurnRunner {
 
     // ================================================================ the input
 
-    /** The user's messages that the run's events announce, in the order they were received. */
-    private List<MessageView> inputs(ClaimedRun run) {
-        List<MessageView> inputs = new ArrayList<>();
+    /**
+     * What the run's events announce: messages of the user, or events of the application. The Inbox
+     * only holds their ids; what they say is read here.
+     *
+     * @return {@code null} when the run announces nothing that this service knows
+     */
+    private Work workOf(ClaimedRun run) {
+        List<MessageView> said = new ArrayList<>();
+        List<AppEvent> happened = new ArrayList<>();
         for (ClaimedEvent event : run.events()) {
-            if (!Messages.EVENT_TYPE.equals(event.type())) {
-                continue;
-            }
-            String conversationId = event.payload().path("conversation_id").asString(null);
-            String messageId = event.payload().path("message_id").asString(null);
-            if (conversationId != null && messageId != null) {
-                messages.find(run.tenantId(), run.inboxId(), conversationId, messageId).ifPresent(inputs::add);
+            if (Messages.EVENT_TYPE.equals(event.type())) {
+                String conversationId = event.payload().path("conversation_id").asString(null);
+                String messageId = event.payload().path("message_id").asString(null);
+                if (conversationId != null && messageId != null) {
+                    messages.find(run.tenantId(), run.inboxId(), conversationId, messageId).ifPresent(said::add);
+                }
+            } else if (AppEvents.EVENT_TYPE.equals(event.type())) {
+                String eventId = event.payload().path("event_id").asString(null);
+                if (eventId != null) {
+                    appEvents.find(run.tenantId(), run.inboxId(), eventId).ifPresent(happened::add);
+                }
             }
         }
-        inputs.sort(Comparator.comparingLong(MessageView::seq));
-        return inputs;
+        if (!said.isEmpty()) {
+            said.sort(Comparator.comparingLong(MessageView::seq));
+            return new Work.Chat(said);
+        }
+        return happened.isEmpty() ? null : new Work.Task(happened);
     }
 
     /**
-     * The text of the turn's input: the messages, in order. In a session that replaces another one,
-     * the first input begins with what was said before, because the new session knows none of it.
+     * The text that starts the turn.
+     *
+     * <p>For a conversation it is what the user said. For work in the background it is a notice in
+     * fixed words that there is something to read: what happened in the application's systems is
+     * handed over as the result of a tool, never as a message, because the agent takes a message as
+     * the word of whoever it works for, and the content of an event is not that.
      */
-    private String input(Threads.Thread thread, List<MessageView> inputs) {
+    private String input(Threads.Thread thread, Work work) {
+        return switch (work) {
+            case Work.Chat chat -> said(thread, chat.messages());
+            case Work.Task task -> {
+                int count = task.events().size();
+                yield "[From the service that runs you, not from the user. The user is not here and sees nothing of what "
+                        + "you write in this turn.]\n"
+                        + (count == 1 ? "An event from the application's systems is" : count + " events from the application's systems are")
+                        + " waiting for you. Call read_events to get " + (count == 1 ? "it" : "them")
+                        + ", then decide what to do. If the user needs to know or to do something, tell them with "
+                        + "notify_user. If not, end the turn without it.";
+            }
+        };
+    }
+
+    /**
+     * The user's messages, in order. Before them, where it applies, two notes from the service: in a
+     * session that replaces another one, what was said before, because the new session knows none of
+     * it; and that the user has been sent notifications which this session has not read.
+     */
+    private String said(Threads.Thread thread, List<MessageView> inputs) {
         StringBuilder text = new StringBuilder();
+        long synced = thread.syncedSeq();
         if (thread.generation() > 1 && thread.lastEventId() == null) {
-            List<MessageView> earlier = messages.before(thread.appId(), thread.userId(), thread.conversationId(),
+            List<MessageView> earlier = messages.dialogueBefore(thread.appId(), thread.userId(), thread.conversationId(),
                     inputs.getFirst().seq(), config.getTranscriptMessages());
             if (!earlier.isEmpty()) {
                 text.append("[From the service that runs you, not from the user: this conversation continues in a new "
                         + "session. This is what was said before, for your reference.]\n");
                 for (MessageView message : earlier) {
-                    String said = message.text().length() <= TRANSCRIPT_CHARS_PER_MESSAGE ? message.text()
+                    String words = message.text().length() <= TRANSCRIPT_CHARS_PER_MESSAGE ? message.text()
                             : message.text().substring(0, TRANSCRIPT_CHARS_PER_MESSAGE) + "…";
-                    text.append(message.role().equals("user") ? "User: " : "You: ").append(said).append('\n');
+                    text.append(message.role().equals("user") ? "User: " : "You: ").append(words).append('\n');
                 }
                 text.append("[End of the earlier conversation. The user's new message follows.]\n\n");
+                // The new session has read no notification. Those sent since the earliest thing it was told are offered to it.
+                synced = Math.min(synced, earlier.getFirst().seq() - 1);
+                threads.unsyncedAfter(thread, synced);
             }
+        }
+        int unread = messages.notificationsAfter(thread.appId(), thread.userId(), thread.conversationId(), synced,
+                TurnTools.MAX_NOTIFICATIONS_READ).size();
+        if (unread > 0) {
+            text.append("[From the service that runs you, not from the user: since this session last looked, your work in "
+                    + "the background has sent the user ").append(unread == 1 ? "a notification" : unread + " notifications")
+                    .append(" in this conversation. Call read_events to see ").append(unread == 1 ? "it" : "them")
+                    .append(" before you answer.]\n\n");
         }
         for (int i = 0; i < inputs.size(); i++) {
             text.append(i == 0 ? "" : "\n\n").append(inputs.get(i).text());
@@ -401,19 +459,22 @@ public class TurnRunner {
     }
 
     /**
-     * Answers the tool calls the session waits for. For now there is nothing behind them: a custom
-     * tool gets an error, and a call that asks for permission is denied, so that the agent can go on
-     * and say so.
+     * Answers the tool calls the session waits for. The tools of this service are run here. A call
+     * that asks for somebody's permission is denied for now, so that the agent can go on and say so.
      */
-    private void answerWaitingCalls(Threads.Thread thread, Reading reading) {
+    private void answerWaitingCalls(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, Reading reading) {
         List<Outgoing> answers = new ArrayList<>();
         for (String id : reading.waiting) {
             if (!reading.answered.add(id)) {
                 continue;
             }
             CmaEvent call = reading.calls.get(id);
-            if (call instanceof CmaEvent.CustomToolUse) {
-                answers.add(new Outgoing.CustomToolResult(id, "This tool is not available.", true));
+            if (call instanceof CmaEvent.CustomToolUse custom) {
+                TurnTools.Answer answer = tools.call(run, turn, thread, work, custom, reading.ordinal(custom));
+                if (answer.syncedTo() != null) {
+                    reading.syncedTo = answer.syncedTo();
+                }
+                answers.add(new Outgoing.CustomToolResult(id, answer.text(), answer.error()));
             } else if (call instanceof CmaEvent.ToolUse) {
                 answers.add(new Outgoing.ToolConfirmation(id, false, "This action needs an approval, and nobody can give one here."));
             } else {
@@ -425,13 +486,16 @@ public class TurnRunner {
         if (answers.isEmpty()) {
             return;
         }
+        hooks.at(Point.TOOLS_RUN, run);
         for (int attempt = 1; ; attempt++) {
             try {
                 cma.send(thread.sessionId(), answers);
+                hooks.at(Point.ANSWERS_SENT, run);
                 return;
             } catch (CmaException e) {
                 if (e.kind() == CmaException.Kind.INVALID_REQUEST && attempt > 1) {
                     // An earlier attempt got through after all: the calls are answered and no longer wait.
+                    hooks.at(Point.ANSWERS_SENT, run);
                     return;
                 }
                 if (!e.retryable() || attempt >= config.getAttempts()) {
@@ -442,26 +506,43 @@ public class TurnRunner {
         }
     }
 
-    private Settlement finish(ClaimedRun run, Turn turn, Threads.Thread thread, Reading reading) {
+    private Settlement finish(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, Reading reading) {
         switch (reading.end) {
             case TERMINATED, RETRIES_EXHAUSTED, BUDGET_REACHED ->
                     throw new SessionLost(thread, "the turn ended with " + reading.end.name().toLowerCase());
             default -> {
             }
         }
-        String reply = reading.lastText;
-        boolean replied = reply != null && !reply.isBlank();
-        String outcome = reading.end == End.REFUSAL ? "refused" : replied ? "replied" : "silent";
+        String last = reading.lastText;
+        boolean wrote = last != null && !last.isBlank();
+        boolean refused = reading.end == End.REFUSAL;
         tx.executeWithoutResult(status -> {
-            if (replied) {
-                messages.storeFromAgent(thread.appId(), thread.userId(), thread.conversationId(), "reply:" + run.runId(),
-                        "reply", reply, run.runId());
+            String outcome;
+            String note = null;
+            switch (work) {
+                case Work.Chat chat -> {
+                    // What the agent wrote last is its answer to the user.
+                    if (wrote) {
+                        messages.storeFromAgent(thread.appId(), thread.userId(), thread.conversationId(), "reply:" + run.runId(),
+                                "reply", last, run.runId());
+                    }
+                    if (reading.syncedTo != null) {
+                        threads.synced(thread, reading.syncedTo);
+                    }
+                    outcome = refused ? "refused" : wrote ? "replied" : "silent";
+                }
+                case Work.Task task -> {
+                    // Nobody reads what the agent wrote last. The user has what it sent with notify_user, if anything.
+                    boolean notified = messages.notificationsOf(thread.appId(), thread.userId(), run.runId()) > 0;
+                    outcome = notified ? "notified" : refused ? "refused" : "silent";
+                    note = !wrote ? null : last.length() <= NOTE_CHARS ? last : last.substring(0, NOTE_CHARS) + "…";
+                }
             }
             if (reading.lastEventId != null) {
                 threads.sawUpTo(thread, reading.lastEventId, reading.lastEventAt);
             }
-            // Last, and conditional on the lease: if this worker is no longer the run's, the reply above is rolled back.
-            turns.finish(turn, Turns.DONE, outcome, null);
+            // Last, and conditional on the lease: if this worker is no longer the run's, what it wrote above is rolled back.
+            turns.finish(turn, Turns.DONE, outcome, null, note);
         });
         hooks.at(Point.RESULT_STORED, run);
         return new Settlement.Done();
@@ -584,9 +665,29 @@ public class TurnRunner {
         private End end;
         private String lastEventId;
         private Instant lastEventAt;
+        /** The position of the last notification that an answer of read_events told the session about, in this delivery. */
+        private Long syncedTo;
 
         Reading(String inputId) {
             this.inputId = inputId;
+        }
+
+        /**
+         * The call's place among the turn's calls of the same tool, from 1. It is the same whenever the
+         * turn is read again, and it starts over in a session that replaces this one: so it names the
+         * call, together with the run, wherever the call is made.
+         */
+        int ordinal(CmaEvent.CustomToolUse call) {
+            int place = 0;
+            for (CmaEvent other : calls.values()) {
+                if (other instanceof CmaEvent.CustomToolUse custom && custom.name().equals(call.name())) {
+                    place++;
+                    if (custom.id().equals(call.id())) {
+                        return place;
+                    }
+                }
+            }
+            throw new IllegalStateException("call " + call.id() + " is not one of the turn's");
         }
 
         void accept(CmaEvent event) {

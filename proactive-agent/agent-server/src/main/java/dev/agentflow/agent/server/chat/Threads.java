@@ -11,23 +11,33 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 /**
- * The lines of work with a user: one per conversation. A line's key is the merge key of its events
- * in the Event Inbox, which is what makes the Inbox run them one at a time.
+ * The lines of work with a user: one per conversation, and one per subject of the application's
+ * events. A line's key is the merge key of its events in the Event Inbox, which is what makes the
+ * Inbox run them one at a time.
  */
 @Service
 public class Threads {
 
     public static final String CHAT_PREFIX = "conv:";
+    public static final String TASK_PREFIX = "task:";
+
+    public static final String CHAT = "chat";
+    public static final String TASK = "task";
 
     /**
      * @param generation which session of the line this is; 0 while there is none
      * @param sessionId the session on the agent platform, or {@code null}
      * @param sessionAgent the agent version the session was created on, or {@code null}
      * @param lastEventId the last event of the session that a finished turn has seen, or {@code null}
+     * @param syncedSeq for a conversation: the position of the last notification its session has read
      */
     public record Thread(String appId, String userId, String mergeKey, String kind, String conversationId,
             String agentKey, int generation, String sessionId, AgentRef sessionAgent, String lastEventId,
-            Instant lastEventAt) {
+            Instant lastEventAt, long syncedSeq) {
+
+        public boolean chat() {
+            return CHAT.equals(kind);
+        }
     }
 
     private final JdbcClient jdbc;
@@ -40,6 +50,10 @@ public class Threads {
 
     public static String chatKey(String conversationId) {
         return CHAT_PREFIX + conversationId;
+    }
+
+    public static String taskKey(String subject) {
+        return TASK_PREFIX + subject;
     }
 
     /** The conversation's line, started with {@code agentKey} if this is its first message. */
@@ -56,10 +70,24 @@ public class Threads {
         return find(appId, userId, chatKey(conversationId)).orElseThrow();
     }
 
+    /** The line of a subject of the application's events, started with {@code agentKey} if this is its first event. */
+    public Thread ensureTask(String appId, String userId, String subject, String agentKey) {
+        Instant now = clock.now();
+        jdbc.sql("""
+                INSERT INTO thread (app_id, user_id, merge_key, kind, agent_key, created_at, updated_at)
+                VALUES (:appId, :userId, :mergeKey, 'task', :agentKey, :now, :now)
+                ON CONFLICT (app_id, user_id, merge_key) DO NOTHING
+                """)
+                .param("appId", appId).param("userId", userId).param("mergeKey", taskKey(subject))
+                .param("agentKey", agentKey).param("now", Db.ts(now))
+                .update();
+        return find(appId, userId, taskKey(subject)).orElseThrow();
+    }
+
     public Optional<Thread> find(String appId, String userId, String mergeKey) {
         return jdbc.sql("""
                 SELECT app_id, user_id, merge_key, kind, conversation_id, agent_key, generation, cma_session_id,
-                       cma_agent_id, cma_agent_version, last_event_id, last_event_at
+                       cma_agent_id, cma_agent_version, last_event_id, last_event_at, synced_seq
                   FROM thread WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
                 """)
                 .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
@@ -115,11 +143,36 @@ public class Threads {
                 .update();
     }
 
+    /** Notes that the conversation's session has read the notifications up to position {@code seq}. */
+    public void synced(Thread thread, long seq) {
+        jdbc.sql("""
+                UPDATE thread SET synced_seq = GREATEST(synced_seq, :seq), updated_at = :now
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
+                """)
+                .param("seq", seq).param("now", Db.ts(clock.now())).param("appId", thread.appId())
+                .param("userId", thread.userId()).param("mergeKey", thread.mergeKey())
+                .update();
+    }
+
+    /**
+     * Notes that the conversation's session knows of nothing after position {@code seq}: it is a new
+     * session, which was told only so much of what came before.
+     */
+    public void unsyncedAfter(Thread thread, long seq) {
+        jdbc.sql("""
+                UPDATE thread SET synced_seq = LEAST(synced_seq, :seq), updated_at = :now
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
+                """)
+                .param("seq", seq).param("now", Db.ts(clock.now())).param("appId", thread.appId())
+                .param("userId", thread.userId()).param("mergeKey", thread.mergeKey())
+                .update();
+    }
+
     private static Thread row(ResultSet rs, int rowNumber) throws SQLException {
         String agentId = rs.getString("cma_agent_id");
         return new Thread(rs.getString("app_id"), rs.getString("user_id"), rs.getString("merge_key"), rs.getString("kind"),
                 rs.getString("conversation_id"), rs.getString("agent_key"), rs.getInt("generation"),
                 rs.getString("cma_session_id"), agentId == null ? null : new AgentRef(agentId, rs.getInt("cma_agent_version")),
-                rs.getString("last_event_id"), Db.instant(rs, "last_event_at"));
+                rs.getString("last_event_id"), Db.instant(rs, "last_event_at"), rs.getLong("synced_seq"));
     }
 }

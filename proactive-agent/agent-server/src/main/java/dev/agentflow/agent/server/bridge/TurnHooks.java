@@ -18,6 +18,10 @@ public interface TurnHooks {
         INPUT_SENT,
         /** The turn has recorded the input's id and starts reading. */
         INPUT_RECORDED,
+        /** The calls the session waits for have been run; the session has not been given their answers. */
+        TOOLS_RUN,
+        /** The session has the answers to the calls it waited for. */
+        ANSWERS_SENT,
         /** The reply is stored and the turn is done; the Inbox has not been told. */
         RESULT_STORED
     }

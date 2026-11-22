@@ -28,6 +28,8 @@ tags:
     description: The agents of an application. What each one is for, which model it runs on, what it may use.
   - name: Conversations
     description: What a user and the agent say to each other.
+  - name: Events
+    description: What the application's own systems tell the agent about a user, so that the agent can speak first.
   - name: Users
     description: The end users of an application, and the tokens their clients use.
   - name: Admin
@@ -268,6 +270,85 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/events:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Events]
+      operationId: postEvent
+      summary: Tell the agent that something happened
+      description: |
+        Hands the agent an event from the application's own systems that concerns the user: an order
+        shipped, a ticket was answered, a payment failed. **202 means stored, not handled.** A little
+        later the agent reads the event, in the background, and decides what to do about it. If it
+        finds that the user needs to know or to do something, it sends them a message, which appears
+        among the user's messages with `kind: notification`. Often it will find that nothing needs
+        saying, and say nothing.
+
+        Events with the same `subject` are handled one after the other, by an agent that remembers the
+        earlier ones; events that arrive close together are handled together. Events with different
+        subjects do not wait for each other, and none of them makes a conversation wait.
+
+        The agent reads `data` as information from another system, not as instructions: text in it
+        that tells the agent what to do is not obeyed. Say what the agent should do with a kind of
+        event in the agent's `instructions`.
+
+        The call is idempotent on `event_id`: the same id with the same content returns the earlier
+        receipt with `deduped: true`; the same id with other content is a 409.
+
+        Only an API key may call this. The agent takes an event as the application's word, which a
+        user's client cannot give.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostEventRequest'
+            example:
+              event_id: order-1234-delayed
+              type: order.delayed
+              subject: order-1234
+              data:
+                order_id: '1234'
+                new_delivery_date: '2026-11-27'
+                reason: carrier backlog
+      responses:
+        '202':
+          description: 'Stored now, or stored before (`deduped: true`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventAccepted'
+              example:
+                event_id: order-1234-delayed
+                type: order.delayed
+                subject: order-1234
+                conversation_id: default
+                created_at: '2026-11-20T10:00:00Z'
+                deduped: false
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: |
+            `conflict`: the `event_id` was already used for another event of the user, or the subject
+            is handled by another agent than the one named.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: '`data` is too large (`payload_too_large`).'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         default:
           $ref: '#/components/responses/Error'
 
@@ -835,6 +916,71 @@ components:
           description: |
             What to pass as `after` to get what comes next: the last `seq` on this page, or the `after`
             that was asked with when the page is empty.
+
+    PostEventRequest:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        event_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$'
+          description: |
+            The caller's id for the event, unique for the user. It makes a retry harmless. The service
+            makes one up when it is absent.
+        type:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_.-]{0,63}$'
+          description: |
+            What happened, in the application's own words, for example `order.shipped`. Types that
+            start with `agent.` are the service's own and are refused.
+        subject:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$'
+          description: |
+            What it happened to, for example `order-1234`. Events with the same subject are handled
+            one after the other by an agent that remembers the earlier ones. The `type` when absent.
+        agent:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'
+          description: The key of the agent that handles the subject. `default` when absent. Fixed by the subject's first event.
+        conversation_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$'
+          description: The conversation in which the user is told, if the agent decides to tell them. `default` when absent.
+        data:
+          type: object
+          additionalProperties: true
+          description: |
+            The details, at most 16 KB. Pass ids and facts; for large content, pass a reference that
+            the agent can follow with one of its tools.
+        deliver_at:
+          type: string
+          format: date-time
+          description: Do not handle the event before this time, at most 366 days ahead. At once when absent or past.
+
+    EventAccepted:
+      type: object
+      required: [event_id, type, subject, conversation_id, created_at, deduped]
+      properties:
+        event_id:
+          type: string
+        type:
+          type: string
+        subject:
+          type: string
+        conversation_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        deliver_at:
+          type: string
+          format: date-time
+          description: When the event will be handled at the earliest. Absent when that is at once.
+        deduped:
+          type: boolean
+          description: True when an event with this id had been accepted before; that one is returned.
 
     IssueTokenRequest:
       type: object

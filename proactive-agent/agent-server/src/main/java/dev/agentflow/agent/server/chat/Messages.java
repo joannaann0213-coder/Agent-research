@@ -160,10 +160,14 @@ public class Messages {
         return new MessagePage(messages, messages.isEmpty() ? after : messages.getLast().seq());
     }
 
-    /** The last {@code limit} messages of a conversation before position {@code beforeSeq}, oldest first. */
-    public List<MessageView> before(String appId, String userId, String conversationId, long beforeSeq, int limit) {
+    /**
+     * The last {@code limit} things the user and the agent said to each other in a conversation before
+     * position {@code beforeSeq}, oldest first. Notifications are not part of that exchange.
+     */
+    public List<MessageView> dialogueBefore(String appId, String userId, String conversationId, long beforeSeq, int limit) {
         List<MessageView> newestFirst = jdbc.sql(SELECT + """
                  WHERE app_id = :appId AND user_id = :userId AND conversation_id = :conversationId AND seq < :beforeSeq
+                   AND kind IN ('message', 'reply')
                  ORDER BY seq DESC
                  LIMIT :limit
                 """)
@@ -172,6 +176,44 @@ public class Messages {
                 .query(Messages::view)
                 .list();
         return newestFirst.reversed();
+    }
+
+    /**
+     * The notifications of a conversation after position {@code afterSeq}, oldest first; when there
+     * are more than {@code limit}, the latest ones.
+     */
+    public List<MessageView> notificationsAfter(String appId, String userId, String conversationId, long afterSeq, int limit) {
+        List<MessageView> newestFirst = jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND conversation_id = :conversationId AND seq > :afterSeq
+                   AND kind = 'notification'
+                 ORDER BY seq DESC
+                 LIMIT :limit
+                """)
+                .param("appId", appId).param("userId", userId).param("conversationId", conversationId)
+                .param("afterSeq", afterSeq).param("limit", limit)
+                .query(Messages::view)
+                .list();
+        return newestFirst.reversed();
+    }
+
+    /** How many notifications the user was sent since {@code since}, in all conversations. */
+    public long notificationsSince(String appId, String userId, Instant since) {
+        return jdbc.sql("""
+                SELECT count(*) FROM message
+                 WHERE app_id = :appId AND user_id = :userId AND kind = 'notification' AND created_at > :since
+                """)
+                .param("appId", appId).param("userId", userId).param("since", Db.ts(since))
+                .query(Long.class).single();
+    }
+
+    /** How many notifications a run has sent. */
+    public long notificationsOf(String appId, String userId, String runId) {
+        return jdbc.sql("""
+                SELECT count(*) FROM message
+                 WHERE app_id = :appId AND user_id = :userId AND kind = 'notification' AND run_id = :runId
+                """)
+                .param("appId", appId).param("userId", userId).param("runId", runId)
+                .query(Long.class).single();
     }
 
     public Optional<MessageView> find(String appId, String userId, String conversationId, String messageId) {

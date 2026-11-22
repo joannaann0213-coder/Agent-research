@@ -17,6 +17,7 @@ public class AgentProperties {
     private final Worker worker = new Worker();
     private final Turn turn = new Turn();
     private final Sweep sweep = new Sweep();
+    private final Notify notify = new Notify();
     private final Scheduling scheduling = new Scheduling();
 
     public Admin getAdmin() {
@@ -49,6 +50,10 @@ public class AgentProperties {
 
     public Sweep getSweep() {
         return sweep;
+    }
+
+    public Notify getNotify() {
+        return notify;
     }
 
     public Scheduling getScheduling() {
@@ -422,6 +427,43 @@ public class AgentProperties {
 
         public void setGrace(Duration grace) {
             this.grace = grace;
+        }
+    }
+
+    /** What an agent may send a user of its own accord. */
+    public static class Notify {
+
+        /** How many notifications one run may send. */
+        private int perRun = 3;
+
+        /** How many notifications a user gets within 24 hours, from all agents of the application together. */
+        private int perUserPerDay = 20;
+
+        /** The longest text of one notification, in characters. */
+        private int maxText = 4000;
+
+        public int getPerRun() {
+            return perRun;
+        }
+
+        public void setPerRun(int perRun) {
+            this.perRun = perRun;
+        }
+
+        public int getPerUserPerDay() {
+            return perUserPerDay;
+        }
+
+        public void setPerUserPerDay(int perUserPerDay) {
+            this.perUserPerDay = perUserPerDay;
+        }
+
+        public int getMaxText() {
+            return maxText;
+        }
+
+        public void setMaxText(int maxText) {
+            this.maxText = maxText;
         }
     }
 

@@ -58,7 +58,7 @@ class TurnRecoveryIT extends AgentTestBase {
     // ================================================================ a worker dies
 
     @ParameterizedTest
-    @EnumSource(Point.class)
+    @EnumSource(value = Point.class, mode = EnumSource.Mode.EXCLUDE, names = {"TOOLS_RUN", "ANSWERS_SENT"})
     void aWorkerThatDiesAnywhereInATurnIsReplaced_andNothingHappensTwice(Point point) {
         userSays(acme, USER, "hello");
         deliver();

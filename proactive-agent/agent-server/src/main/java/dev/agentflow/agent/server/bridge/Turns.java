@@ -103,10 +103,24 @@ public class Turns {
 
     /** Ends the turn. Call it in the transaction that stores the turn's result, so that both happen or neither. */
     public void finish(Turn turn, String state, String outcome, String error) {
+        finish(turn, state, outcome, error, null);
+    }
+
+    /** @param note what the agent wrote at the end of a turn that no user reads; {@code null} for none */
+    public void finish(Turn turn, String state, String outcome, String error, String note) {
         update(turn, """
-                UPDATE turn SET state = :state, outcome = :outcome, error = :error, updated_at = :now, finished_at = :now
+                UPDATE turn SET state = :state, outcome = :outcome, error = :error, note = :note, updated_at = :now,
+                       finished_at = :now
                  WHERE run_id = :runId AND epoch = :epoch AND state = 'open'
-                """, "state", state, "outcome", outcome, "error", error);
+                """, "state", state, "outcome", outcome, "error", error, "note", note);
+    }
+
+    /**
+     * Checks, inside the caller's transaction, that the turn is still this worker's. Whatever the
+     * transaction writes next to it is then written by the worker that holds the run, or not at all.
+     */
+    public void stillHeld(Turn turn) {
+        update(turn, "UPDATE turn SET updated_at = :now WHERE run_id = :runId AND epoch = :epoch AND state = 'open'");
     }
 
     /** Open turns that nobody has touched since {@code before}: candidates for a run that ended without this service. */
