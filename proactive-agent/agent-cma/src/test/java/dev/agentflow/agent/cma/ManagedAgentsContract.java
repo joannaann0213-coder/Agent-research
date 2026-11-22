@@ -107,6 +107,10 @@ abstract class ManagedAgentsContract {
         CmaException stale = catchThrowableOfType(CmaException.class, () -> cma.updateAgent(v1, first));
         assertThat(stale.kind()).isEqualTo(CmaException.Kind.CONFLICT);
         assertThat(stale.retryable()).isFalse();
+
+        assertThat(cma.getAgent(v1.id())).as("the current version, to start the next update from").isEqualTo(v2);
+        assertThat(cma.updateAgent(cma.getAgent(v1.id()), first)).isEqualTo(new AgentRef(v1.id(), 3));
+        assertThat(kindOf(() -> cma.getAgent("agent_nope"))).isEqualTo(CmaException.Kind.NOT_FOUND);
     }
 
     @Test

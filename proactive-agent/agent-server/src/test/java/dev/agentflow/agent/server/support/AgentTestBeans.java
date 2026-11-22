@@ -1,5 +1,6 @@
 package dev.agentflow.agent.server.support;
 
+import dev.agentflow.agent.cma.fake.FakeManagedAgents;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.testkit.openapi.OpenApiTrafficFilter;
 import org.springframework.boot.flyway.autoconfigure.FlywayMigrationStrategy;
@@ -9,7 +10,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.Ordered;
 
-/** Beans that make the agent service testable: the shared hand-driven clock, a clean schema, a check of the traffic. */
+/** Beans that make the agent service testable: the shared hand-driven clock, a scripted agent platform, a clean schema, a check of the traffic. */
 @TestConfiguration(proxyBeanMethods = false)
 public class AgentTestBeans {
 
@@ -18,6 +19,13 @@ public class AgentTestBeans {
     @Primary
     AgentClock sharedClock() {
         return () -> EmbeddedInbox.clock().now();
+    }
+
+    /** The agent platform of the tests: the scripted stand-in, on the shared clock. A test scripts it and looks into it. */
+    @Bean
+    @Primary
+    FakeManagedAgents fakeManagedAgents() {
+        return new FakeManagedAgents(() -> EmbeddedInbox.clock().now());
     }
 
     /** Every test JVM starts from an empty, freshly migrated schema. */

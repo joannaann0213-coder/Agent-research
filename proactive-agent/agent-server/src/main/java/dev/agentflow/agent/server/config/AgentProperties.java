@@ -12,6 +12,7 @@ public class AgentProperties {
     private final Admin admin = new Admin();
     private final Tokens tokens = new Tokens();
     private final Inbox inbox = new Inbox();
+    private final Cma cma = new Cma();
     private final Relay relay = new Relay();
     private final Scheduling scheduling = new Scheduling();
 
@@ -25,6 +26,10 @@ public class AgentProperties {
 
     public Inbox getInbox() {
         return inbox;
+    }
+
+    public Cma getCma() {
+        return cma;
     }
 
     public Relay getRelay() {
@@ -124,6 +129,52 @@ public class AgentProperties {
 
         public void setSecret(String secret) {
             this.secret = secret;
+        }
+
+        public Duration getRequestTimeout() {
+            return requestTimeout;
+        }
+
+        public void setRequestTimeout(Duration requestTimeout) {
+            this.requestTimeout = requestTimeout;
+        }
+    }
+
+    /** The agent platform, Claude Managed Agents. */
+    public static class Cma {
+
+        /** {@code live} talks to the real service; {@code demo} runs a scripted stand-in and needs no key. */
+        private String mode = "live";
+
+        private String apiKey;
+
+        /** Set on purpose and not taken from ANTHROPIC_BASE_URL, which may point elsewhere on a developer's machine. */
+        private String baseUrl = "https://api.anthropic.com";
+
+        private Duration requestTimeout = Duration.ofSeconds(60);
+
+        public String getMode() {
+            return mode;
+        }
+
+        public void setMode(String mode) {
+            this.mode = mode;
+        }
+
+        public String getApiKey() {
+            return apiKey;
+        }
+
+        public void setApiKey(String apiKey) {
+            this.apiKey = apiKey;
+        }
+
+        public String getBaseUrl() {
+            return baseUrl;
+        }
+
+        public void setBaseUrl(String baseUrl) {
+            this.baseUrl = baseUrl;
         }
 
         public Duration getRequestTimeout() {

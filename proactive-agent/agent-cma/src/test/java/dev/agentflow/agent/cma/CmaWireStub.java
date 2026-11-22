@@ -123,6 +123,9 @@ final class CmaWireStub implements AutoCloseable {
                 JsonNode body = body(exchange);
                 AgentSpec spec = agentSpec(body);
                 respond(exchange, 200, agent(fake.updateAgent(new AgentRef(match.group(1), body.path("version").asInt()), spec), spec));
+            } else if (method.equals("GET") && (match = AGENT.matcher(path)).matches()) {
+                AgentRef latest = fake.getAgent(match.group(1));
+                respond(exchange, 200, agent(latest, fake.agentSpec(latest)));
             } else if (method.equals("POST") && path.equals("/v1/sessions")) {
                 respond(exchange, 200, session(fake.getSession(fake.createSession(sessionSpec(body(exchange))))));
             } else if (method.equals("GET") && (match = SESSION.matcher(path)).matches()) {

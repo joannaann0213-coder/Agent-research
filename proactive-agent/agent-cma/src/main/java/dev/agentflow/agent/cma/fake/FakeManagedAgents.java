@@ -64,6 +64,7 @@ public final class FakeManagedAgents implements ManagedAgents {
         UPDATE_ENVIRONMENT,
         CREATE_AGENT,
         UPDATE_AGENT,
+        GET_AGENT,
         CREATE_SESSION,
         GET_SESSION,
         LIST_EVENTS,
@@ -118,6 +119,36 @@ public final class FakeManagedAgents implements ManagedAgents {
     }
 
     // ================================================================ scripting
+
+    /** Forgets everything: environments, agents, sessions, scripts, faults and records. For use between tests. */
+    public void reset() {
+        synchronized (lock) {
+            sessions.values().forEach(session -> session.streams.forEach(FakeStream::drop));
+            environments.clear();
+            agents.clear();
+            sessions.clear();
+            faults.clear();
+            platformTools.clear();
+            calls.clear();
+            executions.clear();
+            brain = FakeBrains.echo();
+            autoJudge = (server, tool, input) -> Permission.ALLOW;
+            interruptsHaveIds = true;
+        }
+    }
+
+    /** The current version of every agent, in the order they were created. */
+    public List<AgentRef> agents() {
+        synchronized (lock) {
+            return agents.entrySet().stream().map(entry -> new AgentRef(entry.getKey(), entry.getValue().size())).toList();
+        }
+    }
+
+    public List<String> environmentIds() {
+        synchronized (lock) {
+            return List.copyOf(environments.keySet());
+        }
+    }
 
     /** Sets the script that plays the model, for every session. */
     public void brain(FakeBrain brain) {
@@ -333,6 +364,19 @@ public final class FakeManagedAgents implements ManagedAgents {
             }
             end(fault);
             return new AgentRef(current.id(), versions.size());
+        }
+    }
+
+    @Override
+    public AgentRef getAgent(String agentId) {
+        synchronized (lock) {
+            Fault fault = begin(Operation.GET_AGENT, agentId, null);
+            List<AgentSpec> versions = agents.get(agentId);
+            if (versions == null) {
+                throw CmaException.notFound("no such agent: " + agentId);
+            }
+            end(fault);
+            return new AgentRef(agentId, versions.size());
         }
     }
 

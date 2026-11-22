@@ -222,6 +222,14 @@ public final class SdkManagedAgents implements ManagedAgents, AutoCloseable {
         });
     }
 
+    @Override
+    public AgentRef getAgent(String agentId) {
+        return call(() -> {
+            BetaManagedAgentsAgent agent = client.beta().agents().retrieve(agentId);
+            return new AgentRef(agent.id(), agent.version());
+        });
+    }
+
     private static BetaManagedAgentsModelConfigParams model(AgentSpec spec) {
         BetaManagedAgentsModelConfigParams.Builder model = BetaManagedAgentsModelConfigParams.builder().id(spec.model());
         if (spec.effort() != null) {

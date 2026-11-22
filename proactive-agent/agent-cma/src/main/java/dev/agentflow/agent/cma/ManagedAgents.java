@@ -35,6 +35,9 @@ public interface ManagedAgents {
      */
     AgentRef updateAgent(AgentRef current, AgentSpec spec);
 
+    /** The agent's current version: what an update has to start from when the stored reference is out of date. */
+    AgentRef getAgent(String agentId);
+
     // ------------------------------------------------------------------ sessions
 
     /**

@@ -4,6 +4,7 @@ import dev.agentflow.agent.api.CreateAppRequest;
 import dev.agentflow.agent.api.CreateKeyRequest;
 import dev.agentflow.agent.api.CreatedKey;
 import dev.agentflow.agent.api.IssuedToken;
+import dev.agentflow.agent.cma.fake.FakeManagedAgents;
 import dev.agentflow.agent.server.AgentServerApplication;
 import dev.agentflow.agent.server.api.OpenApiController;
 import dev.agentflow.inbox.server.support.IntegrationTestBase;
@@ -59,6 +60,10 @@ public abstract class AgentTestBase {
     @Autowired
     protected JdbcClient jdbc;
 
+    /** The agent platform of the tests. */
+    @Autowired
+    protected FakeManagedAgents cma;
+
     protected final MutableClock clock = EmbeddedInbox.clock();
 
     /** The Agent API as an operator of the service. */
@@ -68,8 +73,9 @@ public abstract class AgentTestBase {
 
     @BeforeEach
     void resetState() {
-        jdbc.sql("TRUNCATE TABLE inbox_relay, app_user, api_key, app RESTART IDENTITY CASCADE").update();
+        jdbc.sql("TRUNCATE TABLE agent_profile, inbox_relay, app_user, api_key, app RESTART IDENTITY CASCADE").update();
         EmbeddedInbox.reset();
+        cma.reset();
         clock.reset();
         anonymous = new TestApi(baseUri(), null);
         admin = anonymous.as(ADMIN_KEY);

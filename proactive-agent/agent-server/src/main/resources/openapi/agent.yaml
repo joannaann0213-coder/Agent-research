@@ -24,6 +24,8 @@ servers:
 tags:
   - name: Service
     description: About the caller and the service.
+  - name: Agents
+    description: The agents of an application. What each one is for, which model it runs on, what it may use.
   - name: Users
     description: The end users of an application, and the tokens their clients use.
   - name: Admin
@@ -53,6 +55,111 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/agents:
+    get:
+      tags: [Agents]
+      operationId: listAgents
+      summary: List agents
+      description: Lists the application's agents, by key. Only an API key may call this.
+      responses:
+        '200':
+          description: The agents.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AgentProfileView'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/agents/{agent_key}:
+    parameters:
+      - name: agent_key
+        in: path
+        required: true
+        description: The application's name for the agent, for example `default` or `support`.
+        schema:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'
+    put:
+      tags: [Agents]
+      operationId: saveAgent
+      summary: Create or replace an agent
+      description: |
+        Sets what the agent is: its instructions, its model, and what it may use. The body replaces
+        the whole configuration; a field that is absent goes back to its default. Sending the same
+        configuration again changes nothing.
+
+        The agent is set up on the agent platform before this call returns. If the platform refuses
+        the configuration (an unknown model, for instance) the answer is a 400 and nothing is saved;
+        if the platform cannot be reached it is a 503 and nothing is saved either.
+
+        Conversations that are under way pick up a new configuration at their next turn. Only an API
+        key may call this.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentProfileRequest'
+            example:
+              name: Acme Support Assistant
+              instructions: You help Acme's customers with their orders. Be brief and concrete.
+              effort: medium
+              mcp_servers:
+                - name: orders
+                  url: https://mcp.acme.example/orders
+                  approval: always_ask
+                  approver: user
+      responses:
+        '200':
+          description: The agent existed; this is its configuration now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentProfileView'
+        '201':
+          description: The agent was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentProfileView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Agents]
+      operationId: getAgent
+      summary: Read an agent
+      description: Returns the agent's configuration with every default filled in. Only an API key may call this.
+      responses:
+        '200':
+          description: The agent.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentProfileView'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         default:
           $ref: '#/components/responses/Error'
 
@@ -359,6 +466,14 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Problem'
+    Unavailable:
+      description: |
+        Something the service depends on cannot be reached right now (`unavailable`). Nothing was
+        changed; the same request can be sent again.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
     Error:
       description: Any other error.
       content:
@@ -408,6 +523,125 @@ components:
         user_id:
           type: string
           description: Present for a user token only.
+
+    SandboxConfig:
+      type: object
+      additionalProperties: false
+      description: |
+        The agent's own computer: a shell and file tools in a container that exists for one
+        conversation. Off unless enabled.
+      properties:
+        enabled:
+          type: boolean
+          description: Whether the agent has the container tools at all. Every other setting here needs it.
+        web_search:
+          type: boolean
+          description: Whether the agent may search the web. Needs a network that is not `none`.
+        web_fetch:
+          type: boolean
+          description: Whether the agent may read web pages. Needs a network that is not `none`.
+        network:
+          type: string
+          enum: [none, limited, unrestricted]
+          description: What the container may reach. `limited` means only `allowed_hosts`.
+        allowed_hosts:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+          description: The hosts a `limited` container may reach, as plain host names such as `api.example.com`.
+
+    McpServerConfig:
+      type: object
+      additionalProperties: false
+      description: |
+        A third-party system the agent reaches over MCP. Its credential is not part of the agent's
+        configuration.
+      required: [name, url]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'
+          description: A short name, unique within the agent.
+        url:
+          type: string
+          description: The server's HTTPS endpoint.
+        approval:
+          type: string
+          enum: [always_ask, auto, always_allow]
+          description: |
+            When a call of one of the server's tools needs approval. `always_ask` (the default) asks
+            every time; `auto` lets the platform judge each call; `always_allow` never asks.
+        approver:
+          type: string
+          enum: [app, user]
+          description: |
+            Who approves. `app` (the default) is the application's back end; `user` is the end user,
+            in the application's client.
+
+    AgentProfileRequest:
+      type: object
+      additionalProperties: false
+      required: [name, instructions]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          description: A name for people.
+        model:
+          type: string
+          description: The Claude model. `claude-opus-5-5` when absent.
+        effort:
+          type: string
+          enum: [low, medium, high, xhigh, max]
+          description: How hard the model thinks. The model's own default when absent.
+        instructions:
+          type: string
+          minLength: 1
+          maxLength: 50000
+          description: |
+            What the agent is for and how it should behave. The service adds its own short notes on
+            how the agent is woken and how it reaches the user.
+        sandbox:
+          $ref: '#/components/schemas/SandboxConfig'
+        mcp_servers:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/McpServerConfig'
+
+    AgentProfileView:
+      type: object
+      description: An agent of an application, with every default filled in.
+      required: [agent_key, name, model, instructions, sandbox, mcp_servers, revision, created_at, updated_at]
+      properties:
+        agent_key:
+          type: string
+        name:
+          type: string
+        model:
+          type: string
+        effort:
+          type: string
+          enum: [low, medium, high, xhigh, max]
+        instructions:
+          type: string
+        sandbox:
+          $ref: '#/components/schemas/SandboxConfig'
+        mcp_servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpServerConfig'
+        revision:
+          type: integer
+          description: Counts the changes of the configuration, from 1.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     IssueTokenRequest:
       type: object

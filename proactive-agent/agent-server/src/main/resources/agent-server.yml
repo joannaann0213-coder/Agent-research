@@ -38,7 +38,12 @@ management:
 #   AGENT_TOKENS_SECRETS_0    the secret that signs user tokens (at least 32 characters); to rotate, put
 #                             the new one first and keep the old one until its tokens have expired
 #   AGENT_INBOX_SECRET        the secret of this service's client in the Event Inbox
+#   ANTHROPIC_API_KEY         the key for Claude Managed Agents; not needed with AGENT_CMA_MODE=demo
 agent:
   inbox:
     base-url: ${AGENT_INBOX_URL:http://127.0.0.1:8080}
     client-id: agent-server
+  cma:
+    # live: Claude Managed Agents. demo: a scripted stand-in in this process; no key, no model calls.
+    mode: ${AGENT_CMA_MODE:live}
+    api-key: ${ANTHROPIC_API_KEY:}

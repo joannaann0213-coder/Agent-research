@@ -22,3 +22,6 @@ agent:
       - test-token-secret-0123456789abcdef0123456789
   inbox:
     secret: agent-inbox-secret
+  cma:
+    # The tests bring their own scripted stand-in (see AgentTestBeans); nothing calls the real service.
+    mode: demo
