@@ -1,5 +1,6 @@
 package dev.agentflow.agent.api;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -14,7 +15,14 @@ import java.util.List;
  *     its own short notes on how the agent is woken and how it reaches the user
  * @param sandbox the agent's own computer; none when absent
  * @param mcpServers the third-party systems the agent may use; none when absent
+ * @param sessionBudgetUsd what one session of the agent may spend at most, in US dollars; no limit
+ *     when absent. A conversation whose session has spent it goes on in a new one
  */
 public record AgentProfileRequest(String name, String model, String effort, String instructions, SandboxConfig sandbox,
-        List<McpServerConfig> mcpServers) {
+        List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd) {
+
+    public AgentProfileRequest(String name, String model, String effort, String instructions, SandboxConfig sandbox,
+            List<McpServerConfig> mcpServers) {
+        this(name, model, effort, instructions, sandbox, mcpServers, null);
+    }
 }

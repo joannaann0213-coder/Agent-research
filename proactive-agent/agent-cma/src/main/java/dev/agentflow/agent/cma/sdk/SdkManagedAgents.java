@@ -28,6 +28,8 @@ import com.anthropic.models.beta.environments.BetaLimitedNetworkParams;
 import com.anthropic.models.beta.environments.BetaUnrestrictedNetwork;
 import com.anthropic.models.beta.environments.EnvironmentCreateParams;
 import com.anthropic.models.beta.environments.EnvironmentUpdateParams;
+import com.anthropic.models.beta.BetaCurrency;
+import com.anthropic.models.beta.BetaMonetaryAmount;
 import com.anthropic.models.beta.sessions.BetaManagedAgentsAgentParams;
 import com.anthropic.models.beta.sessions.BetaManagedAgentsSession;
 import com.anthropic.models.beta.sessions.SessionCreateParams;
@@ -49,9 +51,21 @@ import dev.agentflow.agent.cma.CmaException.Kind;
 import dev.agentflow.agent.cma.EnvironmentSpec;
 import dev.agentflow.agent.cma.EventStream;
 import dev.agentflow.agent.cma.ManagedAgents;
+import dev.agentflow.agent.cma.McpCredential;
 import dev.agentflow.agent.cma.Outgoing;
 import dev.agentflow.agent.cma.SessionInfo;
 import dev.agentflow.agent.cma.SessionSpec;
+import com.anthropic.models.beta.vaults.VaultCreateParams;
+import com.anthropic.models.beta.vaults.credentials.BetaManagedAgentsCredential;
+import com.anthropic.models.beta.vaults.credentials.BetaManagedAgentsMcpOAuthCreateParams;
+import com.anthropic.models.beta.vaults.credentials.BetaManagedAgentsMcpOAuthRefreshParams;
+import com.anthropic.models.beta.vaults.credentials.BetaManagedAgentsStaticBearerCreateParams;
+import com.anthropic.models.beta.vaults.credentials.BetaManagedAgentsStaticBearerUpdateParams;
+import com.anthropic.models.beta.vaults.credentials.BetaManagedAgentsTokenEndpointAuthNoneParam;
+import com.anthropic.models.beta.vaults.credentials.CredentialArchiveParams;
+import com.anthropic.models.beta.vaults.credentials.CredentialCreateParams;
+import com.anthropic.models.beta.vaults.credentials.CredentialListParams;
+import com.anthropic.models.beta.vaults.credentials.CredentialUpdateParams;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -319,6 +333,9 @@ public final class SdkManagedAgents implements ManagedAgents, AutoCloseable {
             if (!spec.vaultIds().isEmpty()) {
                 params.vaultIds(spec.vaultIds());
             }
+            if (spec.budgetUsd() != null) {
+                params.limitBudget(BetaMonetaryAmount.builder().amount(spec.budgetUsd().toPlainString()).currency(BetaCurrency.USD).build());
+            }
             return client.beta().sessions().create(params.build()).id();
         });
     }
@@ -395,6 +412,86 @@ public final class SdkManagedAgents implements ManagedAgents, AutoCloseable {
             }
             BetaManagedAgentsSendSessionEvents sent = once.beta().sessions().events().send(sessionId, params.build());
             return sent.data().orElse(List.of()).stream().map(SdkEvents::of).toList();
+        });
+    }
+
+    // ================================================================ credentials
+
+    @Override
+    public String createVault(String displayName, Map<String, String> metadata) {
+        return call(() -> {
+            VaultCreateParams.Builder params = VaultCreateParams.builder().displayName(displayName);
+            if (!metadata.isEmpty()) {
+                VaultCreateParams.Metadata.Builder tags = VaultCreateParams.Metadata.builder();
+                metadata.forEach((key, value) -> tags.putAdditionalProperty(key, JsonValue.from(value)));
+                params.metadata(tags.build());
+            }
+            return client.beta().vaults().create(params.build()).id();
+        });
+    }
+
+    @Override
+    public String createCredential(String vaultId, McpCredential credential) {
+        return call(() -> {
+            CredentialCreateParams.Builder params = CredentialCreateParams.builder().vaultId(vaultId);
+            if (credential.displayName() != null) {
+                params.displayName(credential.displayName());
+            }
+            if (credential.bearerToken() != null) {
+                params.auth(BetaManagedAgentsStaticBearerCreateParams.builder()
+                        .mcpServerUrl(credential.mcpServerUrl()).token(credential.bearerToken()).build());
+            } else {
+                McpCredential.OAuth oauth = credential.oauth();
+                BetaManagedAgentsMcpOAuthCreateParams.Builder auth = BetaManagedAgentsMcpOAuthCreateParams.builder()
+                        .mcpServerUrl(credential.mcpServerUrl()).accessToken(oauth.accessToken());
+                if (oauth.expiresAt() != null) {
+                    auth.expiresAt(OffsetDateTime.ofInstant(oauth.expiresAt(), ZoneOffset.UTC));
+                }
+                if (oauth.refresh() != null) {
+                    McpCredential.Refresh refresh = oauth.refresh();
+                    BetaManagedAgentsMcpOAuthRefreshParams.Builder renewal = BetaManagedAgentsMcpOAuthRefreshParams.builder()
+                            .refreshToken(refresh.refreshToken()).clientId(refresh.clientId()).tokenEndpoint(refresh.tokenEndpoint());
+                    switch (refresh.tokenEndpointAuth() == null ? "none" : refresh.tokenEndpointAuth()) {
+                        case "client_secret_basic" -> renewal.clientSecretBasicTokenEndpointAuth(refresh.clientSecret());
+                        case "client_secret_post" -> renewal.clientSecretPostTokenEndpointAuth(refresh.clientSecret());
+                        default -> renewal.tokenEndpointAuth(BetaManagedAgentsTokenEndpointAuthNoneParam.builder().build());
+                    }
+                    if (refresh.scope() != null) {
+                        renewal.scope(refresh.scope());
+                    }
+                    auth.refresh(renewal.build());
+                }
+                params.auth(auth.build());
+            }
+            // Not repeated behind the caller's back: a repeat after a lost answer would meet the first one.
+            return once.beta().vaults().credentials().create(params.build()).id();
+        });
+    }
+
+    @Override
+    public void updateCredential(String vaultId, String credentialId, String bearerToken) {
+        call(() -> client.beta().vaults().credentials().update(CredentialUpdateParams.builder()
+                .vaultId(vaultId).credentialId(credentialId)
+                .auth(BetaManagedAgentsStaticBearerUpdateParams.builder().token(bearerToken).build())
+                .build()));
+    }
+
+    @Override
+    public void archiveCredential(String vaultId, String credentialId) {
+        call(() -> client.beta().vaults().credentials().archive(CredentialArchiveParams.builder()
+                .vaultId(vaultId).credentialId(credentialId).build()));
+    }
+
+    @Override
+    public List<McpCredential.Stored> listCredentials(String vaultId) {
+        return call(() -> {
+            List<McpCredential.Stored> stored = new ArrayList<>();
+            for (BetaManagedAgentsCredential credential : client.beta().vaults().credentials()
+                    .list(CredentialListParams.builder().vaultId(vaultId).build()).autoPager()) {
+                stored.add(new McpCredential.Stored(credential.id(), credential.auth().mcpServerUrl().orElse(null),
+                        credential.archivedAt().isPresent()));
+            }
+            return stored;
         });
     }
 

@@ -41,7 +41,7 @@ class AgentProfilesIT extends AgentTestBase {
         AgentProfileView agent = reply.as(AgentProfileView.class);
         assertThat(agent).isEqualTo(new AgentProfileView("support", "Support", "claude-opus-5-5", null,
                 "You help customers with their orders.", new SandboxConfig(false, false, false, "none", List.of()),
-                List.of(), 1, clock.now(), clock.now()));
+                List.of(), null, 1, clock.now(), clock.now()));
 
         AgentRef platformAgent = cma.agents().getFirst();
         assertThat(platformAgent.version()).isEqualTo(1);

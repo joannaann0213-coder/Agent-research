@@ -24,6 +24,7 @@ import dev.agentflow.agent.server.delivery.Outbound;
 import dev.agentflow.agent.api.Update;
 import dev.agentflow.agent.server.events.AppEvents;
 import dev.agentflow.agent.server.events.AppEvents.AppEvent;
+import dev.agentflow.agent.server.credentials.Credentials;
 import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.schedules.Schedules;
 import dev.agentflow.agent.server.time.AgentClock;
@@ -140,6 +141,7 @@ public class TurnRunner {
     private final Actions actions;
     private final Users users;
     private final Outbound outbound;
+    private final Credentials credentials;
     private final TurnTools tools;
     private final AgentProfiles profiles;
     private final TransactionTemplate tx;
@@ -150,8 +152,9 @@ public class TurnRunner {
     private final Duration actionTtl;
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
-            Schedules schedules, Actions actions, Users users, Outbound outbound, TurnTools tools, AgentProfiles profiles,
-            TransactionTemplate tx, AgentClock clock, Patience patience, TurnHooks hooks, AgentProperties properties) {
+            Schedules schedules, Actions actions, Users users, Outbound outbound, Credentials credentials, TurnTools tools,
+            AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, Patience patience, TurnHooks hooks,
+            AgentProperties properties) {
         this.cma = cma;
         this.inbox = inbox;
         this.turns = turns;
@@ -162,6 +165,7 @@ public class TurnRunner {
         this.actions = actions;
         this.users = users;
         this.outbound = outbound;
+        this.credentials = credentials;
         this.tools = tools;
         this.profiles = profiles;
         this.tx = tx;
@@ -232,6 +236,9 @@ public class TurnRunner {
         Optional<Settlement> earlierFirst = waitForTheLine(run, turn);
         if (earlierFirst.isPresent()) {
             return earlierFirst.get();
+        }
+        if (!turn.boundarySet()) {
+            renewIfOutdated(run);
         }
         for (int session = 1; ; session++) {
             Threads.Thread thread = threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).orElseThrow();
@@ -359,13 +366,35 @@ public class TurnRunner {
             return thread;
         }
         AgentProfiles.Ready profile = profiles.ready(thread.appId(), thread.agentKey());
+        List<String> vaults = credentials.vaultsFor(thread.appId(), thread.userId());
         String sessionId = platform(() -> cma.createSession(new SessionSpec(profile.agent(), profile.environmentId(),
                 thread.appId() + " / " + thread.userId() + " / " + thread.mergeKey(),
                 Map.of("app", thread.appId(), "user", thread.userId(), "line", thread.mergeKey(),
                         "generation", Integer.toString(thread.generation() + 1)),
-                List.of())));
+                vaults, profile.config().sessionBudgetUsd())));
         hooks.at(Point.SESSION_CREATED, run);
-        return threads.startSession(thread, sessionId, profile.agent());
+        return threads.startSession(thread, sessionId, profile.agent(), vaults);
+    }
+
+    /**
+     * Gives the line a new session when its session is behind: the agent was configured anew since
+     * it was created, or credentials came that need a vault it does not have. A session cannot take
+     * either on. It happens only between turns, never in the middle of one; a new conversation session
+     * is told what was said before.
+     */
+    private void renewIfOutdated(ClaimedRun run) {
+        Threads.Thread thread = threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).orElseThrow();
+        if (thread.sessionId() == null) {
+            return;
+        }
+        AgentProfiles.Ready profile = profiles.ready(thread.appId(), thread.agentKey());
+        String vaults = String.join(",", credentials.vaultsFor(thread.appId(), thread.userId()));
+        String why = !profile.agent().equals(thread.sessionAgent()) ? "the agent was configured anew"
+                : !vaults.equals(thread.vaultIds()) ? "its credentials changed" : null;
+        if (why != null) {
+            log.info("line {} of {}/{} starts a new session: {}", thread.mergeKey(), thread.appId(), thread.userId(), why);
+            threads.dropSession(thread);
+        }
     }
 
     /**

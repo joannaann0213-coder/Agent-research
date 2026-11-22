@@ -216,8 +216,12 @@ public class AgentProfiles {
         if (request.instructions().length() > MAX_INSTRUCTIONS) {
             throw AgentException.invalid("instructions have at most " + MAX_INSTRUCTIONS + " characters");
         }
+        java.math.BigDecimal budget = request.sessionBudgetUsd();
+        if (budget != null && (budget.signum() <= 0 || budget.compareTo(new java.math.BigDecimal("10000")) > 0 || budget.scale() > 2)) {
+            throw AgentException.invalid("session_budget_usd is an amount of dollars and cents, more than 0 and at most 10000");
+        }
         return new AgentProfileRequest(request.name(), model, request.effort(), request.instructions(),
-                sandbox(request.sandbox()), servers(request.mcpServers()));
+                sandbox(request.sandbox()), servers(request.mcpServers()), budget == null ? null : budget.setScale(2));
     }
 
     private static SandboxConfig sandbox(SandboxConfig sandbox) {
@@ -326,6 +330,6 @@ public class AgentProfiles {
     private static AgentProfileView view(Row row) {
         AgentProfileRequest config = row.config();
         return new AgentProfileView(row.agentKey(), config.name(), config.model(), config.effort(), config.instructions(),
-                config.sandbox(), config.mcpServers(), row.revision(), row.createdAt(), row.updatedAt());
+                config.sandbox(), config.mcpServers(), config.sessionBudgetUsd(), row.revision(), row.createdAt(), row.updatedAt());
     }
 }

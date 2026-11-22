@@ -96,7 +96,8 @@ class AuthIT extends AgentTestBase {
         String secret = key.substring(key.lastIndexOf('.') + 1);
 
         assertThat(count("SELECT count(*) FROM api_key WHERE length(secret_hash) = 32")).isEqualTo(1);
-        assertThat(jdbc.sql("SELECT count(*) FROM api_key WHERE convert_from(secret_hash, 'LATIN1') LIKE :secret OR label LIKE :secret")
+        // encode(..., 'escape') turns any byte into text, also the NUL that a random hash may hold.
+        assertThat(jdbc.sql("SELECT count(*) FROM api_key WHERE encode(secret_hash, 'escape') LIKE :secret OR label LIKE :secret")
                 .param("secret", "%" + secret + "%").query(Long.class).single()).isZero();
     }
 

@@ -31,10 +31,11 @@ public class Threads {
      * @param lastEventId the last event of the session that a finished turn has seen, or {@code null}
      * @param syncedSeq for a conversation: the position of the last notification its session has read
      * @param stoppedThrough for a conversation: the user's messages up to this position are not answered any more
+     * @param vaultIds the vaults the session was created with, joined by commas
      */
     public record Thread(String appId, String userId, String mergeKey, String kind, String conversationId,
             String agentKey, int generation, String sessionId, AgentRef sessionAgent, String lastEventId,
-            Instant lastEventAt, long syncedSeq, long stoppedThrough) {
+            Instant lastEventAt, long syncedSeq, long stoppedThrough, String vaultIds) {
 
         public boolean chat() {
             return CHAT.equals(kind);
@@ -88,7 +89,7 @@ public class Threads {
     public Optional<Thread> find(String appId, String userId, String mergeKey) {
         return jdbc.sql("""
                 SELECT app_id, user_id, merge_key, kind, conversation_id, agent_key, generation, cma_session_id,
-                       cma_agent_id, cma_agent_version, last_event_id, last_event_at, synced_seq, stopped_through
+                       cma_agent_id, cma_agent_version, last_event_id, last_event_at, synced_seq, stopped_through, cma_vault_ids
                   FROM thread WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
                 """)
                 .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
@@ -101,15 +102,17 @@ public class Threads {
      * the one passed here is simply never used: a session that gets no event does nothing and costs
      * nothing.
      */
-    public Thread startSession(Thread thread, String sessionId, AgentRef agent) {
+    public Thread startSession(Thread thread, String sessionId, AgentRef agent, java.util.List<String> vaultIds) {
         jdbc.sql("""
                 UPDATE thread
                    SET generation = generation + 1, cma_session_id = :sessionId, cma_agent_id = :agentId,
-                       cma_agent_version = :agentVersion, last_event_id = NULL, last_event_at = NULL, updated_at = :now
+                       cma_agent_version = :agentVersion, cma_vault_ids = :vaultIds, last_event_id = NULL, last_event_at = NULL,
+                       updated_at = :now
                  WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey AND generation = :generation
                    AND cma_session_id IS NULL
                 """)
                 .param("sessionId", sessionId).param("agentId", agent.id()).param("agentVersion", agent.version())
+                .param("vaultIds", String.join(",", vaultIds))
                 .param("now", Db.ts(clock.now())).param("appId", thread.appId()).param("userId", thread.userId())
                 .param("mergeKey", thread.mergeKey()).param("generation", thread.generation())
                 .update();
@@ -193,6 +196,6 @@ public class Threads {
                 rs.getString("conversation_id"), rs.getString("agent_key"), rs.getInt("generation"),
                 rs.getString("cma_session_id"), agentId == null ? null : new AgentRef(agentId, rs.getInt("cma_agent_version")),
                 rs.getString("last_event_id"), Db.instant(rs, "last_event_at"), rs.getLong("synced_seq"),
-                rs.getLong("stopped_through"));
+                rs.getLong("stopped_through"), rs.getString("cma_vault_ids"));
     }
 }

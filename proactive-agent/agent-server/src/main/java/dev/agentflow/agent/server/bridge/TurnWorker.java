@@ -27,14 +27,16 @@ public class TurnWorker {
 
     private final InboxClient inbox;
     private final TurnRunner runner;
+    private final dev.agentflow.agent.cma.ManagedAgents cma;
     private final AgentProperties properties;
     private final String workerId;
     private final List<Thread> loops = new ArrayList<>();
     private volatile boolean running;
 
-    public TurnWorker(InboxClient inbox, TurnRunner runner, AgentProperties properties) {
+    public TurnWorker(InboxClient inbox, TurnRunner runner, dev.agentflow.agent.cma.ManagedAgents cma, AgentProperties properties) {
         this.inbox = inbox;
         this.runner = runner;
+        this.cma = cma;
         this.properties = properties;
         String configured = properties.getWorker().getId();
         this.workerId = configured != null ? configured : "agent-" + UUID.randomUUID().toString().substring(0, 8);
@@ -76,6 +78,15 @@ public class TurnWorker {
 
     private void loop() {
         while (running) {
+            if (cma instanceof dev.agentflow.agent.cma.ThrottledManagedAgents throttled && throttled.saturated()) {
+                // The platform's limits are reached for now. Taking on more work would only make it wait.
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException stop) {
+                    return;
+                }
+                continue;
+            }
             try {
                 runOnce(properties.getWorker().getClaimWait().toMillis());
             } catch (RuntimeException e) {

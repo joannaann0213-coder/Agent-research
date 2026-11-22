@@ -10,6 +10,7 @@ import dev.agentflow.agent.cma.CmaException;
 import dev.agentflow.agent.cma.EnvironmentSpec;
 import dev.agentflow.agent.cma.EventStream;
 import dev.agentflow.agent.cma.ManagedAgents;
+import dev.agentflow.agent.cma.McpCredential;
 import dev.agentflow.agent.cma.Outgoing;
 import dev.agentflow.agent.cma.SessionInfo;
 import dev.agentflow.agent.cma.SessionSpec;
@@ -69,7 +70,12 @@ public final class FakeManagedAgents implements ManagedAgents {
         GET_SESSION,
         LIST_EVENTS,
         OPEN_STREAM,
-        SEND
+        SEND,
+        CREATE_VAULT,
+        CREATE_CREDENTIAL,
+        UPDATE_CREDENTIAL,
+        ARCHIVE_CREDENTIAL,
+        LIST_CREDENTIALS
     }
 
     /**
@@ -80,8 +86,22 @@ public final class FakeManagedAgents implements ManagedAgents {
     public record Call(Operation operation, String target, Object argument) {
     }
 
-    /** A tool call that the platform ran. */
-    public record Execution(String sessionId, String server, String tool, JsonNode input) {
+    /**
+     * A tool call that the platform ran.
+     *
+     * @param credential for an MCP tool: the token the platform sent with the call, taken from the
+     *     session's vaults; {@code null} when none of them had one for the server
+     */
+    public record Execution(String sessionId, String server, String tool, JsonNode input, String credential) {
+    }
+
+    /** A credential as the fake keeps it, secrets included, for tests to look at. */
+    public record StoredCredential(String id, String mcpServerUrl, String token, boolean archived) {
+    }
+
+    private static final int MAX_CREDENTIALS_PER_VAULT = 20;
+
+    private record Vault(String displayName, Map<String, String> metadata, Map<String, StoredCredential> credentials) {
     }
 
     /** Decides a call under the {@code auto} policy. */
@@ -100,6 +120,7 @@ public final class FakeManagedAgents implements ManagedAgents {
     private final Map<String, EnvironmentSpec> environments = new LinkedHashMap<>();
     private final Map<String, List<AgentSpec>> agents = new LinkedHashMap<>();
     private final Map<String, Session> sessions = new LinkedHashMap<>();
+    private final Map<String, Vault> vaults = new LinkedHashMap<>();
     private final Map<Operation, Deque<Fault>> faults = new EnumMap<>(Operation.class);
     private final Map<String, Function<JsonNode, ToolOutcome>> platformTools = new LinkedHashMap<>();
     private final List<Call> calls = new ArrayList<>();
@@ -127,6 +148,7 @@ public final class FakeManagedAgents implements ManagedAgents {
             environments.clear();
             agents.clear();
             sessions.clear();
+            vaults.clear();
             faults.clear();
             platformTools.clear();
             calls.clear();
@@ -390,6 +412,10 @@ public final class FakeManagedAgents implements ManagedAgents {
             AgentSpec agent = version(spec.agent());
             environment(spec.environmentId());
             require(spec.metadata().size() <= 8, "a session takes at most 8 metadata entries");
+            for (String vaultId : spec.vaultIds()) {
+                vault(vaultId);
+            }
+            require(spec.budgetUsd() == null || spec.budgetUsd().signum() > 0, "a budget is more than nothing");
             String id = "sesn_" + sequence();
             sessions.put(id, new Session(id, spec, agent));
             end(fault);
@@ -550,6 +576,125 @@ public final class FakeManagedAgents implements ManagedAgents {
         }
     }
 
+    // ================================================================ credentials
+
+    @Override
+    public String createVault(String displayName, Map<String, String> metadata) {
+        synchronized (lock) {
+            Fault fault = begin(Operation.CREATE_VAULT, null, displayName);
+            require(displayName != null && !displayName.isBlank(), "a vault needs a display name");
+            String id = "vlt_" + sequence();
+            vaults.put(id, new Vault(displayName, metadata == null ? Map.of() : Map.copyOf(metadata), new LinkedHashMap<>()));
+            end(fault);
+            return id;
+        }
+    }
+
+    @Override
+    public String createCredential(String vaultId, McpCredential credential) {
+        synchronized (lock) {
+            Fault fault = begin(Operation.CREATE_CREDENTIAL, vaultId, credential.mcpServerUrl());
+            Vault vault = vault(vaultId);
+            require(credential.mcpServerUrl() != null && credential.mcpServerUrl().startsWith("https://"),
+                    "an MCP credential needs the server's https URL");
+            String key = dev.agentflow.agent.cma.McpUrls.normalised(credential.mcpServerUrl());
+            List<StoredCredential> active = vault.credentials().values().stream().filter(stored -> !stored.archived()).toList();
+            if (active.stream().anyMatch(stored -> dev.agentflow.agent.cma.McpUrls.normalised(stored.mcpServerUrl()).equals(key))) {
+                throw CmaException.conflict("vault " + vaultId + " has an active credential for " + credential.mcpServerUrl() + " already");
+            }
+            require(active.size() < MAX_CREDENTIALS_PER_VAULT, "a vault holds at most " + MAX_CREDENTIALS_PER_VAULT + " active credentials");
+            String id = "vcrd_" + sequence();
+            String token = credential.bearerToken() != null ? credential.bearerToken() : credential.oauth().accessToken();
+            vault.credentials().put(id, new StoredCredential(id, credential.mcpServerUrl(), token, false));
+            end(fault);
+            return id;
+        }
+    }
+
+    @Override
+    public void updateCredential(String vaultId, String credentialId, String bearerToken) {
+        synchronized (lock) {
+            Fault fault = begin(Operation.UPDATE_CREDENTIAL, credentialId, null);
+            StoredCredential stored = credential(vaultId, credentialId);
+            require(!stored.archived(), "credential " + credentialId + " is archived");
+            require(bearerToken != null && !bearerToken.isEmpty(), "a token is required");
+            vault(vaultId).credentials().put(credentialId, new StoredCredential(credentialId, stored.mcpServerUrl(), bearerToken, false));
+            end(fault);
+        }
+    }
+
+    @Override
+    public void archiveCredential(String vaultId, String credentialId) {
+        synchronized (lock) {
+            Fault fault = begin(Operation.ARCHIVE_CREDENTIAL, credentialId, null);
+            StoredCredential stored = credential(vaultId, credentialId);
+            vault(vaultId).credentials().put(credentialId, new StoredCredential(credentialId, stored.mcpServerUrl(), null, true));
+            end(fault);
+        }
+    }
+
+    @Override
+    public List<McpCredential.Stored> listCredentials(String vaultId) {
+        synchronized (lock) {
+            Fault fault = begin(Operation.LIST_CREDENTIALS, vaultId, null);
+            List<McpCredential.Stored> list = vault(vaultId).credentials().values().stream().filter(stored -> !stored.archived())
+                    .map(stored -> new McpCredential.Stored(stored.id(), stored.mcpServerUrl(), false)).toList();
+            end(fault);
+            return list;
+        }
+    }
+
+    /** Every credential of a vault, archived ones included, with its secret. For tests. */
+    public List<StoredCredential> credentialsIn(String vaultId) {
+        synchronized (lock) {
+            return List.copyOf(vault(vaultId).credentials().values());
+        }
+    }
+
+    /** Every vault, in the order they were made. For tests. */
+    public List<String> vaultIds() {
+        synchronized (lock) {
+            return List.copyOf(vaults.keySet());
+        }
+    }
+
+    /** The token the session's vaults have for the agent's server {@code server}: the first vault that has one wins. */
+    private String credentialFor(Session session, String server) {
+        String url = session.agent.mcpServers().stream().filter(candidate -> candidate.name().equals(server))
+                .map(AgentSpec.McpServer::url).findFirst().orElse(null);
+        if (url == null) {
+            return null;
+        }
+        for (String vaultId : session.spec.vaultIds()) {
+            Vault vault = vaults.get(vaultId);
+            if (vault == null) {
+                continue;
+            }
+            for (StoredCredential stored : vault.credentials().values()) {
+                if (!stored.archived() && dev.agentflow.agent.cma.McpUrls.normalised(stored.mcpServerUrl()).equals(dev.agentflow.agent.cma.McpUrls.normalised(url))) {
+                    return stored.token();
+                }
+            }
+        }
+        return null;
+    }
+
+    private Vault vault(String vaultId) {
+        Vault vault = vaults.get(vaultId);
+        if (vault == null) {
+            throw CmaException.notFound("no vault " + vaultId);
+        }
+        return vault;
+    }
+
+    private StoredCredential credential(String vaultId, String credentialId) {
+        StoredCredential stored = vault(vaultId).credentials().get(credentialId);
+        if (stored == null) {
+            throw CmaException.notFound("no credential " + credentialId + " in vault " + vaultId);
+        }
+        return stored;
+    }
+
     // ================================================================ the engine
 
     /** Advances a session as far as it can go: until it waits for the caller, is frozen, or has nothing to do. */
@@ -650,7 +795,7 @@ public final class FakeManagedAgents implements ManagedAgents {
     }
 
     private void run(Session session, String eventId, String server, String tool, JsonNode input) {
-        executions.add(new Execution(session.id, server, tool, input));
+        executions.add(new Execution(session.id, server, tool, input, server == null ? null : credentialFor(session, server)));
         Function<JsonNode, ToolOutcome> behaviour = platformTools.get(toolKey(server, tool));
         result(session, eventId, server, tool, behaviour == null ? ToolOutcome.ok("ok") : behaviour.apply(input));
     }

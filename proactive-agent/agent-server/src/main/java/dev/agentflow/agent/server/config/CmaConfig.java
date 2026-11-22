@@ -2,6 +2,7 @@ package dev.agentflow.agent.server.config;
 
 import dev.agentflow.agent.cma.ManagedAgents;
 import dev.agentflow.agent.cma.fake.FakeManagedAgents;
+import dev.agentflow.agent.cma.ThrottledManagedAgents;
 import dev.agentflow.agent.cma.sdk.SdkManagedAgents;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.agent.server.tools.DemoAgent;
@@ -36,7 +37,9 @@ public class CmaConfig {
                             + "ANTHROPIC_API_KEY). To try the service without a key, set agent.cma.mode to demo "
                             + "(AGENT_CMA_MODE=demo)");
                 }
-                return SdkManagedAgents.connect(cma.getApiKey(), cma.getBaseUrl(), cma.getRequestTimeout());
+                // The platform's rate limits hold for the whole organization; this keeps the service inside them.
+                return new ThrottledManagedAgents(SdkManagedAgents.connect(cma.getApiKey(), cma.getBaseUrl(), cma.getRequestTimeout()),
+                        cma.getCreationsPerMinute(), cma.getRequestsPerMinute(), cma.getThrottleWait());
             }
             default -> throw new IllegalStateException("agent.cma.mode must be live or demo, not " + cma.getMode());
         }

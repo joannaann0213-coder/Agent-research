@@ -26,6 +26,11 @@ tags:
     description: About the caller and the service.
   - name: Agents
     description: The agents of an application. What each one is for, which model it runs on, what it may use.
+  - name: Credentials
+    description: |
+      The credentials of the MCP servers that agents use. They go straight to vaults on the agent
+      platform, which adds them to the agent's calls of the server; this service does not keep them
+      and cannot show them, and neither the agent nor its sandbox ever sees them.
   - name: Conversations
     description: What a user and the agent say to each other.
   - name: Events
@@ -178,6 +183,194 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/credentials:
+    get:
+      tags: [Credentials]
+      operationId: listAppCredentials
+      summary: The application's credentials
+      description: The application's credentials, without their secrets. Only an API key may call this.
+      responses:
+        '200':
+          description: The credentials, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpCredentialPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/credentials/{name}:
+    parameters:
+      - $ref: '#/components/parameters/CredentialName'
+    put:
+      tags: [Credentials]
+      operationId: putAppCredential
+      summary: Store a credential of the application
+      description: |
+        Stores a credential for an MCP server under a name, or replaces the one that has the name.
+        Every session of every user of the application has it, unless the user has one of their own
+        for the same server, which comes first.
+
+        A bearer `token` is sent to the server as it is. With `oauth`, the agent platform refreshes
+        the access token by itself when it has a refresh token. A replaced token is used from the
+        next call on, also by conversations under way. One credential per server: a second name for
+        the same server is a 409. Only an API key may call this.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpCredentialRequest'
+            example:
+              mcp_server_url: https://mcp.acme.example/tickets
+              token: tk_live_example
+      responses:
+        '200':
+          description: Stored, without its secret.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpCredentialView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: '`conflict`: another credential of the vault is for the same server.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Credentials]
+      operationId: deleteAppCredential
+      summary: Delete a credential of the application
+      description: The agent platform drops the secret; the agent calls the server without it. Only an API key may call this.
+      responses:
+        '204':
+          description: Deleted, or there was none.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/credentials:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Credentials]
+      operationId: listUserCredentials
+      summary: A user's own credentials
+      description: The user's own credentials, without their secrets. An API key or the user's own token may call this.
+      responses:
+        '200':
+          description: The credentials, by name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpCredentialPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/credentials/{name}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/CredentialName'
+    put:
+      tags: [Credentials]
+      operationId: putUserCredential
+      summary: Store a credential of a user
+      description: |
+        As for the application's credentials, for one user: the user's own account at a server, for
+        example after the user connected it with OAuth in the application. The user's sessions have
+        it before the application's credential for the same server. The user's first credential
+        starts their conversations in new sessions at their next turn, which then have it.
+
+        An API key or the user's own token may call this.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpCredentialRequest'
+            example:
+              mcp_server_url: https://mcp.notes.example/mcp
+              oauth:
+                access_token: at_example
+                expires_at: '2026-11-21T10:00:00Z'
+                refresh_token: rt_example
+                client_id: acme-agent
+                token_endpoint: https://auth.notes.example/oauth/token
+      responses:
+        '200':
+          description: Stored, without its secret.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpCredentialView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: '`conflict`: another credential of the user is for the same server.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Credentials]
+      operationId: deleteUserCredential
+      summary: Delete a credential of a user
+      description: An API key or the user's own token may call this.
+      responses:
+        '204':
+          description: Deleted, or there was none.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '429':
           $ref: '#/components/responses/RateLimited'
         default:
@@ -1157,6 +1350,14 @@ components:
       schema:
         type: string
         pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$'
+    CredentialName:
+      name: name
+      in: path
+      required: true
+      description: The caller's name for the credential.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$'
     ActionId:
       name: action_id
       in: path
@@ -1351,6 +1552,13 @@ components:
             how the agent is woken and how it reaches the user.
         sandbox:
           $ref: '#/components/schemas/SandboxConfig'
+        session_budget_usd:
+          type: number
+          minimum: 0.01
+          maximum: 10000
+          description: |
+            What one session of the agent may spend at most, in US dollars. A conversation whose
+            session has spent it goes on in a new one. No limit when absent.
         mcp_servers:
           type: array
           maxItems: 20
@@ -1375,6 +1583,13 @@ components:
           type: string
         sandbox:
           $ref: '#/components/schemas/SandboxConfig'
+        session_budget_usd:
+          type: number
+          minimum: 0.01
+          maximum: 10000
+          description: |
+            What one session of the agent may spend at most, in US dollars. A conversation whose
+            session has spent it goes on in a new one. No limit when absent.
         mcp_servers:
           type: array
           items:
@@ -1756,6 +1971,79 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ScheduleView'
+
+    OAuthTokens:
+      type: object
+      additionalProperties: false
+      required: [access_token]
+      properties:
+        access_token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        refresh_token:
+          type: string
+          description: With it, the agent platform gets new access tokens by itself. Needs `client_id` and `token_endpoint`.
+        client_id:
+          type: string
+        token_endpoint:
+          type: string
+          description: An https URL.
+        token_endpoint_auth:
+          type: string
+          enum: [none, client_secret_basic, client_secret_post]
+          description: How the platform authenticates at the token endpoint. `none` when absent.
+        client_secret:
+          type: string
+          description: For `client_secret_basic` and `client_secret_post`.
+        scope:
+          type: string
+
+    McpCredentialRequest:
+      type: object
+      additionalProperties: false
+      required: [mcp_server_url]
+      properties:
+        mcp_server_url:
+          type: string
+          description: The server's https URL, as the agent's configuration names it. Case, a default port and a trailing slash do not matter.
+        token:
+          type: string
+          maxLength: 8000
+          description: A bearer token. Either this or `oauth`.
+        oauth:
+          $ref: '#/components/schemas/OAuthTokens'
+
+    McpCredentialView:
+      type: object
+      required: [name, mcp_server_url, kind, created_at, updated_at]
+      properties:
+        name:
+          type: string
+        mcp_server_url:
+          type: string
+        kind:
+          type: string
+          enum: [bearer, oauth]
+        user_id:
+          type: string
+          description: The user whose credential it is. Absent for the application's.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    McpCredentialPage:
+      type: object
+      required: [credentials]
+      properties:
+        credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpCredentialView'
 
     ActionTool:
       type: object

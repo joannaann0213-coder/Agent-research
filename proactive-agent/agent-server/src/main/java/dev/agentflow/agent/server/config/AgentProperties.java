@@ -198,6 +198,41 @@ public class AgentProperties {
 
         private Duration requestTimeout = Duration.ofSeconds(60);
 
+        /**
+         * The platform's rate limits, which hold for the whole organization: creations (of agents,
+         * environments, sessions, vaults, credentials) and other requests, per minute. With several
+         * instances of this service, give each its share.
+         */
+        private int creationsPerMinute = 300;
+        private int requestsPerMinute = 600;
+
+        /** How long a call waits for its turn under those limits before it is treated as refused. */
+        private Duration throttleWait = Duration.ofSeconds(5);
+
+        public int getCreationsPerMinute() {
+            return creationsPerMinute;
+        }
+
+        public void setCreationsPerMinute(int creationsPerMinute) {
+            this.creationsPerMinute = creationsPerMinute;
+        }
+
+        public int getRequestsPerMinute() {
+            return requestsPerMinute;
+        }
+
+        public void setRequestsPerMinute(int requestsPerMinute) {
+            this.requestsPerMinute = requestsPerMinute;
+        }
+
+        public Duration getThrottleWait() {
+            return throttleWait;
+        }
+
+        public void setThrottleWait(Duration throttleWait) {
+            this.throttleWait = throttleWait;
+        }
+
         public String getMode() {
             return mode;
         }

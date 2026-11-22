@@ -1,6 +1,7 @@
 package dev.agentflow.agent.cma;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.List;
 
 /**
@@ -37,6 +38,30 @@ public interface ManagedAgents {
 
     /** The agent's current version: what an update has to start from when the stored reference is out of date. */
     AgentRef getAgent(String agentId);
+
+    // ------------------------------------------------------------------ credentials
+
+    /** Creates a vault, the platform's store of credentials. Returns its id. */
+    String createVault(String displayName, Map<String, String> metadata);
+
+    /**
+     * Stores a credential in a vault. A vault holds one active credential per MCP server
+     * ({@link CmaException.Kind#CONFLICT} otherwise) and at most 20. Returns the credential's id.
+     */
+    String createCredential(String vaultId, McpCredential credential);
+
+    /**
+     * Replaces the bearer token of a stored credential. Sessions that have the vault use the new token
+     * from their next call on. The server and the kind of a credential cannot change: archive it and
+     * create another.
+     */
+    void updateCredential(String vaultId, String credentialId, String bearerToken);
+
+    /** Archives a credential: its secrets are gone, and its server is free for another one. */
+    void archiveCredential(String vaultId, String credentialId);
+
+    /** The vault's active credentials. */
+    List<McpCredential.Stored> listCredentials(String vaultId);
 
     // ------------------------------------------------------------------ sessions
 

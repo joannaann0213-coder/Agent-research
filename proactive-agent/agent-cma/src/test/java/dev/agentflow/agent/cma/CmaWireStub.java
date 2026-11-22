@@ -91,6 +91,9 @@ final class CmaWireStub implements AutoCloseable {
     private static final Pattern SESSION = Pattern.compile("/v1/sessions/([^/]+)");
     private static final Pattern EVENTS = Pattern.compile("/v1/sessions/([^/]+)/events");
     private static final Pattern STREAM = Pattern.compile("/v1/sessions/([^/]+)/events/stream");
+    private static final Pattern CREDENTIALS = Pattern.compile("/v1/vaults/([^/]+)/credentials");
+    private static final Pattern CREDENTIAL = Pattern.compile("/v1/vaults/([^/]+)/credentials/([^/]+)");
+    private static final Pattern ARCHIVE = Pattern.compile("/v1/vaults/([^/]+)/credentials/([^/]+)/archive");
 
     private void handle(HttpExchange exchange) throws IOException {
         String method = exchange.getRequestMethod();
@@ -139,6 +142,50 @@ final class CmaWireStub implements AutoCloseable {
                 respond(exchange, 200, page(match.group(1), query(exchange)));
             } else if (method.equals("GET") && (match = STREAM.matcher(path)).matches()) {
                 stream(exchange, match.group(1));
+            } else if (method.equals("POST") && path.equals("/v1/vaults")) {
+                JsonNode body = body(exchange);
+                String id = fake.createVault(body.path("display_name").asString(null), strings(body.path("metadata")));
+                ObjectNode vault = JSON.createObjectNode();
+                vault.put("id", id).put("type", "vault").put("display_name", body.path("display_name").asString())
+                        .put("created_at", "2026-11-20T10:00:00Z").put("updated_at", "2026-11-20T10:00:00Z");
+                vault.set("metadata", body.path("metadata").isMissingNode() ? JSON.createObjectNode() : body.path("metadata"));
+                respond(exchange, 200, vault);
+            } else if (method.equals("POST") && (match = CREDENTIALS.matcher(path)).matches()) {
+                JsonNode body = body(exchange);
+                JsonNode auth = body.path("auth");
+                McpCredential credential = switch (auth.path("type").asString("")) {
+                    case "static_bearer" -> new McpCredential(auth.path("mcp_server_url").asString(null), body.path("display_name").asString(null),
+                            auth.path("token").asString(null), null);
+                    case "mcp_oauth" -> new McpCredential(auth.path("mcp_server_url").asString(null), body.path("display_name").asString(null),
+                            null, new McpCredential.OAuth(auth.path("access_token").asString(null),
+                                    auth.has("expires_at") ? Instant.parse(auth.path("expires_at").asString()) : null,
+                                    auth.has("refresh") ? new McpCredential.Refresh(auth.path("refresh").path("refresh_token").asString(null),
+                                            auth.path("refresh").path("client_id").asString(null),
+                                            auth.path("refresh").path("token_endpoint").asString(null),
+                                            auth.path("refresh").path("token_endpoint_auth").path("type").asString(null),
+                                            auth.path("refresh").path("token_endpoint_auth").path("client_secret").asString(null),
+                                            auth.path("refresh").path("scope").asString(null)) : null));
+                    default -> throw CmaException.invalid("auth.type must be static_bearer or mcp_oauth");
+                };
+                expect(credential.bearerToken() == null || !credential.bearerToken().isEmpty(), "a token is required");
+                String id = fake.createCredential(match.group(1), credential);
+                respond(exchange, 200, credentialJson(id, match.group(1), auth.path("type").asString(), credential.mcpServerUrl(), false));
+            } else if (method.equals("GET") && (match = CREDENTIALS.matcher(path)).matches()) {
+                ObjectNode page = JSON.createObjectNode();
+                ArrayNode data = page.putArray("data");
+                String vaultId = match.group(1);
+                fake.listCredentials(vaultId).forEach(stored ->
+                        data.add(credentialJson(stored.id(), vaultId, "static_bearer", stored.mcpServerUrl(), false)));
+                page.putNull("next_page");
+                respond(exchange, 200, page);
+            } else if (method.equals("POST") && (match = ARCHIVE.matcher(path)).matches()) {
+                fake.archiveCredential(match.group(1), match.group(2));
+                respond(exchange, 200, credentialJson(match.group(2), match.group(1), "static_bearer", "https://archived.example", true));
+            } else if (method.equals("POST") && (match = CREDENTIAL.matcher(path)).matches()) {
+                JsonNode auth = body(exchange).path("auth");
+                expect("static_bearer".equals(auth.path("type").asString("")), "only a static bearer token is updated here");
+                fake.updateCredential(match.group(1), match.group(2), auth.path("token").asString(null));
+                respond(exchange, 200, credentialJson(match.group(2), match.group(1), "static_bearer", "https://updated.example", false));
             } else {
                 error(exchange, 404, "not_found_error", "no such endpoint: " + method + " " + path, null);
             }
@@ -233,9 +280,10 @@ final class CmaWireStub implements AutoCloseable {
         expect("agent".equals(agent.path("type").asString("")), "agent.type must be agent");
         List<String> vaults = new ArrayList<>();
         body.path("vault_ids").forEach(vault -> vaults.add(vault.asString()));
+        JsonNode amount = body.path("budget").findValue("amount");
         return new SessionSpec(new AgentRef(agent.path("id").asString(), agent.path("version").asInt()),
                 body.path("environment_id").asString(null), body.path("title").asString(null),
-                strings(body.path("metadata")), vaults);
+                strings(body.path("metadata")), vaults, amount == null ? null : new java.math.BigDecimal(amount.asString()));
     }
 
     private static List<Outgoing> outgoing(JsonNode body) {
@@ -325,6 +373,18 @@ final class CmaWireStub implements AutoCloseable {
         session.put("created_at", CREATED.toString()).put("updated_at", CREATED.toString());
         session.putNull("archived_at");
         return session;
+    }
+
+    private static ObjectNode credentialJson(String id, String vaultId, String type, String url, boolean archived) {
+        ObjectNode credential = JSON.createObjectNode();
+        credential.put("id", id).put("type", "vault_credential").put("vault_id", vaultId)
+                .put("created_at", "2026-11-20T10:00:00Z").put("updated_at", "2026-11-20T10:00:00Z");
+        if (archived) {
+            credential.put("archived_at", "2026-11-20T10:00:00Z");
+        }
+        credential.putObject("metadata");
+        credential.putObject("auth").put("type", type).put("mcp_server_url", url);
+        return credential;
     }
 
     private ObjectNode page(String sessionId, Map<String, String> query) {

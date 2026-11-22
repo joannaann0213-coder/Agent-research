@@ -134,15 +134,16 @@ abstract class ManagedAgentsContract {
         cma.updateAgent(v1, new AgentSpec("Chat", null, "claude-opus-5-5", null, "Changed.", null, null, null, null));
         String environment = cma.createEnvironment(new EnvironmentSpec("env", null, null, false, false, null));
 
+        String vault = cma.createVault("acme", Map.of());
         String session = cma.createSession(new SessionSpec(v1, environment, "conversation c1",
-                Map.of("app", "acme", "user", "u42"), List.of("vlt_01")));
+                Map.of("app", "acme", "user", "u42"), List.of(vault)));
 
         SessionInfo info = cma.getSession(session);
         assertThat(info.status()).isEqualTo(SessionInfo.Status.IDLE);
         assertThat(info.usable()).isTrue();
         assertThat(info.agent()).isEqualTo(v1);
         assertThat(info.metadata()).containsEntry("app", "acme").containsEntry("user", "u42");
-        assertThat(fake.sessionSpec(session).vaultIds()).containsExactly("vlt_01");
+        assertThat(fake.sessionSpec(session).vaultIds()).containsExactly(vault);
         assertThat(fake.sessionSpec(session).title()).isEqualTo("conversation c1");
         assertThat(cma.listEvents(session, null)).isEmpty();
     }
@@ -620,6 +621,97 @@ abstract class ManagedAgentsContract {
             assertThat(error.retry()).isEqualTo(CmaEvent.Error.Retry.RETRYING);
         });
         assertThat(cma.listEvents(session, null)).hasSize(2).allSatisfy(event -> assertThat(event).isInstanceOf(CmaEvent.Error.class));
+    }
+
+    // ================================================================ credentials
+
+    @Test
+    void anMcpCallCarriesTheCredentialOfItsServer_fromTheFirstVaultThatHasOne() {
+        String userVault = cma.createVault("acme / u42", Map.of("app", "acme", "user", "u42"));
+        String appVault = cma.createVault("acme", Map.of("app", "acme"));
+        cma.createCredential(userVault, new McpCredential("https://mcp.example.com/tickets", "tickets of u42", "user-token", null));
+        cma.createCredential(appVault, new McpCredential("https://MCP.example.com:443/tickets/", "tickets", "app-token", null));
+        fake.brain(context -> context.step() == 0 ? ModelStep.of(mcp("tickets", "list_tickets", "{}")) : say("Listed."));
+        AgentRef agent = cma.createAgent(mcpAgent(ToolPolicy.ALWAYS_ALLOW));
+        String environment = cma.createEnvironment(new EnvironmentSpec("env", null, null, false, false, null));
+
+        for (List<String> vaults : List.of(List.of(userVault, appVault), List.of(appVault), List.<String>of())) {
+            String session = cma.createSession(new SessionSpec(agent, environment, null, null, vaults));
+            EventStream stream = stream(session);
+            cma.send(session, List.of(new Outgoing.UserMessage("my tickets?")));
+            until(stream, ManagedAgentsContract::turnOver);
+        }
+
+        assertThat(fake.executions()).extracting(FakeManagedAgents.Execution::credential)
+                .as("the user's vault first; the application's, whose URL differs only in case, port and slash; none")
+                .containsExactly("user-token", "app-token", null);
+    }
+
+    @Test
+    void aVaultHoldsOneCredentialPerServer_andArchivingOneFreesItsPlace() {
+        String vault = cma.createVault("acme", Map.of());
+        String first = cma.createCredential(vault, new McpCredential("https://mcp.example.com/tickets", null, "one", null));
+
+        assertThat(kindOf(() -> cma.createCredential(vault, new McpCredential("https://mcp.example.com/tickets/", null, "two", null))))
+                .isEqualTo(CmaException.Kind.CONFLICT);
+        assertThat(cma.listCredentials(vault)).extracting(McpCredential.Stored::id).containsExactly(first);
+
+        cma.archiveCredential(vault, first);
+        String second = cma.createCredential(vault, new McpCredential("https://mcp.example.com/tickets", null, "two", null));
+
+        assertThat(cma.listCredentials(vault)).extracting(McpCredential.Stored::id).containsExactly(second);
+        assertThat(fake.credentialsIn(vault)).extracting(FakeManagedAgents.StoredCredential::token, FakeManagedAgents.StoredCredential::archived)
+                .as("an archived credential keeps no secret").containsExactly(org.assertj.core.groups.Tuple.tuple(null, true),
+                        org.assertj.core.groups.Tuple.tuple("two", false));
+        assertThat(kindOf(() -> cma.archiveCredential(vault, "vcrd_nothing"))).isEqualTo(CmaException.Kind.NOT_FOUND);
+        assertThat(kindOf(() -> cma.createCredential("vlt_nothing", new McpCredential("https://x.example", null, "t", null))))
+                .isEqualTo(CmaException.Kind.NOT_FOUND);
+    }
+
+    @Test
+    void aReplacedTokenIsUsedFromTheNextCallOn() {
+        String vault = cma.createVault("acme", Map.of());
+        String credential = cma.createCredential(vault, new McpCredential("https://mcp.example.com/tickets", null, "old", null));
+        fake.brain(context -> context.step() == 0 ? ModelStep.of(mcp("tickets", "list_tickets", "{}")) : say("Listed."));
+        String session = cma.createSession(new SessionSpec(cma.createAgent(mcpAgent(ToolPolicy.ALWAYS_ALLOW)),
+                cma.createEnvironment(new EnvironmentSpec("env", null, null, false, false, null)), null, null, List.of(vault)));
+        EventStream stream = stream(session);
+
+        cma.send(session, List.of(new Outgoing.UserMessage("one")));
+        until(stream, ManagedAgentsContract::turnOver);
+        cma.updateCredential(vault, credential, "new");
+        cma.send(session, List.of(new Outgoing.UserMessage("two")));
+        until(stream, ManagedAgentsContract::turnOver);
+
+        assertThat(fake.executions()).extracting(FakeManagedAgents.Execution::credential).containsExactly("old", "new");
+    }
+
+    @Test
+    void anOAuthCredentialIsStored_withWhatItTakesToRefreshIt() {
+        String vault = cma.createVault("acme", Map.of());
+
+        String id = cma.createCredential(vault, new McpCredential("https://mcp.example.com/notes", "notes", null,
+                new McpCredential.OAuth("access-1", Instant.parse("2026-12-01T00:00:00Z"),
+                        new McpCredential.Refresh("refresh-1", "client-1", "https://auth.example.com/token", "client_secret_post",
+                                "secret-1", "notes.read"))));
+
+        assertThat(fake.credentialsIn(vault)).singleElement().satisfies(stored -> {
+            assertThat(stored.id()).isEqualTo(id);
+            assertThat(stored.token()).isEqualTo("access-1");
+            assertThat(stored.mcpServerUrl()).isEqualTo("https://mcp.example.com/notes");
+        });
+    }
+
+    @Test
+    void aSessionTakesOnlyVaultsThatExist_andCanHaveABudget() {
+        AgentRef agent = cma.createAgent(chatAgent());
+        String environment = cma.createEnvironment(new EnvironmentSpec("env", null, null, false, false, null));
+
+        assertThat(kindOf(() -> cma.createSession(new SessionSpec(agent, environment, null, null, List.of("vlt_nothing")))))
+                .isEqualTo(CmaException.Kind.NOT_FOUND);
+        String session = cma.createSession(new SessionSpec(agent, environment, null, null, List.of(), new java.math.BigDecimal("2.50")));
+
+        assertThat(fake.sessionSpec(session).budgetUsd()).isEqualByComparingTo("2.50");
     }
 
     // ================================================================ the tail
