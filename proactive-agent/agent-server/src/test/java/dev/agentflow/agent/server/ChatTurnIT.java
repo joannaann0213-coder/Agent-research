@@ -1,12 +1,13 @@
 package dev.agentflow.agent.server;
 
-import static dev.agentflow.agent.cma.fake.ModelStep.mcp;
+import static dev.agentflow.agent.cma.fake.ModelStep.builtin;
 import static dev.agentflow.agent.cma.fake.ModelStep.say;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import dev.agentflow.agent.api.AgentProfileRequest;
 import dev.agentflow.agent.api.AgentProfileView;
-import dev.agentflow.agent.api.McpServerConfig;
+import dev.agentflow.agent.api.SandboxConfig;
+import dev.agentflow.agent.cma.CmaEvent.Permission;
 import dev.agentflow.agent.api.MessageAccepted;
 import dev.agentflow.agent.api.MessagePage;
 import dev.agentflow.agent.api.MessageView;
@@ -31,7 +32,7 @@ class ChatTurnIT extends AgentTestBase {
         MessageAccepted accepted = acme.post("/v1/users/u42/messages",
                 new PostMessageRequest("m-1", null, null, "Where is my order 1234?")).as(MessageAccepted.class);
 
-        assertThat(accepted).isEqualTo(new MessageAccepted("m-1", "default", 1, clock.now(), false));
+        assertThat(accepted).isEqualTo(new MessageAccepted("m-1", "default", 1, clock.now(), false, null));
         assertThat(messagesOf(acme, "u42")).as("stored, not answered yet").extracting(MessageView::kind).containsExactly("message");
 
         assertThat(settle()).isEqualTo(1);
@@ -95,7 +96,7 @@ class ChatTurnIT extends AgentTestBase {
         MessageAccepted first = acme.post("/v1/users/u42/messages", message).as(MessageAccepted.class);
         MessageAccepted retry = acme.post("/v1/users/u42/messages", message).as(MessageAccepted.class);
 
-        assertThat(retry).isEqualTo(new MessageAccepted("m-1", "default", first.seq(), first.createdAt(), true));
+        assertThat(retry).isEqualTo(new MessageAccepted("m-1", "default", first.seq(), first.createdAt(), true, null));
         assertThat(count("SELECT count(*) FROM message")).isEqualTo(1);
         assertThat(count("SELECT count(*) FROM inbox_relay")).isEqualTo(1);
 
@@ -246,19 +247,21 @@ class ChatTurnIT extends AgentTestBase {
     }
 
     @Test
-    void aToolCallNobodyCanApproveIsDenied_andTheAgentSaysSoInsteadOfHanging() {
+    void aBuiltInToolThatWouldNeedAnApprovalIsNotPutBeforeAnybody_theAgentIsToldAndGoesOn() {
         TestApi acme = app(ACME);
-        acme.put("/v1/agents/default", new AgentProfileRequest("Assistant", null, null, "You help.", null,
-                List.of(new McpServerConfig("tickets", "https://mcp.acme.example/tickets", "always_ask", "app")))).as(AgentProfileView.class);
-        cma.brain(context -> context.step() == 0 ? ModelStep.of(mcp("tickets", "close_ticket", "{\"id\": \"T-1\"}"))
-                : say(context.toolResults().getFirst().error() ? "I could not close it: " + context.toolResults().getFirst().text()
-                        : "Closed."));
+        acme.put("/v1/agents/default", new AgentProfileRequest("Assistant", null, null, "You help.",
+                new SandboxConfig(true, false, false, "none", null), null)).as(AgentProfileView.class);
+        cma.autoJudge((server, tool, input) -> Permission.ASK);
+        cma.brain(context -> context.step() == 0 ? ModelStep.of(builtin("bash", "{\"command\": \"rm -rf /srv/data\"}"))
+                : say("I could not run it: " + context.toolResults().getFirst().text()));
 
-        userSays(acme, "u42", "close ticket T-1");
+        userSays(acme, "u42", "clean up the server");
         settle();
 
-        assertThat(messagesOf(acme, "u42").getLast().text()).startsWith("I could not close it: This action needs an approval");
-        assertThat(cma.executions()).as("the ticket system was not touched").isEmpty();
+        assertThat(messagesOf(acme, "u42").getLast().text())
+                .isEqualTo("I could not run it: Not approved: this service puts no built-in tool before anybody for approval.");
+        assertThat(cma.executions()).as("the command did not run").isEmpty();
+        assertThat(count("SELECT count(*) FROM action")).as("nobody was asked").isZero();
     }
 
     @Test

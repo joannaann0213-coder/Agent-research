@@ -18,6 +18,7 @@ public class AgentProperties {
     private final Turn turn = new Turn();
     private final Sweep sweep = new Sweep();
     private final Notify notify = new Notify();
+    private final Actions actions = new Actions();
     private final Scheduling scheduling = new Scheduling();
 
     public Admin getAdmin() {
@@ -54,6 +55,10 @@ public class AgentProperties {
 
     public Notify getNotify() {
         return notify;
+    }
+
+    public Actions getActions() {
+        return actions;
     }
 
     public Scheduling getScheduling() {
@@ -332,6 +337,17 @@ public class AgentProperties {
         /** How many earlier messages a session that replaces another is told about. */
         private int transcriptMessages = 20;
 
+        /** How long a run waits before it tries again when an earlier turn of its line has to finish first. */
+        private Duration lineBusyDelay = Duration.ofSeconds(2);
+
+        public Duration getLineBusyDelay() {
+            return lineBusyDelay;
+        }
+
+        public void setLineBusyDelay(Duration lineBusyDelay) {
+            this.lineBusyDelay = lineBusyDelay;
+        }
+
         public Duration getHeartbeat() {
             return heartbeat;
         }
@@ -427,6 +443,24 @@ public class AgentProperties {
 
         public void setGrace(Duration grace) {
             this.grace = grace;
+        }
+    }
+
+    /** What the agent waits for people to decide. */
+    public static class Actions {
+
+        /**
+         * How long an approval or a question waits for a decision. When nobody decides in time, the
+         * agent is told so and goes on. The Inbox suspends a run for at most inbox.suspend.max-timeout.
+         */
+        private Duration ttl = Duration.ofHours(24);
+
+        public Duration getTtl() {
+            return ttl;
+        }
+
+        public void setTtl(Duration ttl) {
+            this.ttl = ttl;
         }
     }
 

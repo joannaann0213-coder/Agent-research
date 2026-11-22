@@ -149,7 +149,8 @@ public abstract class AgentTestBase {
     /**
      * Lets everything that is under way run to its end, as the background loops would: queued events
      * go to the Inbox, the Inbox's quiet window passes, and the runs that can be claimed are worked on
-     * one after the other.
+     * one after the other. What a turn queues for the Inbox, such as a ring that wakes another turn,
+     * goes there before the next claim, as the relay does right after a commit.
      *
      * @return how many runs were worked on
      */
@@ -157,7 +158,7 @@ public abstract class AgentTestBase {
         relay.runOnce();
         clock.advance(QUIET_WINDOW);
         int runs = 0;
-        while (worker.runOnce()) {
+        while (relay.runOnce() >= 0 && worker.runOnce()) {
             if (++runs > 50) {
                 throw new AssertionError("more than 50 runs in a row: something keeps producing work");
             }

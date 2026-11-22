@@ -125,16 +125,22 @@ class TurnTools {
         return Answer.ok(result.toString());
     }
 
-    /** What the user was told in this conversation by other lines of work, since this one's session last looked. */
+    /**
+     * What other lines of work exchanged with the user in this conversation since this one's session
+     * last looked: notifications and questions of work in the background, and the user's answers.
+     */
     private Answer unreadNotifications(Threads.Thread line) {
         long synced = threads.find(line.appId(), line.userId(), line.mergeKey()).map(Threads.Thread::syncedSeq)
                 .orElse(line.syncedSeq());
-        List<MessageView> unread = messages.notificationsAfter(line.appId(), line.userId(), line.conversationId(), synced,
-                MAX_NOTIFICATIONS_READ);
+        List<MessageView> unread = messages.outsideAfter(line.appId(), line.userId(), line.conversationId(), line.mergeKey(),
+                synced, MAX_NOTIFICATIONS_READ);
         ObjectNode result = Json.STORED.createObjectNode();
-        ArrayNode notifications = result.putArray("notifications");
-        for (MessageView notification : unread) {
-            notifications.addObject().put("sent_at", notification.createdAt().toString()).put("text", notification.text());
+        ArrayNode exchanged = result.putArray("messages");
+        for (MessageView message : unread) {
+            exchanged.addObject().put("sent_at", message.createdAt().toString())
+                    .put("from", message.role().equals("user") ? "the user" : "you, in the background")
+                    .put("kind", message.role().equals("user") ? "answer" : message.kind())
+                    .put("text", message.text());
         }
         return new Answer(result.toString(), false, unread.isEmpty() ? null : unread.getLast().seq());
     }
@@ -171,7 +177,8 @@ class TurnTools {
                 return Answer.failed("Not sent: this user has been sent " + recent + " notifications in the last 24 hours, "
                         + "which is the limit. Do not try again in this turn.");
             }
-            messages.storeFromAgent(line.appId(), line.userId(), conversationId, messageId, "notification", text, run.runId());
+            messages.storeFromAgent(line.appId(), line.userId(), conversationId, line.mergeKey(), messageId, "notification", text,
+                    run.runId(), null);
             return Answer.ok("Sent.");
         });
     }

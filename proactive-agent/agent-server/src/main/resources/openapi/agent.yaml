@@ -30,6 +30,8 @@ tags:
     description: What a user and the agent say to each other.
   - name: Events
     description: What the application's own systems tell the agent about a user, so that the agent can speak first.
+  - name: Actions
+    description: What the agent waits for people to decide. Approvals of tool calls, and questions to the user.
   - name: Users
     description: The end users of an application, and the tokens their clients use.
   - name: Admin
@@ -352,6 +354,125 @@ paths:
         default:
           $ref: '#/components/responses/Error'
 
+  /v1/users/{user_id}/actions:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Actions]
+      operationId: listActions
+      summary: What waits for a decision
+      description: |
+        Returns the user's actions that wait for a decision, oldest first, at most 100.
+
+        An action is a tool call that needs somebody's approval, or a question the agent asked the
+        user. The agent's turn stands still until the action is decided, until it expires (after 24
+        hours by default; the agent is then told that nobody decided), or until something new
+        happens on its line: a new message in the conversation, a new event for the subject. New
+        input withdraws what waits, and comes in the agent's next turn. A question in a
+        conversation is the exception: a message to that conversation answers the latest one.
+
+        An API key sees every action of the user; a user token only the ones the user decides
+        (`approver: user`).
+      parameters:
+        - name: conversation_id
+          in: query
+          description: Only the actions of this conversation.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The actions that wait, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/actions/{action_id}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/ActionId'
+    get:
+      tags: [Actions]
+      operationId: getAction
+      summary: Look at one action
+      description: Returns the action, whatever its status. A user token sees only the actions the user decides.
+      responses:
+        '200':
+          description: The action.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionView'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/actions/{action_id}/resolve:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/ActionId'
+    post:
+      tags: [Actions]
+      operationId: resolveAction
+      summary: Decide an action
+      description: |
+        Approves or denies a tool call, or answers a question, and wakes the agent's turn to go on.
+
+        - An approval takes `decision: approve` or `decision: deny`. A denial may say why, in
+          `message`; the agent is given it.
+        - A question takes an `answer`. The answer also appears among the conversation's messages,
+          as the user's. `decision: deny` declines the question instead.
+
+        Whoever decides first decides: a decision is never undone. Deciding again the same way
+        returns the action unchanged. Deciding otherwise, or deciding an action that expired or was
+        withdrawn, is a 409.
+
+        An API key may decide every action of its users; a user token only the ones the user decides.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveActionRequest'
+            example:
+              decision: approve
+      responses:
+        '200':
+          description: The action, with its outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: '`conflict`: the action was decided otherwise already, or it expired or was withdrawn.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
+
   /v1/users/{user_id}/tokens:
     parameters:
       - $ref: '#/components/parameters/UserId'
@@ -621,6 +742,13 @@ components:
       schema:
         type: string
         pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}$'
+    ActionId:
+      name: action_id
+      in: path
+      required: true
+      description: The action, as the service named it.
+      schema:
+        type: string
 
   responses:
     InvalidRequest:
@@ -874,6 +1002,12 @@ components:
         deduped:
           type: boolean
           description: True when a message with this id had been accepted before; that one is returned.
+        action_id:
+          type: string
+          description: |
+            Present when the agent was waiting for the user to answer a question in this
+            conversation: the question that this message answered. The agent goes on with it as
+            the answer, rather than as a new message, and no other reply to it comes.
 
     MessageView:
       type: object
@@ -892,15 +1026,21 @@ components:
           enum: [user, agent]
         kind:
           type: string
-          enum: [message, reply, notification]
+          enum: [message, reply, notification, question]
           description: |
             `message` is what the user said, `reply` the agent's answer to it, `notification`
-            something the agent said of its own accord.
+            something the agent said of its own accord, `question` a question the agent waits for
+            the user to answer. Writing to the conversation answers the latest question that waits.
         text:
           type: string
         created_at:
           type: string
           format: date-time
+        action_id:
+          type: string
+          description: |
+            For a question: the action that waits for the answer. For a message of the user: the
+            question it answered, if it did.
 
     MessagePage:
       type: object
@@ -981,6 +1121,116 @@ components:
         deduped:
           type: boolean
           description: True when an event with this id had been accepted before; that one is returned.
+
+    ActionTool:
+      type: object
+      required: [server, name]
+      properties:
+        server:
+          type: string
+          description: The MCP server that has the tool.
+        name:
+          type: string
+          description: The tool.
+        input:
+          type: object
+          additionalProperties: true
+          description: What the agent passes to the tool, which is what the call would do.
+
+    ActionView:
+      type: object
+      required: [action_id, kind, status, approver, conversation_id, created_at, expires_at]
+      properties:
+        action_id:
+          type: string
+        kind:
+          type: string
+          enum: [approval, question]
+        status:
+          type: string
+          enum: [pending, approved, denied, answered, expired, withdrawn]
+          description: |
+            `pending` until somebody decides. `approved`, `denied` or `answered` when a person
+            decided; `expired` when nobody did in time; `withdrawn` when it no longer applies,
+            because something new happened on its line first.
+        approver:
+          type: string
+          enum: [user, app]
+          description: Who decides. `user` is the end user, in the application's client; `app` is the application's back end.
+        conversation_id:
+          type: string
+          description: The conversation the action belongs to.
+        tool:
+          $ref: '#/components/schemas/ActionTool'
+        question:
+          type: string
+          description: For a question, what the agent asks.
+        options:
+          type: array
+          items:
+            type: string
+          description: For a question, answers the agent suggests. Any other answer is fine too.
+        answer:
+          type: string
+          description: For an answered question, the answer.
+        note:
+          type: string
+          description: Why it was denied, expired or withdrawn, as the agent is told.
+        resolved_by:
+          type: string
+          enum: [user, app, service]
+          description: Who decided. `service` for an expiry or a withdrawal.
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          description: When nobody deciding counts as no decision.
+        resolved_at:
+          type: string
+          format: date-time
+      example:
+        action_id: act_01JCX3S6Q4Z1R4J4N4V5B2W9Y7
+        kind: approval
+        status: pending
+        approver: user
+        conversation_id: default
+        tool:
+          server: tickets
+          name: close_ticket
+          input:
+            id: T-1
+        created_at: '2026-11-20T10:00:00Z'
+        expires_at: '2026-11-21T10:00:00Z'
+
+    ActionPage:
+      type: object
+      required: [actions]
+      properties:
+        actions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionView'
+
+    ResolveActionRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        decision:
+          type: string
+          enum: [approve, deny]
+          description: For an approval, required. For a question, `deny` declines it; leave it out to answer.
+        answer:
+          type: string
+          minLength: 1
+          maxLength: 4000
+          description: For a question, the answer.
+        message:
+          type: string
+          minLength: 1
+          maxLength: 1000
+          description: With a denial, why. The agent is given it.
 
     IssueTokenRequest:
       type: object

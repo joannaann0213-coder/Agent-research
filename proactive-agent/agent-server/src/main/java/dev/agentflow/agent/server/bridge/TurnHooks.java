@@ -22,6 +22,8 @@ public interface TurnHooks {
         TOOLS_RUN,
         /** The session has the answers to the calls it waited for. */
         ANSWERS_SENT,
+        /** The turn waits for people, its actions are on record; the Inbox has not suspended the run yet. */
+        PARKING,
         /** The reply is stored and the turn is done; the Inbox has not been told. */
         RESULT_STORED
     }

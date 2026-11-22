@@ -110,6 +110,12 @@ public class AgentProfiles {
                 .orElseThrow(() -> AgentException.notFound("no agent " + agentKey + " in this application")));
     }
 
+    /** The profile's configuration as it is stored, without bringing the platform up to date. */
+    public AgentProfileRequest config(String appId, String agentKey) {
+        return find(appId, agentKey, false).map(Row::config)
+                .orElseThrow(() -> AgentException.notFound("no agent " + agentKey + " in this application"));
+    }
+
     public boolean exists(String appId, String agentKey) {
         return jdbc.sql("SELECT count(*) FROM agent_profile WHERE app_id = :appId AND agent_key = :agentKey")
                 .param("appId", appId).param("agentKey", agentKey)

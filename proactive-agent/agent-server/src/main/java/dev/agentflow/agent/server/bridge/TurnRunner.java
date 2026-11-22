@@ -1,5 +1,6 @@
 package dev.agentflow.agent.server.bridge;
 
+import dev.agentflow.agent.api.McpServerConfig;
 import dev.agentflow.agent.api.MessageView;
 import dev.agentflow.agent.cma.CmaEvent;
 import dev.agentflow.agent.cma.CmaEvent.StopReason;
@@ -9,21 +10,29 @@ import dev.agentflow.agent.cma.ManagedAgents;
 import dev.agentflow.agent.cma.Outgoing;
 import dev.agentflow.agent.cma.SessionInfo;
 import dev.agentflow.agent.cma.SessionSpec;
+import dev.agentflow.agent.server.actions.Actions;
 import dev.agentflow.agent.server.api.AgentException;
+import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.bridge.TurnHooks.Point;
 import dev.agentflow.agent.server.bridge.Turns.StaleTurnException;
 import dev.agentflow.agent.server.bridge.Turns.Turn;
 import dev.agentflow.agent.server.chat.Messages;
 import dev.agentflow.agent.server.chat.Threads;
 import dev.agentflow.agent.server.config.AgentProperties;
+import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.events.AppEvents;
 import dev.agentflow.agent.server.events.AppEvents.AppEvent;
 import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.time.AgentClock;
+import dev.agentflow.agent.server.tools.PlatformTools;
 import dev.agentflow.inbox.api.AckRequest;
 import dev.agentflow.inbox.api.ClaimedEvent;
 import dev.agentflow.inbox.api.ClaimedRun;
 import dev.agentflow.inbox.api.NackRequest;
+import dev.agentflow.inbox.api.RunOutcome;
+import dev.agentflow.inbox.api.RunStatus;
+import dev.agentflow.inbox.api.RunView;
+import dev.agentflow.inbox.api.SuspendRequest;
 import dev.agentflow.inbox.client.ApiResult;
 import dev.agentflow.inbox.client.InboxClient;
 import java.time.Duration;
@@ -42,6 +51,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * Turns one run of the Event Inbox into one turn of a session on the agent platform, and what the
@@ -70,6 +82,12 @@ import org.springframework.transaction.support.TransactionTemplate;
  * the lease is kept alive; after that the run goes back to the Inbox, which delivers it again later.
  * The one call that is never simply repeated is the send of the input: when its answer is lost, the
  * session is read to see whether the input arrived.
+ *
+ * <p>A tool call that needs a person, an approval or a question to the user, is put on record as an
+ * action. When a turn has nothing left to do but wait for people, its run is suspended in the Inbox,
+ * and is woken when somebody decides, when the first action expires, or when new input arrives on
+ * the line. A turn that has taken its session keeps it until it ends: a later run of the line waits
+ * for it, and withdraws what it waits for, so that it finishes.
  */
 @Component
 public class TurnRunner {
@@ -89,6 +107,14 @@ public class TurnRunner {
         /** @param delay how long the Inbox holds the run back; {@code null} for its own growing delay */
         record Retry(String reason, Duration delay) implements Settlement {
         }
+
+        /** The run is suspended in the Inbox, waiting for people. Nothing more to tell it. */
+        record Parked() implements Settlement {
+        }
+    }
+
+    /** What putting a call before a person came to: its action, or, on a closing turn, why it was not put. */
+    private record Put(Actions.Action action, String closing) {
     }
 
     /** The line's session cannot carry this turn. The line gets a new one. */
@@ -107,6 +133,8 @@ public class TurnRunner {
     private final Threads threads;
     private final Messages messages;
     private final AppEvents appEvents;
+    private final Actions actions;
+    private final Users users;
     private final TurnTools tools;
     private final AgentProfiles profiles;
     private final TransactionTemplate tx;
@@ -114,16 +142,19 @@ public class TurnRunner {
     private final Patience patience;
     private final TurnHooks hooks;
     private final AgentProperties.Turn config;
+    private final Duration actionTtl;
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
-            TurnTools tools, AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, Patience patience,
-            TurnHooks hooks, AgentProperties properties) {
+            Actions actions, Users users, TurnTools tools, AgentProfiles profiles, TransactionTemplate tx, AgentClock clock,
+            Patience patience, TurnHooks hooks, AgentProperties properties) {
         this.cma = cma;
         this.inbox = inbox;
         this.turns = turns;
         this.threads = threads;
         this.messages = messages;
         this.appEvents = appEvents;
+        this.actions = actions;
+        this.users = users;
         this.tools = tools;
         this.profiles = profiles;
         this.tx = tx;
@@ -131,6 +162,7 @@ public class TurnRunner {
         this.patience = patience;
         this.hooks = hooks;
         this.config = properties.getTurn();
+        this.actionTtl = properties.getActions().getTtl();
     }
 
     /** Works on a claimed run to its end and settles it with the Inbox. Never throws. */
@@ -160,7 +192,13 @@ public class TurnRunner {
     }
 
     private Settlement work(ClaimedRun run, RunLease lease) {
-        Turn turn = turns.open(run).orElseThrow(() -> new StaleTurnException(run.runId(), run.epoch()));
+        boolean resumed = ClaimedRun.KIND_RESUME.equals(run.kind());
+        if (!resumed && !run.events().isEmpty()
+                && run.events().stream().allMatch(event -> Actions.DOORBELL.equals(event.type()))) {
+            // Rings that came after the turn they were to wake had ended. There is nothing to do.
+            return new Settlement.Done();
+        }
+        Turn turn = turns.open(run, config.getDeadline()).orElseThrow(() -> new StaleTurnException(run.runId(), run.epoch()));
         if (Turns.DONE.equals(turn.state())) {
             return new Settlement.Done();
         }
@@ -168,10 +206,18 @@ public class TurnRunner {
             return new Settlement.Failed(turn.error());
         }
 
-        Work work = workOf(run);
+        // A resumed run is handed only what woke it. What the turn works on is on record since its first delivery.
+        Work work = turn.work() != null ? load(run, turn.work()) : workOf(run);
         if (work == null || run.mergeKey() == null
                 || threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).isEmpty()) {
             return fail(run, "the run holds nothing this service can work on");
+        }
+        if (turn.work() == null) {
+            turn = turns.work(turn, stored(work));
+        }
+        Optional<Settlement> earlierFirst = waitForTheLine(run, turn);
+        if (earlierFirst.isPresent()) {
+            return earlierFirst.get();
         }
         for (int session = 1; ; session++) {
             Threads.Thread thread = threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).orElseThrow();
@@ -180,11 +226,62 @@ public class TurnRunner {
             } catch (SessionLost lost) {
                 log.warn("run {}: {}", run.runId(), lost.getMessage());
                 threads.dropSession(lost.thread);
+                // What the turn waited for people to decide was about calls of that session. The turn starts over.
+                actions.withdrawOfRun(run.runId(), "the agent's session was replaced and the turn started over");
                 if (session == 2) {
                     return new Settlement.Retry(lost.getMessage(), config.getNackDelay());
                 }
             }
         }
+    }
+
+    /**
+     * Whether the run has to let an earlier turn of its line finish first. A turn that has taken the
+     * session keeps it until it ends; a later one does not touch it before. When the earlier turn
+     * waits for people, this run's input means that it waits no longer: what it waits for is
+     * withdrawn, and it is woken to finish.
+     */
+    private Optional<Settlement> waitForTheLine(ClaimedRun run, Turn turn) {
+        if (turn.boundarySet()) {
+            return Optional.empty();
+        }
+        for (Turn earlier : turns.openOn(run.tenantId(), run.inboxId(), run.mergeKey())) {
+            if (earlier.runId().equals(run.runId()) || !earlier.boundarySet()) {
+                continue;
+            }
+            ApiResult<RunView> found = inbox.getRun(earlier.runId());
+            if (!found.ok() && found.status() != 404) {
+                return Optional.of(new Settlement.Retry("the Inbox could not say how run " + earlier.runId() + " stands",
+                        config.getLineBusyDelay()));
+            }
+            RunStatus status = found.ok() ? RunStatus.fromWire(found.body().status()) : null;
+            if (status == null || !status.isOpen()) {
+                // Its run ended without it, so nobody will finish that turn. Its session is brought to rest below.
+                String why = status == null ? "its run is gone" : "its run ended as " + found.body().status();
+                tx.executeWithoutResult(transaction -> {
+                    actions.withdrawOfRun(earlier.runId(), "the turn that waited for this ended");
+                    turns.abandon(earlier.runId(), "a later turn of the line found that " + why);
+                });
+                continue;
+            }
+            if (status == RunStatus.SUSPENDED) {
+                String note = Actions.supersededNote(run.mergeKey());
+                tx.executeWithoutResult(transaction -> {
+                    users.lock(run.tenantId(), run.inboxId());
+                    actions.withdrawOfRun(earlier.runId(), note);
+                    actions.close(earlier.runId(), note);
+                    actions.ring(run.tenantId(), run.inboxId(), run.mergeKey(), earlier.runId());
+                });
+            }
+            Duration delay = config.getLineBusyDelay();
+            if (status == RunStatus.QUEUED && found.body().nextAttemptAt() != null) {
+                Duration untilItsTurn = Duration.between(clock.now(), found.body().nextAttemptAt()).plusSeconds(1);
+                delay = untilItsTurn.compareTo(delay) > 0 ? untilItsTurn : delay;
+            }
+            log.info("run {} waits for run {} of its line to finish", run.runId(), earlier.runId());
+            return Optional.of(new Settlement.Retry("run " + earlier.runId() + " of the line finishes first", delay));
+        }
+        return Optional.empty();
     }
 
     private Settlement inSession(ClaimedRun run, RunLease lease, Turn opened, Threads.Thread line, Work work) {
@@ -195,7 +292,7 @@ public class TurnRunner {
                 turn = fixBoundary(turn, thread);
                 hooks.at(Point.BOUNDARY_FIXED, run);
             }
-            Instant deadline = turn.createdAt().plus(config.getDeadline());
+            Instant deadline = turn.deadlineAt();
             Instant from = since(turn.boundaryAt());
             try (EventTail tail = platform(() -> EventTail.open(cma, thread.sessionId(), from))) {
                 Reading reading = new Reading(turn.inputEventId());
@@ -214,7 +311,9 @@ public class TurnRunner {
                     if (!clock.now().isBefore(deadline)) {
                         return giveUp(run, turn, thread);
                     }
-                    answerWaitingCalls(run, turn, thread, work, reading);
+                    if (answerWaitingCalls(run, turn, thread, work, reading)) {
+                        return park(run, turn);
+                    }
                     patience.next(tail, config.getPoll()).ifPresent(event -> see(thread, reading, event));
                 }
                 return finish(run, turn, thread, work, reading);
@@ -355,6 +454,42 @@ public class TurnRunner {
         return happened.isEmpty() ? null : new Work.Task(happened);
     }
 
+    /** What the turn works on, for its row: the ids of the messages or events, not what they say. */
+    private static JsonNode stored(Work work) {
+        ObjectNode stored = Json.STORED.createObjectNode();
+        switch (work) {
+            case Work.Chat chat -> {
+                stored.put("kind", "chat");
+                ArrayNode list = stored.putArray("messages");
+                chat.messages().forEach(message -> list.addObject()
+                        .put("conversation_id", message.conversationId()).put("message_id", message.messageId()));
+            }
+            case Work.Task task -> {
+                stored.put("kind", "task");
+                ArrayNode list = stored.putArray("events");
+                task.events().forEach(event -> list.add(event.eventId()));
+            }
+        }
+        return stored;
+    }
+
+    /** @return {@code null} when what the turn worked on is no longer there */
+    private Work load(ClaimedRun run, JsonNode stored) {
+        if ("chat".equals(stored.path("kind").asString())) {
+            List<MessageView> said = new ArrayList<>();
+            for (JsonNode message : stored.path("messages")) {
+                messages.find(run.tenantId(), run.inboxId(), message.path("conversation_id").asString(),
+                        message.path("message_id").asString()).ifPresent(said::add);
+            }
+            return said.isEmpty() ? null : new Work.Chat(said);
+        }
+        List<AppEvent> happened = new ArrayList<>();
+        for (JsonNode eventId : stored.path("events")) {
+            appEvents.find(run.tenantId(), run.inboxId(), eventId.asString()).ifPresent(happened::add);
+        }
+        return happened.isEmpty() ? null : new Work.Task(happened);
+    }
+
     /**
      * The text that starts the turn.
      *
@@ -381,14 +516,15 @@ public class TurnRunner {
     /**
      * The user's messages, in order. Before them, where it applies, two notes from the service: in a
      * session that replaces another one, what was said before, because the new session knows none of
-     * it; and that the user has been sent notifications which this session has not read.
+     * it; and that work in the background has exchanged messages with the user in this conversation,
+     * which this session has not read.
      */
     private String said(Threads.Thread thread, List<MessageView> inputs) {
         StringBuilder text = new StringBuilder();
         long synced = thread.syncedSeq();
         if (thread.generation() > 1 && thread.lastEventId() == null) {
             List<MessageView> earlier = messages.dialogueBefore(thread.appId(), thread.userId(), thread.conversationId(),
-                    inputs.getFirst().seq(), config.getTranscriptMessages());
+                    thread.mergeKey(), inputs.getFirst().seq(), config.getTranscriptMessages());
             if (!earlier.isEmpty()) {
                 text.append("[From the service that runs you, not from the user: this conversation continues in a new "
                         + "session. This is what was said before, for your reference.]\n");
@@ -398,17 +534,17 @@ public class TurnRunner {
                     text.append(message.role().equals("user") ? "User: " : "You: ").append(words).append('\n');
                 }
                 text.append("[End of the earlier conversation. The user's new message follows.]\n\n");
-                // The new session has read no notification. Those sent since the earliest thing it was told are offered to it.
+                // The new session has read nothing from the background. What came since the earliest thing it was told is offered to it.
                 synced = Math.min(synced, earlier.getFirst().seq() - 1);
                 threads.unsyncedAfter(thread, synced);
             }
         }
-        int unread = messages.notificationsAfter(thread.appId(), thread.userId(), thread.conversationId(), synced,
+        int unread = messages.outsideAfter(thread.appId(), thread.userId(), thread.conversationId(), thread.mergeKey(), synced,
                 TurnTools.MAX_NOTIFICATIONS_READ).size();
         if (unread > 0) {
             text.append("[From the service that runs you, not from the user: since this session last looked, your work in "
-                    + "the background has sent the user ").append(unread == 1 ? "a notification" : unread + " notifications")
-                    .append(" in this conversation. Call read_events to see ").append(unread == 1 ? "it" : "them")
+                    + "the background has exchanged ").append(unread == 1 ? "a message" : unread + " messages")
+                    .append(" with the user in this conversation. Call read_events to see ").append(unread == 1 ? "it" : "them")
                     .append(" before you answer.]\n\n");
         }
         for (int i = 0; i < inputs.size(); i++) {
@@ -460,43 +596,61 @@ public class TurnRunner {
 
     /**
      * Answers the tool calls the session waits for. The tools of this service are run here. A call
-     * that asks for somebody's permission is denied for now, so that the agent can go on and say so.
+     * that needs a person waits for them: the first time it is seen it is put on record as an action,
+     * and once the action has an outcome the session is told.
+     *
+     * @return whether the turn has nothing left to do but wait for people
      */
-    private void answerWaitingCalls(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, Reading reading) {
+    private boolean answerWaitingCalls(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, Reading reading) {
+        List<String> outstanding = reading.outstanding();
+        if (outstanding.isEmpty()) {
+            return false;
+        }
+        actions.expireDue(run.runId());
         List<Outgoing> answers = new ArrayList<>();
-        for (String id : reading.waiting) {
-            if (!reading.answered.add(id)) {
-                continue;
-            }
+        boolean waitsForPeople = false;
+        for (String id : outstanding) {
             CmaEvent call = reading.calls.get(id);
-            if (call instanceof CmaEvent.CustomToolUse custom) {
-                TurnTools.Answer answer = tools.call(run, turn, thread, work, custom, reading.ordinal(custom));
-                if (answer.syncedTo() != null) {
-                    reading.syncedTo = answer.syncedTo();
+            Outgoing answer;
+            if (call instanceof CmaEvent.CustomToolUse custom && PlatformTools.ASK_USER.equals(custom.name())) {
+                answer = fromPerson(run, turn, thread, work, custom);
+            } else if (call instanceof CmaEvent.CustomToolUse custom) {
+                TurnTools.Answer result = tools.call(run, turn, thread, work, custom, reading.ordinal(custom));
+                if (result.syncedTo() != null) {
+                    reading.syncedTo = result.syncedTo();
                 }
-                answers.add(new Outgoing.CustomToolResult(id, answer.text(), answer.error()));
-            } else if (call instanceof CmaEvent.ToolUse) {
-                answers.add(new Outgoing.ToolConfirmation(id, false, "This action needs an approval, and nobody can give one here."));
+                answer = new Outgoing.CustomToolResult(id, result.text(), result.error());
+            } else if (call instanceof CmaEvent.ToolUse use) {
+                answer = use.mcpServer() != null ? fromPerson(run, turn, thread, work, use)
+                        // A built-in tool that the platform would not judge alone: not something to put before an end user.
+                        : new Outgoing.ToolConfirmation(id, false,
+                                "Not approved: this service puts no built-in tool before anybody for approval.");
             } else {
                 // Without the call there is no telling what kind of answer it wants. The turn's deadline ends the wait.
                 log.warn("session {} waits for an answer to {}, a call this turn has not seen", thread.sessionId(), id);
+                continue;
+            }
+            if (answer == null) {
+                waitsForPeople = true;
+            } else {
+                reading.answered.add(id);
+                answers.add(answer);
             }
         }
-        reading.waiting = List.of();
         if (answers.isEmpty()) {
-            return;
+            return waitsForPeople;
         }
         hooks.at(Point.TOOLS_RUN, run);
         for (int attempt = 1; ; attempt++) {
             try {
                 cma.send(thread.sessionId(), answers);
                 hooks.at(Point.ANSWERS_SENT, run);
-                return;
+                return false;
             } catch (CmaException e) {
                 if (e.kind() == CmaException.Kind.INVALID_REQUEST && attempt > 1) {
                     // An earlier attempt got through after all: the calls are answered and no longer wait.
                     hooks.at(Point.ANSWERS_SENT, run);
-                    return;
+                    return false;
                 }
                 if (!e.retryable() || attempt >= config.getAttempts()) {
                     throw e;
@@ -504,6 +658,133 @@ public class TurnRunner {
                 patience.pause(delay(attempt, e));
             }
         }
+    }
+
+    /**
+     * The answer to a call that needs a person, once there is one; {@code null} while nobody has
+     * decided. The first time the call is seen it is put on record as an action, unless the turn is
+     * closing: then the call is not put before anybody, and gets its answer at once.
+     */
+    private Outgoing fromPerson(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, CmaEvent call) {
+        Optional<Actions.Action> known = actions.ofCall(run.runId(), call.id());
+        if (known.isPresent()) {
+            return answerFrom(call, known.get());
+        }
+        Actions.Call spec;
+        try {
+            spec = callOf(thread, work, call);
+        } catch (IllegalArgumentException wrong) {
+            // A question that was not put right. The agent is told, and can ask again.
+            return new Outgoing.CustomToolResult(call.id(), wrong.getMessage(), true);
+        }
+        if (spec == null) {
+            return new Outgoing.ToolConfirmation(call.id(), false, "Not approved: the tool's server is no longer configured.");
+        }
+        Put put = tx.execute(status -> {
+            turns.stillHeld(turn);
+            users.lock(thread.appId(), thread.userId());
+            String closing = turns.closing(run.runId());
+            if (closing != null) {
+                return new Put(null, closing);
+            }
+            Actions.Ensured ensured = actions.ensure(thread.appId(), thread.userId(), thread.mergeKey(), run.runId(), spec, actionTtl);
+            if (ensured.created() && Actions.QUESTION.equals(spec.kind())) {
+                // The question is part of the conversation; the user may answer it by writing to it.
+                messages.storeFromAgent(thread.appId(), thread.userId(), spec.conversationId(), thread.mergeKey(),
+                        "ask:" + ensured.action().actionId(), "question", spec.question(), run.runId(), ensured.action().actionId());
+            }
+            return new Put(ensured.action(), null);
+        });
+        if (put.closing() != null) {
+            return call instanceof CmaEvent.CustomToolUse
+                    ? new Outgoing.CustomToolResult(call.id(), "No answer: " + put.closing() + ".", true)
+                    : new Outgoing.ToolConfirmation(call.id(), false, "Not approved: " + put.closing() + ".");
+        }
+        return answerFrom(call, put.action());
+    }
+
+    /** What a call that needs a person is about, for its action; {@code null} for a tool of a server the agent no longer has. */
+    private Actions.Call callOf(Threads.Thread thread, Work work, CmaEvent call) {
+        String conversationId = work instanceof Work.Task task ? task.conversationId() : thread.conversationId();
+        if (call instanceof CmaEvent.CustomToolUse ask) {
+            JsonNode input = ask.input();
+            String question = input == null ? null : input.path("question").asString(null);
+            if (question == null || question.isBlank()) {
+                throw new IllegalArgumentException("Not asked: question is required, the question for the user.");
+            }
+            if (question.length() > PlatformTools.MAX_QUESTION) {
+                throw new IllegalArgumentException("Not asked: a question has at most " + PlatformTools.MAX_QUESTION + " characters.");
+            }
+            List<String> options = null;
+            JsonNode given = input.path("options");
+            if (!given.isMissingNode() && !given.isNull()) {
+                if (!given.isArray() || given.size() > PlatformTools.MAX_OPTIONS) {
+                    throw new IllegalArgumentException("Not asked: options is a list of at most " + PlatformTools.MAX_OPTIONS + " answers.");
+                }
+                options = new ArrayList<>();
+                for (JsonNode option : given) {
+                    String text = option.isString() ? option.asString() : null;
+                    if (text == null || text.isBlank() || text.length() > PlatformTools.MAX_OPTION) {
+                        throw new IllegalArgumentException("Not asked: each option is a text of at most " + PlatformTools.MAX_OPTION
+                                + " characters.");
+                    }
+                    options.add(text);
+                }
+            }
+            return new Actions.Call(Actions.QUESTION, Actions.BY_USER, conversationId, thread.sessionId(), call.id(), null, null,
+                    null, question, options);
+        }
+        CmaEvent.ToolUse use = (CmaEvent.ToolUse) call;
+        Optional<McpServerConfig> server = profiles.config(thread.appId(), thread.agentKey()).mcpServers().stream()
+                .filter(candidate -> candidate.name().equals(use.mcpServer())).findFirst();
+        return server.map(found -> new Actions.Call(Actions.APPROVAL, found.approver(), conversationId, thread.sessionId(),
+                call.id(), use.mcpServer(), use.name(), use.input(), null, null)).orElse(null);
+    }
+
+    /** What the session is told about a call whose action has an outcome; {@code null} while it has none. */
+    private static Outgoing answerFrom(CmaEvent call, Actions.Action action) {
+        boolean question = Actions.QUESTION.equals(action.kind());
+        String by = Actions.BY_USER.equals(action.resolvedBy()) ? "the user" : "the application";
+        return switch (action.status()) {
+            case Actions.PENDING -> null;
+            case Actions.APPROVED -> new Outgoing.ToolConfirmation(call.id(), true, null);
+            case Actions.ANSWERED -> new Outgoing.CustomToolResult(call.id(), action.answer(), false);
+            case Actions.DENIED -> question
+                    ? new Outgoing.CustomToolResult(call.id(), "Not answered: " + by + " declined the question"
+                            + (action.note() == null ? "." : ": " + action.note()), true)
+                    : new Outgoing.ToolConfirmation(call.id(), false, "Denied by " + by
+                            + (action.note() == null ? "." : ": " + action.note()));
+            case Actions.EXPIRED -> question
+                    ? new Outgoing.CustomToolResult(call.id(), "No answer: the user did not answer in time.", true)
+                    : new Outgoing.ToolConfirmation(call.id(), false, "Not approved: nobody decided in time.");
+            default -> question
+                    ? new Outgoing.CustomToolResult(call.id(), "No answer: " + action.note() + ".", true)
+                    : new Outgoing.ToolConfirmation(call.id(), false, "Not approved: " + action.note() + ".");
+        };
+    }
+
+    /**
+     * Suspends the run in the Inbox until somebody decides, or until the first of its actions
+     * expires. Whatever decides an action rings, which wakes the run; it then reads the outcome from
+     * the actions. A ring that comes before the run is suspended is not lost: the Inbox keeps it.
+     */
+    private Settlement park(ClaimedRun run, Turn turn) {
+        hooks.at(Point.PARKING, run);
+        Instant now = clock.now();
+        Instant wake = actions.earliestExpiry(run.runId()).orElse(now.plus(actionTtl));
+        long seconds = Math.max(1, Duration.between(now, wake).toSeconds() + 1);
+        turns.park(turn);
+        ApiResult<RunOutcome> suspended = inbox.suspend(run.runId(), new SuspendRequest(run.epoch(),
+                Actions.resumeKey(run.runId()), seconds, SuspendRequest.RESUME, run.lastRunSeq()));
+        if (suspended.status() == 404 || suspended.status() == 409) {
+            throw new StaleTurnException(run.runId(), run.epoch());
+        }
+        if (!suspended.ok()) {
+            throw new IllegalStateException("the Inbox did not suspend run " + run.runId() + ": " + suspended.status() + " "
+                    + suspended.code());
+        }
+        log.info("run {} waits for people, until {} at the latest", run.runId(), wake);
+        return new Settlement.Parked();
     }
 
     private Settlement finish(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, Reading reading) {
@@ -523,8 +804,8 @@ public class TurnRunner {
                 case Work.Chat chat -> {
                     // What the agent wrote last is its answer to the user.
                     if (wrote) {
-                        messages.storeFromAgent(thread.appId(), thread.userId(), thread.conversationId(), "reply:" + run.runId(),
-                                "reply", last, run.runId());
+                        messages.storeFromAgent(thread.appId(), thread.userId(), thread.conversationId(), thread.mergeKey(),
+                                "reply:" + run.runId(), "reply", last, run.runId(), null);
                     }
                     if (reading.syncedTo != null) {
                         threads.synced(thread, reading.syncedTo);
@@ -560,6 +841,7 @@ public class TurnRunner {
         }
         String error = "the turn took longer than " + config.getDeadline();
         turns.finish(turn, Turns.FAILED, null, error);
+        actions.withdrawOfRun(run.runId(), "the turn that waited for this ran out of time");
         log.warn("run {} failed: {}", run.runId(), error);
         return new Settlement.Failed(error);
     }
@@ -568,11 +850,15 @@ public class TurnRunner {
     private Settlement fail(ClaimedRun run, String error) {
         turns.find(run.runId()).filter(turn -> turn.epoch() == run.epoch() && Turns.OPEN.equals(turn.state()))
                 .ifPresent(turn -> turns.finish(turn, Turns.FAILED, null, error));
+        actions.withdrawOfRun(run.runId(), "the turn that waited for this failed");
         log.warn("run {} failed: {}", run.runId(), error);
         return new Settlement.Failed(error);
     }
 
     private void settle(ClaimedRun run, Settlement settlement) {
+        if (settlement instanceof Settlement.Parked) {
+            return;
+        }
         try {
             ApiResult<?> result = switch (settlement) {
                 case Settlement.Done done -> inbox.ack(run.runId(), AckRequest.done(run.epoch(), run.lastRunSeq()));
@@ -580,6 +866,7 @@ public class TurnRunner {
                         inbox.ack(run.runId(), AckRequest.failed(run.epoch(), run.lastRunSeq(), shorten(failed.error())));
                 case Settlement.Retry retry -> inbox.nack(run.runId(), new NackRequest(run.epoch(), shorten(retry.reason()),
                         retry.delay() == null ? null : retry.delay().toMillis()));
+                case Settlement.Parked parked -> throw new IllegalStateException("a parked run is settled already");
             };
             if (!result.ok()) {
                 log.warn("run {}: the Inbox answered {} {} to {}", run.runId(), result.status(), result.code(),
@@ -661,6 +948,7 @@ public class TurnRunner {
         private String lastText;
         private final Map<String, CmaEvent> calls = new LinkedHashMap<>();
         private final Set<String> answered = new HashSet<>();
+        /** The calls the session waits for, as its last idle said; empty again once it runs. */
         private List<String> waiting = List.of();
         private End end;
         private String lastEventId;
@@ -670,6 +958,11 @@ public class TurnRunner {
 
         Reading(String inputId) {
             this.inputId = inputId;
+        }
+
+        /** The calls the session waits for that have no answer yet. */
+        List<String> outstanding() {
+            return waiting.stream().filter(id -> !answered.contains(id)).toList();
         }
 
         /**

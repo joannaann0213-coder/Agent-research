@@ -15,6 +15,11 @@ public final class PlatformTools {
 
     public static final String READ_EVENTS = "read_events";
     public static final String NOTIFY_USER = "notify_user";
+    public static final String ASK_USER = "ask_user";
+
+    public static final int MAX_QUESTION = 2000;
+    public static final int MAX_OPTIONS = 10;
+    public static final int MAX_OPTION = 200;
 
     private PlatformTools() {
     }
@@ -56,6 +61,31 @@ public final class PlatformTools {
                                     }
                                   },
                                   "required": ["text"],
+                                  "additionalProperties": false
+                                }""")),
+                new AgentSpec.CustomTool(ASK_USER, """
+                        Asks the user a question and waits for the answer, which comes back as the result of \
+                        this call. Use it when you cannot go on without the user's decision or information. \
+                        The question is shown to the user in the conversation; the answer can take minutes or \
+                        days, and when nobody answers in time, or something new happens first, the call \
+                        returns without one. In a conversation, when you can simply ask in your reply and end \
+                        your turn, do that instead.""",
+                        Json.STORED.readTree("""
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "question": {
+                                      "type": "string",
+                                      "description": "The question, written for the user, exactly as they will read it. At most 2000 characters."
+                                    },
+                                    "options": {
+                                      "type": "array",
+                                      "items": {"type": "string"},
+                                      "maxItems": 10,
+                                      "description": "Answers to offer the user as choices, if the question has a few likely ones. The user may answer otherwise."
+                                    }
+                                  },
+                                  "required": ["question"],
                                   "additionalProperties": false
                                 }""")));
     }

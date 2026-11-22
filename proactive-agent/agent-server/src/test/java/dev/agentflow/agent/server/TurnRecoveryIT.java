@@ -8,6 +8,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import dev.agentflow.agent.api.AgentProfileRequest;
 import dev.agentflow.agent.api.AgentProfileView;
 import dev.agentflow.agent.api.McpServerConfig;
+import dev.agentflow.agent.api.ResolveActionRequest;
 import dev.agentflow.agent.cma.CmaEvent.StopReason;
 import dev.agentflow.agent.cma.CmaException;
 import dev.agentflow.agent.cma.Outgoing;
@@ -58,7 +59,7 @@ class TurnRecoveryIT extends AgentTestBase {
     // ================================================================ a worker dies
 
     @ParameterizedTest
-    @EnumSource(value = Point.class, mode = EnumSource.Mode.EXCLUDE, names = {"TOOLS_RUN", "ANSWERS_SENT"})
+    @EnumSource(value = Point.class, mode = EnumSource.Mode.EXCLUDE, names = {"TOOLS_RUN", "ANSWERS_SENT", "PARKING"})
     void aWorkerThatDiesAnywhereInATurnIsReplaced_andNothingHappensTwice(Point point) {
         userSays(acme, USER, "hello");
         deliver();
@@ -180,10 +181,10 @@ class TurnRecoveryIT extends AgentTestBase {
     }
 
     @Test
-    void aTurnThatIsDeliveredAgainAnswersTheCallThatStillWaits_andOnlyThatOne() {
+    void aTurnThatIsDeliveredAgainPutsTheCallThatStillWaitsBeforeTheApprover_once() {
         agentWithATicketSystemThatAsks();
         cma.brain(context -> context.step() == 0 ? ModelStep.of(mcp("tickets", "close_ticket", "{\"id\": \"T-1\"}"))
-                : say("Not closed: " + context.toolResults().getFirst().text()));
+                : say(context.toolResults().getFirst().error() ? "Not closed: " + context.toolResults().getFirst().text() : "Closed."));
         userSays(acme, USER, "close ticket T-1");
         deliver();
         hooks.crashAt(Point.INPUT_RECORDED);
@@ -193,9 +194,15 @@ class TurnRecoveryIT extends AgentTestBase {
 
         assertThat(worker.runOnce()).isTrue();
 
-        assertThat(repliesTo(acme, USER)).hasSize(1).first().asString().startsWith("Not closed: This action needs an approval");
+        assertThat(runs()).containsExactly("suspended attempt 2");
+        String action = jdbc.sql("SELECT action_id FROM action WHERE status = 'pending'").query(String.class).single();
+        acme.post("/v1/users/u42/actions/" + action + "/resolve", new ResolveActionRequest("approve", null, null)).as(Object.class);
+        assertThat(settle()).isEqualTo(1);
+
+        assertThat(repliesTo(acme, USER)).containsExactly("Closed.");
         assertThat(cma.count(Operation.SEND)).as("the message, and one answer").isEqualTo(2);
-        assertThat(cma.executions()).isEmpty();
+        assertThat(cma.executions()).hasSize(1);
+        assertThat(runs()).containsExactly("done attempt 2");
     }
 
     @Test

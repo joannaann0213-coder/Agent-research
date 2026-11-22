@@ -36,7 +36,7 @@ public final class DemoAgent implements FakeBrain {
                 return ModelStep.say("You said: " + said);
             }
             List<String> told = new ArrayList<>();
-            Json.STORED.readTree(read.text()).path("notifications").forEach(one -> told.add(one.path("text").asString()));
+            Json.STORED.readTree(read.text()).path("messages").forEach(one -> told.add(one.path("text").asString()));
             return ModelStep.say("You said: " + said + " (Since we last spoke you were told: " + String.join(" / ", told) + ")");
         }
         if (read == null) {

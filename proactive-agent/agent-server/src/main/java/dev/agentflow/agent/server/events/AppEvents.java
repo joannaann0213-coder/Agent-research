@@ -2,6 +2,7 @@ package dev.agentflow.agent.server.events;
 
 import dev.agentflow.agent.api.EventAccepted;
 import dev.agentflow.agent.api.PostEventRequest;
+import dev.agentflow.agent.server.actions.Actions;
 import dev.agentflow.agent.server.api.AgentException;
 import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.chat.Messages;
@@ -62,17 +63,19 @@ public class AppEvents {
     private final Threads threads;
     private final AgentProfiles profiles;
     private final InboxRelay relay;
+    private final Actions actions;
     private final AgentClock clock;
     private final Ids ids;
 
     public AppEvents(JdbcClient jdbc, TransactionTemplate tx, Users users, Threads threads, AgentProfiles profiles,
-            InboxRelay relay, AgentClock clock, Ids ids) {
+            InboxRelay relay, Actions actions, AgentClock clock, Ids ids) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
         this.threads = threads;
         this.profiles = profiles;
         this.relay = relay;
+        this.actions = actions;
         this.clock = clock;
         this.ids = ids;
     }
@@ -153,6 +156,12 @@ public class AppEvents {
                     .param("subject", subject).param("conversationId", conversationId).param("data", dataJson)
                     .param("fingerprint", fingerprint).param("deliverAt", Db.ts(deliverAt)).param("now", Db.ts(now))
                     .update();
+
+            // Something new happened to the subject: whatever its line waits for people to decide no longer applies.
+            // An event that is held back counts from when it is due, so it does not withdraw anything now.
+            if (deliverAt == null) {
+                actions.supersede(appId, userId, mergeKey, Actions.supersededNote(mergeKey));
+            }
 
             ObjectNode payload = InboxJson.mapper().createObjectNode();
             payload.put("event_id", eventId);
