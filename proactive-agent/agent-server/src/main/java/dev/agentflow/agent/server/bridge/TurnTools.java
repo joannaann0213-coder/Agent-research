@@ -207,8 +207,8 @@ class TurnTools {
         Schedules.Followup followup = new Schedules.Followup("fu-" + run.runId() + "-" + ordinal, line.mergeKey(), line.agentKey(),
                 conversationId, fireAt, note, chain);
         String refused = tx.execute(status -> {
-            turns.stillHeld(turn);
             users.lock(line.appId(), line.userId());
+            turns.stillHeld(turn);
             if (schedules.find(line.appId(), line.userId(), followup.scheduleId()).isPresent()) {
                 return null;
             }
@@ -251,8 +251,8 @@ class TurnTools {
         String messageId = "notify:" + run.runId() + ":" + ordinal;
         String conversationId = task.conversationId();
         return tx.execute(status -> {
-            turns.stillHeld(turn);
             users.lock(line.appId(), line.userId());
+            turns.stillHeld(turn);
             if (messages.find(line.appId(), line.userId(), conversationId, messageId).isPresent()) {
                 return Answer.ok("Sent.");
             }

@@ -10,6 +10,7 @@ import dev.agentflow.agent.api.MessageAccepted;
 import dev.agentflow.agent.api.MessagePage;
 import dev.agentflow.agent.api.MessageView;
 import dev.agentflow.agent.api.PostMessageRequest;
+import dev.agentflow.agent.server.auth.RateLimiter;
 import dev.agentflow.agent.server.bridge.TurnSweeper;
 import dev.agentflow.agent.server.bridge.TurnWorker;
 import dev.agentflow.agent.server.relay.InboxRelay;
@@ -88,6 +89,9 @@ public abstract class AgentTestBase {
     @Autowired
     protected TurnSweeper sweeper;
 
+    @Autowired
+    protected RateLimiter limiter;
+
     /** A way into the middle of a turn. */
     @Autowired
     protected TestHooks hooks;
@@ -101,7 +105,9 @@ public abstract class AgentTestBase {
 
     @BeforeEach
     void resetState() {
-        jdbc.sql("TRUNCATE TABLE turn, message, thread, agent_profile, inbox_relay, app_user, api_key, app RESTART IDENTITY CASCADE").update();
+        jdbc.sql("TRUNCATE TABLE turn, message, thread, agent_profile, inbox_relay, stream_ticket, webhook_delivery, app_user, api_key, app "
+                + "RESTART IDENTITY CASCADE").update();
+        limiter.reset();
         EmbeddedInbox.reset();
         cma.reset();
         hooks.reset();

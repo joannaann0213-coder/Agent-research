@@ -4,6 +4,7 @@ import dev.agentflow.agent.api.Problem;
 import dev.agentflow.agent.api.ProblemCodes;
 import dev.agentflow.agent.server.app.Apps;
 import dev.agentflow.agent.server.config.AgentProperties;
+import dev.agentflow.agent.server.delivery.StreamTickets;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -11,8 +12,10 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
@@ -35,13 +38,19 @@ public class ApiAuthFilter extends OncePerRequestFilter {
 
     private static final String BEARER = "Bearer ";
 
+    /** The one request that may be authenticated by a ticket in its query, because a browser's EventSource cannot send a header. */
+    private static final Pattern STREAM = Pattern.compile("/v1/users/[^/]+/stream");
+
     private final List<byte[]> adminKeys;
     private final ApiKeys apiKeys;
     private final UserTokens userTokens;
     private final Apps apps;
+    private final StreamTickets tickets;
+    private final RateLimiter limiter;
     private final JsonMapper json;
 
-    public ApiAuthFilter(AgentProperties properties, ApiKeys apiKeys, UserTokens userTokens, Apps apps, JsonMapper json) {
+    public ApiAuthFilter(AgentProperties properties, ApiKeys apiKeys, UserTokens userTokens, Apps apps, StreamTickets tickets,
+            RateLimiter limiter, JsonMapper json) {
         for (String key : properties.getAdmin().getKeys()) {
             if (key == null || key.length() < 32) {
                 throw new IllegalStateException("every entry of agent.admin.keys needs at least 32 characters");
@@ -51,6 +60,8 @@ public class ApiAuthFilter extends OncePerRequestFilter {
         this.apiKeys = apiKeys;
         this.userTokens = userTokens;
         this.apps = apps;
+        this.tickets = tickets;
+        this.limiter = limiter;
         this.json = json;
     }
 
@@ -63,6 +74,17 @@ public class ApiAuthFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         String header = request.getHeader("Authorization");
+        String ticket = request.getParameter("ticket");
+        if (header == null && ticket != null && "GET".equals(request.getMethod()) && STREAM.matcher(request.getRequestURI()).matches()) {
+            Optional<StreamTickets.Holder> holder = tickets.use(ticket);
+            if (holder.isEmpty()) {
+                reject(response, HttpStatus.UNAUTHORIZED, ProblemCodes.UNAUTHENTICATED, "unknown, expired or used stream ticket");
+                return;
+            }
+            // A ticket opens the stream of the one user it was issued for, and nothing else.
+            proceed(request, response, chain, new Caller(Caller.Kind.USER, holder.get().appId(), holder.get().userId(), null));
+            return;
+        }
         if (header == null || !header.startsWith(BEARER)) {
             reject(response, HttpStatus.UNAUTHORIZED, ProblemCodes.UNAUTHENTICATED,
                     "send the credential as Authorization: Bearer <credential>");
@@ -108,6 +130,18 @@ public class ApiAuthFilter extends OncePerRequestFilter {
             return;
         }
 
+        proceed(request, response, chain, caller);
+    }
+
+    private void proceed(HttpServletRequest request, HttpServletResponse response, FilterChain chain, Caller caller)
+            throws ServletException, IOException {
+        Optional<Duration> wait = limiter.take(caller);
+        if (wait.isPresent()) {
+            response.setHeader("Retry-After", Long.toString(Math.max(1, (wait.get().toMillis() + 999) / 1000)));
+            reject(response, HttpStatus.TOO_MANY_REQUESTS, ProblemCodes.RATE_LIMITED,
+                    "too many requests; try again after the time in Retry-After");
+            return;
+        }
         request.setAttribute(Caller.REQUEST_ATTRIBUTE, caller);
         chain.doFilter(request, response);
     }

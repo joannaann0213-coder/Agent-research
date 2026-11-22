@@ -32,7 +32,8 @@ import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandl
 class OpenApiContractIT extends AgentTestBase {
 
     /** Statuses produced by layers that all operations share; one test per operation would add nothing. */
-    private static final Set<Integer> SHARED = Set.of(400, 401, 403);
+    /** Statuses that every operation shares and that a few tests show, rather than a test per operation. */
+    private static final Set<Integer> SHARED = Set.of(400, 401, 403, 429);
 
     @Autowired
     @Qualifier("requestMappingHandlerMapping")

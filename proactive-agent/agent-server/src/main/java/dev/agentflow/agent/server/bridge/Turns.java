@@ -48,21 +48,21 @@ public class Turns {
      */
     public record Turn(String runId, String mergeKey, int epoch, String state, Integer generation, String sessionId,
             boolean boundarySet, String boundaryEventId, Instant boundaryAt, String inputEventId, String error,
-            Instant createdAt, Instant deadlineAt, String closing, JsonNode work, boolean parked) {
+            Instant createdAt, Instant deadlineAt, String closing, JsonNode work, boolean parked, String appId, String userId) {
 
         Turn inSession(int newGeneration, String newSessionId) {
             return new Turn(runId, mergeKey, epoch, state, newGeneration, newSessionId, false, null, null, null, error,
-                    createdAt, deadlineAt, closing, work, parked);
+                    createdAt, deadlineAt, closing, work, parked, appId, userId);
         }
 
         Turn withBoundary(String eventId, Instant eventAt) {
             return new Turn(runId, mergeKey, epoch, state, generation, sessionId, true, eventId, eventAt, inputEventId, error,
-                    createdAt, deadlineAt, closing, work, parked);
+                    createdAt, deadlineAt, closing, work, parked, appId, userId);
         }
 
         Turn withWork(JsonNode newWork) {
             return new Turn(runId, mergeKey, epoch, state, generation, sessionId, boundarySet, boundaryEventId, boundaryAt,
-                    inputEventId, error, createdAt, deadlineAt, closing, newWork, parked);
+                    inputEventId, error, createdAt, deadlineAt, closing, newWork, parked, appId, userId);
         }
     }
 
@@ -229,7 +229,7 @@ public class Turns {
 
     private static final String COLUMNS = """
              run_id, merge_key, epoch, state, generation, cma_session_id, boundary_set, boundary_event_id, boundary_at,
-             input_event_id, error, created_at, deadline_at, closing, work::text AS work, parked
+             input_event_id, error, created_at, deadline_at, closing, work::text AS work, parked, app_id, user_id
             """;
 
     private static Turn row(ResultSet rs, int rowNumber) throws SQLException {
@@ -240,6 +240,7 @@ public class Turns {
                 generationOrNull, rs.getString("cma_session_id"), rs.getBoolean("boundary_set"),
                 rs.getString("boundary_event_id"), Db.instant(rs, "boundary_at"), rs.getString("input_event_id"),
                 rs.getString("error"), Db.instant(rs, "created_at"), Db.instant(rs, "deadline_at"), rs.getString("closing"),
-                work == null ? null : Json.STORED.readTree(work), rs.getBoolean("parked"));
+                work == null ? null : Json.STORED.readTree(work), rs.getBoolean("parked"), rs.getString("app_id"),
+                rs.getString("user_id"));
     }
 }

@@ -20,6 +20,9 @@ public class AgentProperties {
     private final Notify notify = new Notify();
     private final Actions actions = new Actions();
     private final Followups followups = new Followups();
+    private final Webhooks webhooks = new Webhooks();
+    private final Stream stream = new Stream();
+    private final Limits limits = new Limits();
     private final Scheduling scheduling = new Scheduling();
 
     public Admin getAdmin() {
@@ -64,6 +67,18 @@ public class AgentProperties {
 
     public Followups getFollowups() {
         return followups;
+    }
+
+    public Webhooks getWebhooks() {
+        return webhooks;
+    }
+
+    public Stream getStream() {
+        return stream;
+    }
+
+    public Limits getLimits() {
+        return limits;
     }
 
     public Scheduling getScheduling() {
@@ -466,6 +481,149 @@ public class AgentProperties {
 
         public void setTtl(Duration ttl) {
             this.ttl = ttl;
+        }
+    }
+
+    /** Deliveries to the applications' webhooks. */
+    public static class Webhooks {
+
+        /** Lets webhooks reach private, loopback and link-local addresses. Never in production: it opens the service's own network. */
+        private boolean allowPrivateNetworks = false;
+
+        /** Lets webhooks use plain http. Never in production. */
+        private boolean allowPlainHttp = false;
+
+        private Duration connectTimeout = Duration.ofSeconds(5);
+        private Duration readTimeout = Duration.ofSeconds(10);
+
+        /** The waits between the attempts of a delivery. After the last one fails, the webhook is turned off. */
+        private java.util.List<Duration> retryDelays = java.util.List.of(Duration.ofSeconds(10), Duration.ofMinutes(1),
+                Duration.ofMinutes(5), Duration.ofMinutes(30), Duration.ofHours(2), Duration.ofHours(6), Duration.ofHours(12));
+
+        private Duration interval = Duration.ofSeconds(1);
+        private int batchSize = 50;
+
+        public boolean isAllowPrivateNetworks() {
+            return allowPrivateNetworks;
+        }
+
+        public void setAllowPrivateNetworks(boolean allowPrivateNetworks) {
+            this.allowPrivateNetworks = allowPrivateNetworks;
+        }
+
+        public boolean isAllowPlainHttp() {
+            return allowPlainHttp;
+        }
+
+        public void setAllowPlainHttp(boolean allowPlainHttp) {
+            this.allowPlainHttp = allowPlainHttp;
+        }
+
+        public Duration getConnectTimeout() {
+            return connectTimeout;
+        }
+
+        public void setConnectTimeout(Duration connectTimeout) {
+            this.connectTimeout = connectTimeout;
+        }
+
+        public Duration getReadTimeout() {
+            return readTimeout;
+        }
+
+        public void setReadTimeout(Duration readTimeout) {
+            this.readTimeout = readTimeout;
+        }
+
+        public java.util.List<Duration> getRetryDelays() {
+            return retryDelays;
+        }
+
+        public void setRetryDelays(java.util.List<Duration> retryDelays) {
+            this.retryDelays = retryDelays;
+        }
+
+        public Duration getInterval() {
+            return interval;
+        }
+
+        public void setInterval(Duration interval) {
+            this.interval = interval;
+        }
+
+        public int getBatchSize() {
+            return batchSize;
+        }
+
+        public void setBatchSize(int batchSize) {
+            this.batchSize = batchSize;
+        }
+    }
+
+    /** The live stream of a user's updates. */
+    public static class Stream {
+
+        /** How long one connection stays open. The client then connects again, with Last-Event-ID. */
+        private Duration maxDuration = Duration.ofMinutes(15);
+
+        /** How often a quiet stream sends a comment, so that proxies keep it open. */
+        private Duration heartbeat = Duration.ofSeconds(15);
+
+        public Duration getMaxDuration() {
+            return maxDuration;
+        }
+
+        public void setMaxDuration(Duration maxDuration) {
+            this.maxDuration = maxDuration;
+        }
+
+        public Duration getHeartbeat() {
+            return heartbeat;
+        }
+
+        public void setHeartbeat(Duration heartbeat) {
+            this.heartbeat = heartbeat;
+        }
+    }
+
+    /** How many requests a caller may make: a bucket of this size, refilled at this rate per second. Per instance of the service. */
+    public static class Limits {
+
+        private double appPerSecond = 50;
+        private double appBurst = 100;
+        private double userPerSecond = 5;
+        private double userBurst = 20;
+
+        public double getAppPerSecond() {
+            return appPerSecond;
+        }
+
+        public void setAppPerSecond(double appPerSecond) {
+            this.appPerSecond = appPerSecond;
+        }
+
+        public double getAppBurst() {
+            return appBurst;
+        }
+
+        public void setAppBurst(double appBurst) {
+            this.appBurst = appBurst;
+        }
+
+        public double getUserPerSecond() {
+            return userPerSecond;
+        }
+
+        public void setUserPerSecond(double userPerSecond) {
+            this.userPerSecond = userPerSecond;
+        }
+
+        public double getUserBurst() {
+            return userBurst;
+        }
+
+        public void setUserBurst(double userBurst) {
+            this.userBurst = userBurst;
         }
     }
 

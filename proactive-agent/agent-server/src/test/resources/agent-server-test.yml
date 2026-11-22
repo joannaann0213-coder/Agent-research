@@ -25,3 +25,9 @@ agent:
   cma:
     # The tests bring their own scripted stand-in (see AgentTestBeans); nothing calls the real service.
     mode: demo
+  # Tests make many requests at one moment of their clock. RateLimitIT lowers these to see the limit work.
+  limits:
+    app-per-second: 1000000
+    app-burst: 1000000
+    user-per-second: 1000000
+    user-burst: 1000000

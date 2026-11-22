@@ -10,6 +10,8 @@ import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.core.Db;
 import dev.agentflow.agent.server.core.Ids;
 import dev.agentflow.agent.server.core.Names;
+import dev.agentflow.agent.server.delivery.Outbound;
+import dev.agentflow.agent.api.Update;
 import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.relay.InboxRelay;
 import dev.agentflow.agent.server.time.AgentClock;
@@ -49,11 +51,12 @@ public class Messages {
     private final AgentProfiles profiles;
     private final InboxRelay relay;
     private final Actions actions;
+    private final Outbound outbound;
     private final AgentClock clock;
     private final Ids ids;
 
     public Messages(JdbcClient jdbc, TransactionTemplate tx, Users users, Threads threads, AgentProfiles profiles,
-            InboxRelay relay, Actions actions, AgentClock clock, Ids ids) {
+            InboxRelay relay, Actions actions, Outbound outbound, AgentClock clock, Ids ids) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
@@ -61,6 +64,7 @@ public class Messages {
         this.profiles = profiles;
         this.relay = relay;
         this.actions = actions;
+        this.outbound = outbound;
         this.clock = clock;
         this.ids = ids;
     }
@@ -280,6 +284,8 @@ public class Messages {
                 .param("messageId", messageId).param("role", role).param("kind", kind).param("text", text)
                 .param("runId", runId).param("now", Db.ts(now)).param("mergeKey", mergeKey).param("actionId", actionId)
                 .update();
+        outbound.record(appId, userId, Update.MESSAGE_CREATED,
+                new MessageView(seq, messageId, conversationId, role, kind, text, now, actionId));
     }
 
     private static final String SELECT = """

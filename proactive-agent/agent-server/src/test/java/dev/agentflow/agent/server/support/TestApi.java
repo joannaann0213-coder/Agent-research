@@ -50,6 +50,11 @@ public final class TestApi {
         this.credential = credential;
     }
 
+    /** The credential this caller sends, or {@code null}. */
+    public String credential() {
+        return credential;
+    }
+
     /** The same server, as another caller. {@code null} sends no credential at all. */
     public TestApi as(String otherCredential) {
         return new TestApi(base, otherCredential);

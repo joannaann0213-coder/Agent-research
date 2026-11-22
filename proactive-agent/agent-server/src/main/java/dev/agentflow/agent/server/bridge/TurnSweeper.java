@@ -1,6 +1,9 @@
 package dev.agentflow.agent.server.bridge;
 
+import dev.agentflow.agent.api.Update;
 import dev.agentflow.agent.server.actions.Actions;
+import dev.agentflow.agent.server.app.Users;
+import dev.agentflow.agent.server.delivery.Outbound;
 import dev.agentflow.agent.server.bridge.Turns.Turn;
 import dev.agentflow.agent.server.config.AgentProperties;
 import dev.agentflow.agent.server.time.AgentClock;
@@ -11,6 +14,7 @@ import dev.agentflow.inbox.client.InboxClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Closes the turns of runs that ended in the Event Inbox without this service ending them: runs
@@ -30,13 +34,20 @@ public class TurnSweeper {
 
     private final Turns turns;
     private final Actions actions;
+    private final Users users;
+    private final Outbound outbound;
+    private final TransactionTemplate tx;
     private final InboxClient inbox;
     private final AgentClock clock;
     private final AgentProperties.Sweep config;
 
-    public TurnSweeper(Turns turns, Actions actions, InboxClient inbox, AgentClock clock, AgentProperties properties) {
+    public TurnSweeper(Turns turns, Actions actions, Users users, Outbound outbound, TransactionTemplate tx, InboxClient inbox,
+            AgentClock clock, AgentProperties properties) {
         this.turns = turns;
         this.actions = actions;
+        this.users = users;
+        this.outbound = outbound;
+        this.tx = tx;
         this.inbox = inbox;
         this.clock = clock;
         this.config = properties.getSweep();
@@ -56,8 +67,15 @@ public class TurnSweeper {
             if (ended == null) {
                 // The run is still open, or the Inbox could not say. Look again after another while.
                 turns.touch(turn.runId());
-            } else if (turns.abandon(turn.runId(), ended)) {
+            } else if (Boolean.TRUE.equals(tx.execute(status -> {
+                users.lock(turn.appId(), turn.userId());
+                if (!turns.abandon(turn.runId(), ended)) {
+                    return false;
+                }
                 actions.withdrawOfRun(turn.runId(), "the turn that waited for this ended");
+                outbound.record(turn.appId(), turn.userId(), Update.RUN_FAILED, Outbound.failure(turn.runId(), turn.mergeKey(), ended));
+                return true;
+            }))) {
                 log.warn("turn of run {} closed: {}", turn.runId(), ended);
                 closed++;
             }

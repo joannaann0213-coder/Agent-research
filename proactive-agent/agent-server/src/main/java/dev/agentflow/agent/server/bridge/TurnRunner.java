@@ -20,6 +20,8 @@ import dev.agentflow.agent.server.chat.Messages;
 import dev.agentflow.agent.server.chat.Threads;
 import dev.agentflow.agent.server.config.AgentProperties;
 import dev.agentflow.agent.server.core.Json;
+import dev.agentflow.agent.server.delivery.Outbound;
+import dev.agentflow.agent.api.Update;
 import dev.agentflow.agent.server.events.AppEvents;
 import dev.agentflow.agent.server.events.AppEvents.AppEvent;
 import dev.agentflow.agent.server.profile.AgentProfiles;
@@ -137,6 +139,7 @@ public class TurnRunner {
     private final Schedules schedules;
     private final Actions actions;
     private final Users users;
+    private final Outbound outbound;
     private final TurnTools tools;
     private final AgentProfiles profiles;
     private final TransactionTemplate tx;
@@ -147,8 +150,8 @@ public class TurnRunner {
     private final Duration actionTtl;
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
-            Schedules schedules, Actions actions, Users users, TurnTools tools, AgentProfiles profiles, TransactionTemplate tx,
-            AgentClock clock, Patience patience, TurnHooks hooks, AgentProperties properties) {
+            Schedules schedules, Actions actions, Users users, Outbound outbound, TurnTools tools, AgentProfiles profiles,
+            TransactionTemplate tx, AgentClock clock, Patience patience, TurnHooks hooks, AgentProperties properties) {
         this.cma = cma;
         this.inbox = inbox;
         this.turns = turns;
@@ -158,6 +161,7 @@ public class TurnRunner {
         this.schedules = schedules;
         this.actions = actions;
         this.users = users;
+        this.outbound = outbound;
         this.tools = tools;
         this.profiles = profiles;
         this.tx = tx;
@@ -269,8 +273,12 @@ public class TurnRunner {
                 // Its run ended without it, so nobody will finish that turn. Its session is brought to rest below.
                 String why = status == null ? "its run is gone" : "its run ended as " + found.body().status();
                 tx.executeWithoutResult(transaction -> {
+                    users.lock(run.tenantId(), run.inboxId());
                     actions.withdrawOfRun(earlier.runId(), "the turn that waited for this ended");
-                    turns.abandon(earlier.runId(), "a later turn of the line found that " + why);
+                    if (turns.abandon(earlier.runId(), "a later turn of the line found that " + why)) {
+                        outbound.record(run.tenantId(), run.inboxId(), Update.RUN_FAILED,
+                                Outbound.failure(earlier.runId(), run.mergeKey(), "the run ended without finishing its turn: " + why));
+                    }
                 });
                 continue;
             }
@@ -771,8 +779,8 @@ public class TurnRunner {
             return new Outgoing.ToolConfirmation(call.id(), false, "Not approved: the tool's server is no longer configured.");
         }
         Put put = tx.execute(status -> {
-            turns.stillHeld(turn);
             users.lock(thread.appId(), thread.userId());
+            turns.stillHeld(turn);
             String closing = turns.closing(run.runId());
             if (closing != null) {
                 return new Put(null, closing);
@@ -888,6 +896,8 @@ public class TurnRunner {
         boolean wrote = last != null && !last.isBlank();
         boolean refused = reading.end == End.REFUSAL;
         tx.executeWithoutResult(status -> {
+            // The user's row first, as everywhere that records updates for the user.
+            users.lock(thread.appId(), thread.userId());
             String outcome;
             String note = null;
             switch (work) {
@@ -936,7 +946,11 @@ public class TurnRunner {
             log.warn("run {}: the session could not be interrupted at the deadline: {}", run.runId(), e.getMessage());
         }
         String error = "the turn took longer than " + config.getDeadline();
-        turns.finish(turn, Turns.FAILED, null, error);
+        tx.executeWithoutResult(status -> {
+            users.lock(thread.appId(), thread.userId());
+            turns.finish(turn, Turns.FAILED, null, error);
+            outbound.record(thread.appId(), thread.userId(), Update.RUN_FAILED, Outbound.failure(run.runId(), run.mergeKey(), error));
+        });
         actions.withdrawOfRun(run.runId(), "the turn that waited for this ran out of time");
         log.warn("run {} failed: {}", run.runId(), error);
         return new Settlement.Failed(error);
@@ -944,8 +958,16 @@ public class TurnRunner {
 
     /** Ends the turn as failed for good. The Inbox does not deliver the run again. */
     private Settlement fail(ClaimedRun run, String error) {
-        turns.find(run.runId()).filter(turn -> turn.epoch() == run.epoch() && Turns.OPEN.equals(turn.state()))
-                .ifPresent(turn -> turns.finish(turn, Turns.FAILED, null, error));
+        try {
+            tx.executeWithoutResult(status -> {
+                users.lock(run.tenantId(), run.inboxId());
+                turns.find(run.runId()).filter(turn -> turn.epoch() == run.epoch() && Turns.OPEN.equals(turn.state()))
+                        .ifPresent(turn -> turns.finish(turn, Turns.FAILED, null, error));
+                outbound.record(run.tenantId(), run.inboxId(), Update.RUN_FAILED, Outbound.failure(run.runId(), run.mergeKey(), error));
+            });
+        } catch (RuntimeException e) {
+            log.warn("run {}: its failure could not be recorded: {}", run.runId(), e.toString());
+        }
         actions.withdrawOfRun(run.runId(), "the turn that waited for this failed");
         log.warn("run {} failed: {}", run.runId(), error);
         return new Settlement.Failed(error);

@@ -53,7 +53,11 @@ public class ActionDesk {
         Action action = visible(caller, appId, userId, actionId);
         if (action.pending() && !action.expiresAt().isAfter(clock.now())) {
             // Its time is up; the turn that waits learns it when the Inbox wakes it. Say so now already.
-            actions.settle(action, Actions.EXPIRED, null, Actions.EXPIRED_NOTE, Actions.BY_SERVICE);
+            Action due = action;
+            tx.executeWithoutResult(status -> {
+                users.lock(appId, userId);
+                actions.settle(due, Actions.EXPIRED, null, Actions.EXPIRED_NOTE, Actions.BY_SERVICE);
+            });
             action = actions.find(appId, userId, actionId).orElseThrow();
         }
         return action.view();

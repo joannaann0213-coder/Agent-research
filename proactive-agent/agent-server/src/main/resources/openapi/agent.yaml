@@ -34,6 +34,10 @@ tags:
     description: What the agent waits for people to decide. Approvals of tool calls, and questions to the user.
   - name: Schedules
     description: What the agent is to do at a given time, once or again and again.
+  - name: Updates
+    description: |
+      What happened for a user: a message, an action that waits or was decided, a run that failed.
+      As a page to poll, as a live stream, or delivered to the application's webhook.
   - name: Users
     description: The end users of an application, and the tokens their clients use.
   - name: Admin
@@ -63,6 +67,8 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -85,6 +91,8 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -148,6 +156,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '503':
           $ref: '#/components/responses/Unavailable'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
     get:
@@ -168,6 +178,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -229,6 +241,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
     get:
@@ -274,6 +288,8 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -353,6 +369,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -388,6 +406,8 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -453,6 +473,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
     get:
@@ -475,6 +497,8 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -502,6 +526,231 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/updates:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Updates]
+      operationId: listUpdates
+      summary: Read a user's updates
+      description: |
+        Returns what happened for the user after `after`, oldest first: `message.created` for every
+        message, the user's and the agent's; `action.created` and `action.resolved` for what waits
+        for a decision; `run.failed` when the agent could not finish a reply or a piece of work in
+        the background. Every update has a `seq`, which only grows: call again with `after` set to
+        the `next_after` of the last page, and nothing is missed.
+
+        An API key may call this for any user of its application, a user token for its own user.
+      parameters:
+        - name: after
+          in: query
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: The updates, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdatePage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/stream:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Updates]
+      operationId: streamUpdates
+      summary: Follow a user's updates live
+      description: |
+        The user's updates as server-sent events, as they happen. Each event has the update's `seq`
+        as its `id`, its type as its `event`, and the update as JSON in its `data`. A quiet stream
+        sends a comment every 15 seconds.
+
+        The stream starts after the `Last-Event-ID` header, else after `after`, else with what happens
+        from now on. A connection ends after 15 minutes; a client that connects again with the id of
+        the last event it got misses nothing. Browsers' `EventSource` does that by itself.
+
+        `EventSource` cannot send an `Authorization` header. A browser opens the stream with a
+        ticket instead, which the application's back end or the user's client gets first:
+        `GET /v1/users/{user_id}/stream?ticket=<ticket>`.
+      security:
+        - Bearer: []
+        - StreamTicket: []
+      parameters:
+        - name: after
+          in: query
+          description: Start after this `seq`.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+        - name: Last-Event-ID
+          in: header
+          description: The id of the last event the client got; it wins over `after`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                id: 42
+                event: message.created
+                data: {"id":"upd_01JCX3S6Q4Z1R4J4N4V5B2W9Y7","seq":42,"user_id":"u42","type":"message.created","created_at":"2026-11-20T10:00:00Z","data":{"seq":7,"message_id":"reply:run_01JCX3","conversation_id":"default","role":"agent","kind":"reply","text":"Your order is on its way.","created_at":"2026-11-20T10:00:00Z"}}
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/stream-tickets:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Updates]
+      operationId: issueStreamTicket
+      summary: Get a ticket for the stream
+      description: |
+        A ticket opens the user's stream once, within a minute, without a header. An API key may get
+        one for any user of its application, a user token for its own user.
+      responses:
+        '201':
+          description: The ticket.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StreamTicket'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/webhook:
+    put:
+      tags: [Updates]
+      operationId: putWebhook
+      summary: Set up the webhook
+      description: |
+        Has every update of every user of the application delivered to `url`, by a POST each, with
+        the update as JSON. A delivery is signed: it carries `webhook-id` (the update's `id`),
+        `webhook-timestamp` (seconds since the epoch) and `webhook-signature`: `v1,` followed by the
+        Base64 of HMAC-SHA256 over `<id>.<timestamp>.<body>`, keyed with the secret's bytes (the part
+        after `whsec_`, Base64-decoded). Check the signature and the timestamp, and ignore an `id`
+        you have seen: a delivery can come twice. Order by `seq`, per user.
+
+        Any 2xx answer is a success. Anything else, or no answer within 10 seconds, is tried again:
+        after 10 seconds, a minute, 5 minutes, 30 minutes, 2, 6 and 12 hours. When the last attempt
+        fails, the service turns the webhook off; a PUT with `enabled: true` turns it on again.
+        Updates that came while it was off are not delivered then; read them with
+        `GET /v1/users/{user_id}/updates`.
+
+        The URL must be https, on the public internet: addresses of private networks, loopback,
+        link-local addresses and the like are refused, when the webhook is set up and on every
+        delivery. Redirects are not followed.
+
+        The signing secret is in the answer when it is made: when the webhook is first set up, and
+        with `rotate_secret: true`. It is not shown again. Only an API key may call this.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookRequest'
+            example:
+              url: https://api.acme.example/agent-updates
+              events: [message.created, action.created]
+      responses:
+        '200':
+          description: The webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Updates]
+      operationId: getWebhook
+      summary: Look at the webhook
+      description: The webhook, without its secret. Only an API key may call this.
+      responses:
+        '200':
+          description: The webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookView'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Updates]
+      operationId: deleteWebhook
+      summary: Remove the webhook
+      description: Nothing is delivered any more; what was waiting to be delivered is dropped. Only an API key may call this.
+      responses:
+        '204':
+          description: Removed, or there was none.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -543,6 +792,8 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -568,6 +819,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -621,6 +874,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -655,6 +910,8 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
     delete:
@@ -673,6 +930,8 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
         default:
           $ref: '#/components/responses/Error'
 
@@ -872,6 +1131,11 @@ paths:
 
 components:
   securitySchemes:
+    StreamTicket:
+      type: apiKey
+      in: query
+      name: ticket
+      description: A ticket from `POST /v1/users/{user_id}/stream-tickets`. Opens that user's stream, once.
     Bearer:
       type: http
       scheme: bearer
@@ -938,6 +1202,20 @@ components:
       description: |
         Something the service depends on cannot be reached right now (`unavailable`). Nothing was
         changed; the same request can be sent again.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+    RateLimited:
+      description: |
+        `rate_limited`: the caller made too many requests. An application's API keys share a bucket
+        of 100 requests that refills by 50 a second; a user token has one of 20 that refills by 5 a
+        second (the defaults). Try again after `Retry-After` seconds.
+      headers:
+        Retry-After:
+          description: Seconds to wait.
+          schema:
+            type: integer
       content:
         application/problem+json:
           schema:
@@ -1272,6 +1550,103 @@ components:
         deduped:
           type: boolean
           description: True when an event with this id had been accepted before; that one is returned.
+
+    Update:
+      type: object
+      required: [id, seq, user_id, type, created_at, data]
+      properties:
+        id:
+          type: string
+          description: Unique. A receiver that gets an update twice can tell by it.
+        seq:
+          type: integer
+          format: int64
+          description: The position in the user's log. It only grows.
+        user_id:
+          type: string
+        type:
+          type: string
+          enum: [message.created, action.created, action.resolved, run.failed]
+        created_at:
+          type: string
+          format: date-time
+        data:
+          type: object
+          additionalProperties: true
+          description: |
+            For `message.created`, the message (a MessageView). For `action.created` and
+            `action.resolved`, the action (an ActionView). For `run.failed`: `run_id`,
+            `conversation_id` or `subject`, and `error`.
+
+    UpdatePage:
+      type: object
+      required: [updates, next_after]
+      properties:
+        updates:
+          type: array
+          items:
+            $ref: '#/components/schemas/Update'
+        next_after:
+          type: integer
+          format: int64
+          description: What to pass as `after` to get what comes next.
+
+    StreamTicket:
+      type: object
+      required: [ticket, expires_at]
+      properties:
+        ticket:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    WebhookRequest:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url:
+          type: string
+          maxLength: 2000
+          description: An https URL on the public internet.
+        events:
+          type: array
+          items:
+            type: string
+            enum: [message.created, action.created, action.resolved, run.failed]
+          description: The types to deliver. All when absent.
+        enabled:
+          type: boolean
+          description: false pauses deliveries; true starts them again after the service stopped them.
+        rotate_secret:
+          type: boolean
+          description: true makes a new signing secret, which the answer shows once.
+
+    WebhookView:
+      type: object
+      required: [url, state, created_at, updated_at]
+      properties:
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            type: string
+        state:
+          type: string
+          enum: [active, disabled]
+        disabled_reason:
+          type: string
+        signing_secret:
+          type: string
+          description: Only when it was just made.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
 
     StopResult:
       type: object

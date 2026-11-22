@@ -2,7 +2,9 @@ package dev.agentflow.agent.server.actions;
 
 import dev.agentflow.agent.api.ActionTool;
 import dev.agentflow.agent.api.ActionView;
+import dev.agentflow.agent.api.Update;
 import dev.agentflow.agent.server.chat.Threads;
+import dev.agentflow.agent.server.delivery.Outbound;
 import dev.agentflow.agent.server.core.Db;
 import dev.agentflow.agent.server.core.Ids;
 import dev.agentflow.agent.server.core.Json;
@@ -21,6 +23,7 @@ import java.util.List;
 import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -87,13 +90,17 @@ public class Actions {
     }
 
     private final JdbcClient jdbc;
+    private final TransactionTemplate tx;
     private final InboxRelay relay;
+    private final Outbound outbound;
     private final AgentClock clock;
     private final Ids ids;
 
-    public Actions(JdbcClient jdbc, InboxRelay relay, AgentClock clock, Ids ids) {
+    public Actions(JdbcClient jdbc, TransactionTemplate tx, InboxRelay relay, Outbound outbound, AgentClock clock, Ids ids) {
         this.jdbc = jdbc;
+        this.tx = tx;
         this.relay = relay;
+        this.outbound = outbound;
         this.clock = clock;
         this.ids = ids;
     }
@@ -133,7 +140,9 @@ public class Actions {
                 .param("options", call.options() == null ? null : Json.STORED.writeValueAsString(call.options()))
                 .param("now", Db.ts(now)).param("expiresAt", Db.ts(now.plus(ttl)))
                 .update();
-        return new Ensured(ofCall(runId, call.toolUseId()).orElseThrow(), true);
+        Action created = ofCall(runId, call.toolUseId()).orElseThrow();
+        outbound.record(appId, userId, Update.ACTION_CREATED, created.view());
+        return new Ensured(created, true);
     }
 
     public Optional<Action> ofCall(String runId, String toolUseId) {
@@ -145,12 +154,7 @@ public class Actions {
 
     /** Ends the run's pending actions whose time has come. */
     public int expireDue(String runId) {
-        return jdbc.sql("""
-                UPDATE action SET status = 'expired', note = :note, resolved_by = 'service', resolved_at = :now
-                 WHERE run_id = :runId AND status = 'pending' AND expires_at <= :now
-                """)
-                .param("note", EXPIRED_NOTE).param("now", Db.ts(clock.now())).param("runId", runId)
-                .update();
+        return endPending(runId, EXPIRED, EXPIRED_NOTE, true);
     }
 
     /** When the first of the run's pending actions expires, if it has any. */
@@ -163,12 +167,38 @@ public class Actions {
 
     /** Withdraws the run's pending actions: what they are about no longer applies. */
     public int withdrawOfRun(String runId, String note) {
-        return jdbc.sql("""
-                UPDATE action SET status = 'withdrawn', note = :note, resolved_by = 'service', resolved_at = :now
-                 WHERE run_id = :runId AND status = 'pending'
-                """)
-                .param("note", note).param("now", Db.ts(clock.now())).param("runId", runId)
-                .update();
+        return endPending(runId, WITHDRAWN, note, false);
+    }
+
+    /**
+     * Ends the run's pending actions, in a transaction of its own or the caller's. The user's row is
+     * locked first, as everywhere that records updates for the user.
+     */
+    private int endPending(String runId, String status, String note, boolean onlyDue) {
+        String due = onlyDue ? " AND expires_at <= :now" : "";
+        Integer ended = tx.execute(transaction -> {
+            Instant now = clock.now();
+            Optional<String[]> owner = jdbc.sql("SELECT app_id, user_id FROM action WHERE run_id = :runId AND status = 'pending'"
+                            + due + " LIMIT 1")
+                    .param("runId", runId).param("now", Db.ts(now))
+                    .query((rs, row) -> new String[] {rs.getString("app_id"), rs.getString("user_id")})
+                    .optional();
+            if (owner.isEmpty()) {
+                return 0;
+            }
+            jdbc.sql("SELECT 1 FROM app_user WHERE app_id = :appId AND user_id = :userId FOR UPDATE")
+                    .param("appId", owner.get()[0]).param("userId", owner.get()[1])
+                    .query(Integer.class).single();
+            List<Action> changed = jdbc.sql("""
+                    UPDATE action SET status = :status, note = :note, resolved_by = 'service', resolved_at = :now
+                     WHERE run_id = :runId AND status = 'pending'""" + due + "\n RETURNING " + COLUMNS)
+                    .param("status", status).param("note", note).param("now", Db.ts(now)).param("runId", runId)
+                    .query(Actions::row)
+                    .list();
+            changed.forEach(action -> outbound.record(action.appId(), action.userId(), Update.ACTION_RESOLVED, action.view()));
+            return changed.size();
+        });
+        return ended == null ? 0 : ended;
     }
 
     // ================================================================ for people
@@ -220,7 +250,7 @@ public class Actions {
      * @return whether the action was still pending, and so whether this call decided it
      */
     public boolean settle(Action action, String status, String answer, String note, String resolvedBy) {
-        return jdbc.sql("""
+        boolean decided = jdbc.sql("""
                 UPDATE action SET status = :status, answer = :answer, note = :note, resolved_by = :resolvedBy,
                        resolved_at = :now
                  WHERE app_id = :appId AND user_id = :userId AND action_id = :actionId AND status = 'pending'
@@ -229,6 +259,11 @@ public class Actions {
                 .param("now", Db.ts(clock.now())).param("appId", action.appId()).param("userId", action.userId())
                 .param("actionId", action.actionId())
                 .update() == 1;
+        if (decided) {
+            outbound.record(action.appId(), action.userId(), Update.ACTION_RESOLVED,
+                    find(action.appId(), action.userId(), action.actionId()).orElseThrow().view());
+        }
+        return decided;
     }
 
     // ================================================================ waking a turn
@@ -290,12 +325,13 @@ public class Actions {
 
     // ================================================================ rows
 
-    private static final String SELECT = """
-            SELECT app_id, user_id, action_id, kind, status, approver, merge_key, run_id, conversation_id, cma_session_id,
+    private static final String COLUMNS = """
+            app_id, user_id, action_id, kind, status, approver, merge_key, run_id, conversation_id, cma_session_id,
                    tool_use_id, tool_server, tool_name, tool_input::text AS tool_input, question, options::text AS options,
                    answer, note, resolved_by, created_at, expires_at, resolved_at
-              FROM action
             """;
+
+    private static final String SELECT = "SELECT " + COLUMNS + " FROM action\n";
 
     private static Action row(ResultSet rs, int rowNumber) throws SQLException {
         String input = rs.getString("tool_input");
