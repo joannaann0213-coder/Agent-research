@@ -26,6 +26,8 @@ tags:
     description: About the caller and the service.
   - name: Agents
     description: The agents of an application. What each one is for, which model it runs on, what it may use.
+  - name: Conversations
+    description: What a user and the agent say to each other.
   - name: Users
     description: The end users of an application, and the tokens their clients use.
   - name: Admin
@@ -160,6 +162,112 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/messages:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    post:
+      tags: [Conversations]
+      operationId: postMessage
+      summary: Send a user's message
+      description: |
+        Stores a message of the user and gets it to the agent. **202 means stored, not answered**: the
+        agent's reply appears among the user's messages a little later, with a higher `seq`.
+
+        Messages that arrive close together are answered together, in one reply. The call is
+        idempotent on `message_id`: the same id with the same text returns the earlier receipt with
+        `deduped: true`; the same id with another text is a 409.
+
+        An API key may call this for any user of its application, a user token for its own user.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostMessageRequest'
+            example:
+              message_id: m-1001
+              text: Where is my order 1234?
+      responses:
+        '202':
+          description: 'Stored now, or stored before (`deduped: true`).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageAccepted'
+              example:
+                message_id: m-1001
+                conversation_id: default
+                seq: 7
+                created_at: '2026-11-20T10:00:00Z'
+                deduped: false
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: |
+            `conflict`: the `message_id` was already used for another message of the conversation, or
+            the conversation is served by another agent than the one named.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '413':
+          description: The text is too long (`payload_too_large`).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        default:
+          $ref: '#/components/responses/Error'
+    get:
+      tags: [Conversations]
+      operationId: listMessages
+      summary: Read a user's messages
+      description: |
+        Returns what the user and the agent said, in the order of `seq`. To wait for a reply, call
+        again with `after` set to the `next_after` of the last page until something comes.
+
+        An API key may call this for any user of its application, a user token for its own user.
+      parameters:
+        - name: conversation_id
+          in: query
+          description: Only this conversation. All of the user's conversations when absent.
+          schema:
+            type: string
+        - name: after
+          in: query
+          description: Only messages with a `seq` greater than this.
+          schema:
+            type: integer
+            format: int64
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: The messages, oldest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessagePage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/Error'
 
@@ -642,6 +750,91 @@ components:
         updated_at:
           type: string
           format: date-time
+
+    PostMessageRequest:
+      type: object
+      additionalProperties: false
+      required: [text]
+      properties:
+        message_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$'
+          description: |
+            The caller's id for the message, unique within the conversation. It makes a retry
+            harmless. The service makes one up when it is absent.
+        conversation_id:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$'
+          description: Which conversation of the user. `default` when absent. A conversation exists from its first message.
+        agent:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'
+          description: The key of the agent that serves the conversation. `default` when absent. Fixed by the first message.
+        text:
+          type: string
+          minLength: 1
+          maxLength: 32000
+
+    MessageAccepted:
+      type: object
+      required: [message_id, conversation_id, seq, created_at, deduped]
+      properties:
+        message_id:
+          type: string
+        conversation_id:
+          type: string
+        seq:
+          type: integer
+          format: int64
+          description: The message's position in the user's stream. Replies have higher ones.
+        created_at:
+          type: string
+          format: date-time
+        deduped:
+          type: boolean
+          description: True when a message with this id had been accepted before; that one is returned.
+
+    MessageView:
+      type: object
+      required: [seq, message_id, conversation_id, role, kind, text, created_at]
+      properties:
+        seq:
+          type: integer
+          format: int64
+          description: The position in the user's stream, across the user's conversations. It only grows.
+        message_id:
+          type: string
+        conversation_id:
+          type: string
+        role:
+          type: string
+          enum: [user, agent]
+        kind:
+          type: string
+          enum: [message, reply, notification]
+          description: |
+            `message` is what the user said, `reply` the agent's answer to it, `notification`
+            something the agent said of its own accord.
+        text:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    MessagePage:
+      type: object
+      required: [messages, next_after]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageView'
+        next_after:
+          type: integer
+          format: int64
+          description: |
+            What to pass as `after` to get what comes next: the last `seq` on this page, or the `after`
+            that was asked with when the page is empty.
 
     IssueTokenRequest:
       type: object

@@ -14,6 +14,8 @@ public class AgentProperties {
     private final Inbox inbox = new Inbox();
     private final Cma cma = new Cma();
     private final Relay relay = new Relay();
+    private final Worker worker = new Worker();
+    private final Turn turn = new Turn();
     private final Scheduling scheduling = new Scheduling();
 
     public Admin getAdmin() {
@@ -34,6 +36,14 @@ public class AgentProperties {
 
     public Relay getRelay() {
         return relay;
+    }
+
+    public Worker getWorker() {
+        return worker;
+    }
+
+    public Turn getTurn() {
+        return turn;
     }
 
     public Scheduling getScheduling() {
@@ -240,6 +250,69 @@ public class AgentProperties {
 
         public void setMaxBackoff(Duration maxBackoff) {
             this.maxBackoff = maxBackoff;
+        }
+    }
+
+    /** The workers that claim runs from the Inbox. */
+    public static class Worker {
+
+        /** The name this instance claims under. It shows in the Inbox's records; a random one when absent. */
+        private String id;
+
+        /** How many turns this instance works on at once. */
+        private int concurrency = 8;
+
+        /** How long a claim waits in the Inbox for work before it asks again. */
+        private Duration claimWait = Duration.ofSeconds(20);
+
+        public String getId() {
+            return id;
+        }
+
+        public void setId(String id) {
+            this.id = id;
+        }
+
+        public int getConcurrency() {
+            return concurrency;
+        }
+
+        public void setConcurrency(int concurrency) {
+            this.concurrency = concurrency;
+        }
+
+        public Duration getClaimWait() {
+            return claimWait;
+        }
+
+        public void setClaimWait(Duration claimWait) {
+            this.claimWait = claimWait;
+        }
+    }
+
+    /** One turn of a session. */
+    public static class Turn {
+
+        /** How often the run's lease in the Inbox is renewed. A third of the Inbox's lease duration is a good value. */
+        private Duration heartbeat = Duration.ofSeconds(20);
+
+        /** How long a read of the session's stream waits before the turn looks at its lease again. */
+        private Duration poll = Duration.ofSeconds(1);
+
+        public Duration getHeartbeat() {
+            return heartbeat;
+        }
+
+        public void setHeartbeat(Duration heartbeat) {
+            this.heartbeat = heartbeat;
+        }
+
+        public Duration getPoll() {
+            return poll;
+        }
+
+        public void setPoll(Duration poll) {
+            this.poll = poll;
         }
     }
 

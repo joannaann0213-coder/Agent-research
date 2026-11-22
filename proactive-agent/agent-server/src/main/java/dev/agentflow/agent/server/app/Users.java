@@ -42,6 +42,27 @@ public class Users {
                 .optional();
     }
 
+    /**
+     * Takes the lock of the user's row and returns the next position in the user's stream. The lock
+     * is held until the transaction ends, so positions are committed in the order they are handed
+     * out: a reader that has seen position N will never see a lower one appear later.
+     */
+    public long nextSeq(String appId, String userId) {
+        return jdbc.sql("""
+                UPDATE app_user SET next_seq = next_seq + 1 WHERE app_id = :appId AND user_id = :userId
+                RETURNING next_seq - 1
+                """)
+                .param("appId", appId).param("userId", userId)
+                .query(Long.class).single();
+    }
+
+    /** Takes the lock of the user's row, so that everything about this user happens one at a time until the transaction ends. */
+    public void lock(String appId, String userId) {
+        jdbc.sql("SELECT 1 FROM app_user WHERE app_id = :appId AND user_id = :userId FOR UPDATE")
+                .param("appId", appId).param("userId", userId)
+                .query(Integer.class).single();
+    }
+
     /** Invalidates every token of the user that is out. A user nobody mentioned yet has none. */
     public void raiseTokenEpoch(String appId, String userId) {
         Names.userId(userId);

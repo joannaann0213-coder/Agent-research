@@ -10,6 +10,7 @@ import dev.agentflow.agent.cma.ManagedAgents;
 import dev.agentflow.agent.server.api.AgentException;
 import dev.agentflow.agent.server.core.Db;
 import dev.agentflow.agent.server.core.Json;
+import dev.agentflow.agent.server.core.Names;
 import dev.agentflow.agent.server.time.AgentClock;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -51,7 +52,6 @@ public class AgentProfiles {
 
     private static final Logger log = LoggerFactory.getLogger(AgentProfiles.class);
 
-    private static final Pattern AGENT_KEY = Pattern.compile("[a-z0-9][a-z0-9_-]{0,63}");
     private static final Pattern MODEL = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._:-]{0,99}");
     private static final Pattern SERVER_NAME = Pattern.compile("[a-z0-9][a-z0-9_-]{0,63}");
     private static final Pattern HOST = Pattern.compile("(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}");
@@ -79,9 +79,7 @@ public class AgentProfiles {
 
     /** Creates the profile or replaces its configuration, and brings the platform up to date. */
     public Saved save(String appId, String agentKey, AgentProfileRequest request) {
-        if (agentKey == null || !AGENT_KEY.matcher(agentKey).matches()) {
-            throw AgentException.invalid("the agent key must be 1 to 64 characters of a-z, 0-9, _ and -, starting with a letter or a digit");
-        }
+        Names.agentKey(agentKey);
         AgentProfileRequest config = normalise(request);
         String json = Json.STORED.writeValueAsString(config);
         return tx.execute(status -> {
@@ -110,6 +108,12 @@ public class AgentProfiles {
     public AgentProfileView get(String appId, String agentKey) {
         return view(find(appId, agentKey, false)
                 .orElseThrow(() -> AgentException.notFound("no agent " + agentKey + " in this application")));
+    }
+
+    public boolean exists(String appId, String agentKey) {
+        return jdbc.sql("SELECT count(*) FROM agent_profile WHERE app_id = :appId AND agent_key = :agentKey")
+                .param("appId", appId).param("agentKey", agentKey)
+                .query(Long.class).single() == 1;
     }
 
     public List<AgentProfileView> list(String appId) {

@@ -49,6 +49,17 @@ public final class EventTail implements AutoCloseable {
     }
 
     /**
+     * The stored events that have not been handed out yet, all at once: right after {@link #open},
+     * that is everything the session held from the starting point on. A caller that has to know what
+     * happened before it acts reads this first; what {@link #poll} returns afterwards is live.
+     */
+    public List<CmaEvent> stored() {
+        List<CmaEvent> events = List.copyOf(backlog);
+        backlog.clear();
+        return events;
+    }
+
+    /**
      * The next event, waiting up to {@code timeout} for one.
      *
      * @return empty when nothing arrived in time

@@ -621,6 +621,22 @@ abstract class ManagedAgentsContract {
     }
 
     @Test
+    void aTailGivesWhatIsStoredInOnePiece_soThatACallerKnowsThePastBeforeItActs() {
+        fake.brain(FakeBrains.echo());
+        String session = newSession(chatAgent());
+        cma.send(session, List.of(new Outgoing.UserMessage("one")));
+
+        try (EventTail tail = EventTail.open(cma, session, null)) {
+            assertThat(types(tail.stored())).containsExactly("user.message", "session.status_running", "agent.message",
+                    "session.status_idle");
+            assertThat(tail.stored()).as("handed out once").isEmpty();
+
+            cma.send(session, List.of(new Outgoing.UserMessage("two")));
+            assertThat(texts(untilTail(tail, ManagedAgentsContract::turnOver))).containsExactly("You said: two");
+        }
+    }
+
+    @Test
     void aTailThatStartsAtAPointInTimeLeavesOutWhatCameBefore() {
         fake.brain(FakeBrains.echo());
         String session = newSession(chatAgent());

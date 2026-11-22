@@ -15,7 +15,21 @@ public final class Names {
     /** A user id. It is also an inbox id in the Event Inbox, whose pattern this is. */
     public static final Pattern USER_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}");
 
+    /** An id the caller gives to a conversation or to a message. */
+    public static final Pattern LOCAL_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}");
+
+    /** The key of an agent within its application. */
+    public static final Pattern AGENT_KEY = Pattern.compile("[a-z0-9][a-z0-9_-]{0,63}");
+
     private Names() {
+    }
+
+    public static String localId(String value, String what) {
+        return check(value, LOCAL_ID, what, "1 to 64 characters of letters, digits and _ . : @ -, starting with a letter or a digit");
+    }
+
+    public static String agentKey(String value) {
+        return check(value, AGENT_KEY, "the agent key", "1 to 64 characters of a-z, 0-9, _ and -, starting with a letter or a digit");
     }
 
     public static String appId(String value) {

@@ -3,7 +3,15 @@ package dev.agentflow.agent.server.support;
 import dev.agentflow.agent.api.CreateAppRequest;
 import dev.agentflow.agent.api.CreateKeyRequest;
 import dev.agentflow.agent.api.CreatedKey;
+import dev.agentflow.agent.api.AgentProfileRequest;
+import dev.agentflow.agent.api.AgentProfileView;
 import dev.agentflow.agent.api.IssuedToken;
+import dev.agentflow.agent.api.MessageAccepted;
+import dev.agentflow.agent.api.MessagePage;
+import dev.agentflow.agent.api.MessageView;
+import dev.agentflow.agent.api.PostMessageRequest;
+import dev.agentflow.agent.server.bridge.TurnWorker;
+import dev.agentflow.agent.server.relay.InboxRelay;
 import dev.agentflow.agent.cma.fake.FakeManagedAgents;
 import dev.agentflow.agent.server.AgentServerApplication;
 import dev.agentflow.agent.server.api.OpenApiController;
@@ -12,6 +20,8 @@ import dev.agentflow.inbox.server.support.InvariantChecker;
 import dev.agentflow.inbox.server.support.MutableClock;
 import dev.agentflow.testkit.openapi.OpenApiTraffic;
 import java.net.URI;
+import java.time.Duration;
+import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -45,6 +55,9 @@ public abstract class AgentTestBase {
     protected static final String ACME = "acme";
     protected static final String GLOBEX = "globex";
 
+    /** Longer than the Inbox waits for a line to go quiet before it hands its events out. */
+    protected static final Duration QUIET_WINDOW = Duration.ofSeconds(2);
+
     static {
         EmbeddedInbox.start();
     }
@@ -64,6 +77,12 @@ public abstract class AgentTestBase {
     @Autowired
     protected FakeManagedAgents cma;
 
+    @Autowired
+    protected InboxRelay relay;
+
+    @Autowired
+    protected TurnWorker worker;
+
     protected final MutableClock clock = EmbeddedInbox.clock();
 
     /** The Agent API as an operator of the service. */
@@ -73,7 +92,7 @@ public abstract class AgentTestBase {
 
     @BeforeEach
     void resetState() {
-        jdbc.sql("TRUNCATE TABLE agent_profile, inbox_relay, app_user, api_key, app RESTART IDENTITY CASCADE").update();
+        jdbc.sql("TRUNCATE TABLE turn, message, thread, agent_profile, inbox_relay, app_user, api_key, app RESTART IDENTITY CASCADE").update();
         EmbeddedInbox.reset();
         cma.reset();
         clock.reset();
@@ -115,6 +134,40 @@ public abstract class AgentTestBase {
     /** The Agent API as an end user's client, with a token the application got for that user. */
     protected TestApi user(TestApi app, String userId) {
         return anonymous.as(app.post("/v1/users/" + userId + "/tokens", null).as(IssuedToken.class).token());
+    }
+
+    /**
+     * Lets everything that is under way run to its end, as the background loops would: queued events
+     * go to the Inbox, the Inbox's quiet window passes, and the runs that can be claimed are worked on
+     * one after the other.
+     *
+     * @return how many runs were worked on
+     */
+    protected int settle() {
+        relay.runOnce();
+        clock.advance(QUIET_WINDOW);
+        int runs = 0;
+        while (worker.runOnce()) {
+            if (++runs > 50) {
+                throw new AssertionError("more than 50 runs in a row: something keeps producing work");
+            }
+        }
+        return runs;
+    }
+
+    /** An agent with instructions and nothing else, under the key {@code default}. */
+    protected void defaultAgent(TestApi app) {
+        app.put("/v1/agents/default", new AgentProfileRequest("Assistant", null, null, "You are a helpful assistant.", null, null))
+                .as(AgentProfileView.class);
+    }
+
+    protected MessageAccepted userSays(TestApi caller, String userId, String text) {
+        return caller.post("/v1/users/" + userId + "/messages", new PostMessageRequest(null, null, null, text))
+                .as(MessageAccepted.class);
+    }
+
+    protected List<MessageView> messagesOf(TestApi caller, String userId) {
+        return caller.get("/v1/users/" + userId + "/messages?limit=200").as(MessagePage.class).messages();
     }
 
     protected long count(String sql) {
