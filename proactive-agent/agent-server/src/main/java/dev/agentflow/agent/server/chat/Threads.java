@@ -78,12 +78,29 @@ public class Threads {
                    SET generation = generation + 1, cma_session_id = :sessionId, cma_agent_id = :agentId,
                        cma_agent_version = :agentVersion, last_event_id = NULL, last_event_at = NULL, updated_at = :now
                  WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey AND generation = :generation
+                   AND cma_session_id IS NULL
                 """)
                 .param("sessionId", sessionId).param("agentId", agent.id()).param("agentVersion", agent.version())
                 .param("now", Db.ts(clock.now())).param("appId", thread.appId()).param("userId", thread.userId())
                 .param("mergeKey", thread.mergeKey()).param("generation", thread.generation())
                 .update();
         return find(thread.appId(), thread.userId(), thread.mergeKey()).orElseThrow();
+    }
+
+    /**
+     * Gives the line's session up. The line keeps its generation count; its next turn starts a new
+     * session. Does nothing when the line has moved on to another session already.
+     */
+    public void dropSession(Thread thread) {
+        jdbc.sql("""
+                UPDATE thread SET cma_session_id = NULL, last_event_id = NULL, last_event_at = NULL, updated_at = :now
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey AND generation = :generation
+                   AND cma_session_id = :sessionId
+                """)
+                .param("now", Db.ts(clock.now())).param("appId", thread.appId()).param("userId", thread.userId())
+                .param("mergeKey", thread.mergeKey()).param("generation", thread.generation())
+                .param("sessionId", thread.sessionId())
+                .update();
     }
 
     /** Remembers how far a finished turn has read the session. */

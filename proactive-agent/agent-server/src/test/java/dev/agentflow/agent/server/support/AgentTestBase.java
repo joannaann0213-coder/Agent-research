@@ -10,11 +10,13 @@ import dev.agentflow.agent.api.MessageAccepted;
 import dev.agentflow.agent.api.MessagePage;
 import dev.agentflow.agent.api.MessageView;
 import dev.agentflow.agent.api.PostMessageRequest;
+import dev.agentflow.agent.server.bridge.TurnSweeper;
 import dev.agentflow.agent.server.bridge.TurnWorker;
 import dev.agentflow.agent.server.relay.InboxRelay;
 import dev.agentflow.agent.cma.fake.FakeManagedAgents;
 import dev.agentflow.agent.server.AgentServerApplication;
 import dev.agentflow.agent.server.api.OpenApiController;
+import dev.agentflow.inbox.server.sweep.LeaseSweeper;
 import dev.agentflow.inbox.server.support.IntegrationTestBase;
 import dev.agentflow.inbox.server.support.InvariantChecker;
 import dev.agentflow.inbox.server.support.MutableClock;
@@ -83,6 +85,13 @@ public abstract class AgentTestBase {
     @Autowired
     protected TurnWorker worker;
 
+    @Autowired
+    protected TurnSweeper sweeper;
+
+    /** A way into the middle of a turn. */
+    @Autowired
+    protected TestHooks hooks;
+
     protected final MutableClock clock = EmbeddedInbox.clock();
 
     /** The Agent API as an operator of the service. */
@@ -95,6 +104,7 @@ public abstract class AgentTestBase {
         jdbc.sql("TRUNCATE TABLE turn, message, thread, agent_profile, inbox_relay, app_user, api_key, app RESTART IDENTITY CASCADE").update();
         EmbeddedInbox.reset();
         cma.reset();
+        hooks.reset();
         clock.reset();
         anonymous = new TestApi(baseUri(), null);
         admin = anonymous.as(ADMIN_KEY);
@@ -168,6 +178,39 @@ public abstract class AgentTestBase {
 
     protected List<MessageView> messagesOf(TestApi caller, String userId) {
         return caller.get("/v1/users/" + userId + "/messages?limit=200").as(MessagePage.class).messages();
+    }
+
+    /** What the agent has said to the user, in order. */
+    protected List<String> repliesTo(TestApi caller, String userId) {
+        return messagesOf(caller, userId).stream().filter(message -> message.role().equals("agent")).map(MessageView::text).toList();
+    }
+
+    /** Puts what was posted into the Inbox and lets its quiet window pass, so that the next claim finds a run. */
+    protected void deliver() {
+        relay.runOnce();
+        clock.advance(QUIET_WINDOW);
+    }
+
+    /**
+     * What the Inbox does about a worker that died: once the lease has run out, it takes the run back
+     * and hands it out again.
+     */
+    protected void leaseRunsOut() {
+        clock.advance(Duration.ofSeconds(61));
+        if (EmbeddedInbox.bean(LeaseSweeper.class).runOnce() != 1) {
+            throw new AssertionError("expected exactly one run whose lease ran out");
+        }
+    }
+
+    /** Every run the Inbox has made, oldest first, as "status attempt n". */
+    protected List<String> runs() {
+        return EmbeddedInbox.jdbc().sql("SELECT status || ' attempt ' || attempt FROM run ORDER BY created_at, run_id")
+                .query(String.class).list();
+    }
+
+    /** Every message the agent platform was given, across all sessions, in the order the sessions were made. */
+    protected List<String> givenToTheAgent() {
+        return cma.sessionIds().stream().flatMap(session -> cma.userMessages(session).stream()).toList();
     }
 
     protected long count(String sql) {

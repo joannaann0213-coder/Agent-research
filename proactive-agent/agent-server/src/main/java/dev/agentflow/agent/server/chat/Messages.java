@@ -160,6 +160,20 @@ public class Messages {
         return new MessagePage(messages, messages.isEmpty() ? after : messages.getLast().seq());
     }
 
+    /** The last {@code limit} messages of a conversation before position {@code beforeSeq}, oldest first. */
+    public List<MessageView> before(String appId, String userId, String conversationId, long beforeSeq, int limit) {
+        List<MessageView> newestFirst = jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND conversation_id = :conversationId AND seq < :beforeSeq
+                 ORDER BY seq DESC
+                 LIMIT :limit
+                """)
+                .param("appId", appId).param("userId", userId).param("conversationId", conversationId)
+                .param("beforeSeq", beforeSeq).param("limit", limit)
+                .query(Messages::view)
+                .list();
+        return newestFirst.reversed();
+    }
+
     public Optional<MessageView> find(String appId, String userId, String conversationId, String messageId) {
         return jdbc.sql(SELECT + """
                  WHERE app_id = :appId AND user_id = :userId AND conversation_id = :conversationId AND message_id = :messageId

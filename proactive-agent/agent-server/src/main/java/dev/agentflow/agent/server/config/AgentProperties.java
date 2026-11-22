@@ -16,6 +16,7 @@ public class AgentProperties {
     private final Relay relay = new Relay();
     private final Worker worker = new Worker();
     private final Turn turn = new Turn();
+    private final Sweep sweep = new Sweep();
     private final Scheduling scheduling = new Scheduling();
 
     public Admin getAdmin() {
@@ -44,6 +45,10 @@ public class AgentProperties {
 
     public Turn getTurn() {
         return turn;
+    }
+
+    public Sweep getSweep() {
+        return sweep;
     }
 
     public Scheduling getScheduling() {
@@ -296,8 +301,31 @@ public class AgentProperties {
         /** How often the run's lease in the Inbox is renewed. A third of the Inbox's lease duration is a good value. */
         private Duration heartbeat = Duration.ofSeconds(20);
 
-        /** How long a read of the session's stream waits before the turn looks at its lease again. */
+        /** How long a read of the session's stream waits before the turn looks at its lease and its deadline again. */
         private Duration poll = Duration.ofSeconds(1);
+
+        /**
+         * How long a turn may take from its first attempt. At the deadline the session is interrupted
+         * and the turn fails. It must be shorter than the Inbox's longest lease (inbox.lease.max-duration).
+         */
+        private Duration deadline = Duration.ofMinutes(10);
+
+        /** How often a call to the agent platform is tried before the run goes back to the Inbox. */
+        private int attempts = 4;
+
+        /** The delay before the second attempt of a call. It doubles with every further attempt. */
+        private Duration retryDelay = Duration.ofSeconds(1);
+
+        private Duration maxRetryDelay = Duration.ofSeconds(30);
+
+        /** How long the Inbox holds a run back after this service gave up on the platform for now. */
+        private Duration nackDelay = Duration.ofSeconds(30);
+
+        /** How long a session that was left busy gets to come to rest after an interrupt, before it is replaced. */
+        private Duration settleWait = Duration.ofSeconds(30);
+
+        /** How many earlier messages a session that replaces another is told about. */
+        private int transcriptMessages = 20;
 
         public Duration getHeartbeat() {
             return heartbeat;
@@ -313,6 +341,87 @@ public class AgentProperties {
 
         public void setPoll(Duration poll) {
             this.poll = poll;
+        }
+
+        public Duration getDeadline() {
+            return deadline;
+        }
+
+        public void setDeadline(Duration deadline) {
+            this.deadline = deadline;
+        }
+
+        public int getAttempts() {
+            return attempts;
+        }
+
+        public void setAttempts(int attempts) {
+            this.attempts = attempts;
+        }
+
+        public Duration getRetryDelay() {
+            return retryDelay;
+        }
+
+        public void setRetryDelay(Duration retryDelay) {
+            this.retryDelay = retryDelay;
+        }
+
+        public Duration getMaxRetryDelay() {
+            return maxRetryDelay;
+        }
+
+        public void setMaxRetryDelay(Duration maxRetryDelay) {
+            this.maxRetryDelay = maxRetryDelay;
+        }
+
+        public Duration getNackDelay() {
+            return nackDelay;
+        }
+
+        public void setNackDelay(Duration nackDelay) {
+            this.nackDelay = nackDelay;
+        }
+
+        public Duration getSettleWait() {
+            return settleWait;
+        }
+
+        public void setSettleWait(Duration settleWait) {
+            this.settleWait = settleWait;
+        }
+
+        public int getTranscriptMessages() {
+            return transcriptMessages;
+        }
+
+        public void setTranscriptMessages(int transcriptMessages) {
+            this.transcriptMessages = transcriptMessages;
+        }
+    }
+
+    /** The sweep for turns whose run ended without this service. */
+    public static class Sweep {
+
+        private Duration interval = Duration.ofSeconds(30);
+
+        /** How long an open turn is left alone before the sweep asks the Inbox about its run. */
+        private Duration grace = Duration.ofMinutes(2);
+
+        public Duration getInterval() {
+            return interval;
+        }
+
+        public void setInterval(Duration interval) {
+            this.interval = interval;
+        }
+
+        public Duration getGrace() {
+            return grace;
+        }
+
+        public void setGrace(Duration grace) {
+            this.grace = grace;
         }
     }
 

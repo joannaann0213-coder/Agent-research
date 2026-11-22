@@ -183,7 +183,8 @@ public final class FakeManagedAgents implements ManagedAgents {
 
     /**
      * Freezes the model of a session: work that reaches the model stops there, and the session stays
-     * {@code running} until {@link #release}. A message sent meanwhile is taken up but not answered.
+     * {@code running} until {@link #release}, or until an interrupt ends the frozen turn. A message
+     * sent meanwhile is taken up but not answered.
      */
     public void hold(String sessionId) {
         synchronized (lock) {
@@ -471,6 +472,10 @@ public final class FakeManagedAgents implements ManagedAgents {
             switch (event) {
                 case Outgoing.UserMessage message -> {
                     require(message.text() != null && !message.text().isEmpty(), "a message needs text");
+                    if (session.spent) {
+                        throw CmaException.invalid("session " + session.id + " has used up its budget and takes no "
+                                + "further message");
+                    }
                     if (!session.awaiting.isEmpty()) {
                         throw CmaException.invalid("session " + session.id + " is waiting for the answer to "
                                 + session.awaiting.keySet() + "; until then it accepts only user.tool_confirmation, "
@@ -508,8 +513,10 @@ public final class FakeManagedAgents implements ManagedAgents {
                 CmaEvent.UserInterrupt stored = new CmaEvent.UserInterrupt(interruptsHaveIds ? newEventId() : "", now);
                 emit(session, stored);
                 if (session.inTurn) {
-                    // The turn stops where it is. An interrupted turn ends like any other one.
+                    // The turn stops where it is. An interrupted turn ends like any other one. A model that
+                    // was frozen was frozen in this turn, so it is free again for the next one.
                     session.inTurn = false;
+                    session.held = false;
                     session.awaiting.clear();
                     session.results.clear();
                     idle(session, StopReason.END_TURN, List.of());
@@ -570,10 +577,21 @@ public final class FakeManagedAgents implements ManagedAgents {
                     session.turnMessage, session.step, List.copyOf(session.results), List.copyOf(session.log)));
             session.step++;
             session.results.clear();
+            if (session.status == SessionInfo.Status.TERMINATED) {
+                // the script ended the session from inside its step, as an unrecoverable error would
+                return;
+            }
             for (ModelStep.Block block : step.blocks()) {
                 perform(session, block);
             }
-            if (!session.awaiting.isEmpty()) {
+            if (step.stop().isPresent()) {
+                // The turn is over whatever it had begun; calls that wait are not going to be asked about again.
+                session.inTurn = false;
+                session.awaiting.clear();
+                session.results.clear();
+                session.spent |= step.stop().get() == StopReason.BUDGET_REACHED;
+                idle(session, step.stop().get(), List.of());
+            } else if (!session.awaiting.isEmpty()) {
                 idle(session, StopReason.REQUIRES_ACTION, List.copyOf(session.awaiting.keySet()));
             } else if (!step.callsTools()) {
                 session.inTurn = false;
@@ -586,6 +604,8 @@ public final class FakeManagedAgents implements ManagedAgents {
         Instant now = clock.get();
         switch (block) {
             case ModelStep.Text text -> emit(session, new CmaEvent.AgentMessage(newEventId(), now, text.text()));
+            case ModelStep.Stop stop -> {
+            }
             case ModelStep.Custom call -> {
                 if (session.agent.customTools().stream().noneMatch(tool -> tool.name().equals(call.name()))) {
                     throw new IllegalStateException("the script calls the custom tool " + call.name()
@@ -781,6 +801,8 @@ public final class FakeManagedAgents implements ManagedAgents {
         SessionInfo.Status status = SessionInfo.Status.IDLE;
         boolean inTurn;
         boolean held;
+        /** The session's budget is used up: it takes no further message. */
+        boolean spent;
         int step;
         String turnMessage;
 

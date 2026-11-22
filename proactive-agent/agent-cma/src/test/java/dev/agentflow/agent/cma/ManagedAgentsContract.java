@@ -440,6 +440,10 @@ abstract class ManagedAgentsContract {
         assertThat(cma.getSession(session).status()).isEqualTo(SessionInfo.Status.IDLE);
         fake.release(session);
         assertThat(stream.poll(Duration.ofMillis(300))).as("the stopped turn produces nothing more").isEmpty();
+
+        cma.send(session, List.of(new Outgoing.UserMessage("a short one instead")));
+        assertThat(lastOf(until(stream, ManagedAgentsContract::turnOver), CmaEvent.AgentMessage.class).text())
+                .as("the session works again").isEqualTo("You said: a short one instead");
     }
 
     @Test
@@ -572,6 +576,32 @@ abstract class ManagedAgentsContract {
         assertThat(info.usable()).isFalse();
         assertThat(kindOf(() -> cma.send(session, List.of(new Outgoing.UserMessage("hello?")))))
                 .isEqualTo(CmaException.Kind.INVALID_REQUEST);
+    }
+
+    @Test
+    void aTurnThatEndsForAnotherReasonThanTheAgentBeingDoneSaysWhich() {
+        String session = newSession(chatAgent());
+        EventStream stream = stream(session);
+        fake.brain(context -> switch (context.userMessage()) {
+            case "refuse" -> ModelStep.stop(CmaEvent.StopReason.REFUSAL);
+            case "break" -> ModelStep.stop(CmaEvent.StopReason.RETRIES_EXHAUSTED);
+            default -> ModelStep.of(ModelStep.text("That was the last of the budget."), new ModelStep.Stop(CmaEvent.StopReason.BUDGET_REACHED));
+        });
+
+        cma.send(session, List.of(new Outgoing.UserMessage("refuse")));
+        assertThat(lastOf(until(stream, ManagedAgentsContract::idle), CmaEvent.Idle.class).reason())
+                .isEqualTo(CmaEvent.StopReason.REFUSAL);
+        cma.send(session, List.of(new Outgoing.UserMessage("break")));
+        assertThat(lastOf(until(stream, ManagedAgentsContract::idle), CmaEvent.Idle.class).reason())
+                .isEqualTo(CmaEvent.StopReason.RETRIES_EXHAUSTED);
+        assertThat(cma.getSession(session).status()).as("idle, and still usable").isEqualTo(SessionInfo.Status.IDLE);
+
+        cma.send(session, List.of(new Outgoing.UserMessage("spend")));
+        List<CmaEvent> last = until(stream, ManagedAgentsContract::idle);
+        assertThat(lastOf(last, CmaEvent.AgentMessage.class).text()).isEqualTo("That was the last of the budget.");
+        assertThat(lastOf(last, CmaEvent.Idle.class).reason()).isEqualTo(CmaEvent.StopReason.BUDGET_REACHED);
+        assertThat(kindOf(() -> cma.send(session, List.of(new Outgoing.UserMessage("one more?")))))
+                .as("a session whose budget is used up takes no further message").isEqualTo(CmaException.Kind.INVALID_REQUEST);
     }
 
     @Test

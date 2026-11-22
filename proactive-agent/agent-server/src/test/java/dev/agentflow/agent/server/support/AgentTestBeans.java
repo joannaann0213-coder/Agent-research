@@ -10,7 +10,11 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.Ordered;
 
-/** Beans that make the agent service testable: the shared hand-driven clock, a scripted agent platform, a clean schema, a check of the traffic. */
+/**
+ * Beans that make the agent service testable: the shared hand-driven clock, a scripted agent
+ * platform, waiting that takes no time, a way into the middle of a turn, a clean schema, and a
+ * check of the traffic.
+ */
 @TestConfiguration(proxyBeanMethods = false)
 public class AgentTestBeans {
 
@@ -26,6 +30,20 @@ public class AgentTestBeans {
     @Primary
     FakeManagedAgents fakeManagedAgents() {
         return new FakeManagedAgents(() -> EmbeddedInbox.clock().now());
+    }
+
+    /** Turns wait on the shared clock instead of sleeping. */
+    @Bean
+    @Primary
+    TestPatience testPatience() {
+        return new TestPatience();
+    }
+
+    /** A test can step into a turn, or end the worker there. */
+    @Bean
+    @Primary
+    TestHooks testHooks() {
+        return new TestHooks();
     }
 
     /** Every test JVM starts from an empty, freshly migrated schema. */

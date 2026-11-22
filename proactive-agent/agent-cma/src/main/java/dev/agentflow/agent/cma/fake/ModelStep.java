@@ -1,12 +1,15 @@
 package dev.agentflow.agent.cma.fake;
 
+import dev.agentflow.agent.cma.CmaEvent.StopReason;
 import java.util.List;
+import java.util.Optional;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
  * What the scripted model does in one step: text, tool calls, or both. A step without a tool call
  * ends the turn; after a step with tool calls the model is asked again once their results are in.
+ * A step can also end the turn the way the service ends one that went wrong.
  */
 public record ModelStep(List<Block> blocks) {
 
@@ -35,6 +38,13 @@ public record ModelStep(List<Block> blocks) {
     public record Builtin(String name, JsonNode input) implements Block {
     }
 
+    /**
+     * The turn ends here, not because the agent is done: the service gave up after errors, the
+     * session's budget is used up, or the model refused.
+     */
+    public record Stop(StopReason reason) implements Block {
+    }
+
     public static ModelStep of(Block... blocks) {
         return new ModelStep(List.of(blocks));
     }
@@ -42,6 +52,11 @@ public record ModelStep(List<Block> blocks) {
     /** A step that only writes text, which ends the turn. */
     public static ModelStep say(String text) {
         return of(new Text(text));
+    }
+
+    /** A step that ends the turn for {@code reason} instead of the usual end. */
+    public static ModelStep stop(StopReason reason) {
+        return of(new Stop(reason));
     }
 
     public static Text text(String text) {
@@ -61,6 +76,10 @@ public record ModelStep(List<Block> blocks) {
     }
 
     boolean callsTools() {
-        return blocks.stream().anyMatch(block -> !(block instanceof Text));
+        return blocks.stream().anyMatch(block -> !(block instanceof Text) && !(block instanceof Stop));
+    }
+
+    Optional<StopReason> stop() {
+        return blocks.stream().filter(Stop.class::isInstance).map(block -> ((Stop) block).reason()).findFirst();
     }
 }

@@ -38,7 +38,7 @@ public class Turns {
      * @param inputEventId the platform's id of the turn's input, once it is known
      */
     public record Turn(String runId, int epoch, String state, Integer generation, String sessionId, boolean boundarySet,
-            String boundaryEventId, Instant boundaryAt, String inputEventId, String error) {
+            String boundaryEventId, Instant boundaryAt, String inputEventId, String error, Instant createdAt) {
     }
 
     private final JdbcClient jdbc;
@@ -62,7 +62,7 @@ public class Turns {
                 ON CONFLICT (run_id) DO UPDATE SET epoch = EXCLUDED.epoch, updated_at = EXCLUDED.updated_at
                  WHERE turn.epoch <= EXCLUDED.epoch
                 RETURNING run_id, epoch, state, generation, cma_session_id, boundary_set, boundary_event_id, boundary_at,
-                          input_event_id, error
+                          input_event_id, error, created_at
                 """)
                 .param("runId", run.runId()).param("appId", run.tenantId()).param("userId", run.inboxId())
                 .param("mergeKey", run.mergeKey() == null ? "" : run.mergeKey()).param("epoch", run.epoch())
@@ -81,7 +81,8 @@ public class Turns {
                        boundary_event_id = NULL, boundary_at = NULL, input_event_id = NULL, updated_at = :now
                  WHERE run_id = :runId AND epoch = :epoch AND state = 'open'
                 """, "generation", generation, "sessionId", sessionId);
-        return new Turn(turn.runId(), turn.epoch(), turn.state(), generation, sessionId, false, null, null, null, turn.error());
+        return new Turn(turn.runId(), turn.epoch(), turn.state(), generation, sessionId, false, null, null, null, turn.error(),
+                turn.createdAt());
     }
 
     public Turn boundary(Turn turn, String eventId, Instant eventAt) {
@@ -90,7 +91,7 @@ public class Turns {
                  WHERE run_id = :runId AND epoch = :epoch AND state = 'open'
                 """, "eventId", eventId, "eventAt", Db.ts(eventAt));
         return new Turn(turn.runId(), turn.epoch(), turn.state(), turn.generation(), turn.sessionId(), true, eventId, eventAt,
-                turn.inputEventId(), turn.error());
+                turn.inputEventId(), turn.error(), turn.createdAt());
     }
 
     public void input(Turn turn, String inputEventId) {
@@ -108,10 +109,43 @@ public class Turns {
                 """, "state", state, "outcome", outcome, "error", error);
     }
 
+    /** Open turns that nobody has touched since {@code before}: candidates for a run that ended without this service. */
+    public java.util.List<Turn> openAndUntouchedSince(Instant before, int limit) {
+        return jdbc.sql("""
+                SELECT run_id, epoch, state, generation, cma_session_id, boundary_set, boundary_event_id, boundary_at,
+                       input_event_id, error, created_at
+                  FROM turn WHERE state = 'open' AND updated_at < :before ORDER BY updated_at LIMIT :limit
+                """)
+                .param("before", Db.ts(before)).param("limit", limit)
+                .query(Turns::row)
+                .list();
+    }
+
+    /** Notes that an open turn was looked at, so that the sweep does not come back to it at once. */
+    public void touch(String runId) {
+        jdbc.sql("UPDATE turn SET updated_at = :now WHERE run_id = :runId AND state = 'open'")
+                .param("now", Db.ts(clock.now())).param("runId", runId).update();
+    }
+
+    /**
+     * Closes the turn of a run that ended in the Inbox without this service ending it. Not conditional
+     * on an epoch: nobody holds the run any more.
+     *
+     * @return whether the turn was open
+     */
+    public boolean abandon(String runId, String error) {
+        return jdbc.sql("""
+                UPDATE turn SET state = 'failed', error = :error, updated_at = :now, finished_at = :now
+                 WHERE run_id = :runId AND state = 'open'
+                """)
+                .param("error", error).param("now", Db.ts(clock.now())).param("runId", runId)
+                .update() == 1;
+    }
+
     public Optional<Turn> find(String runId) {
         return jdbc.sql("""
                 SELECT run_id, epoch, state, generation, cma_session_id, boundary_set, boundary_event_id, boundary_at,
-                       input_event_id, error
+                       input_event_id, error, created_at
                   FROM turn WHERE run_id = :runId
                 """)
                 .param("runId", runId)
@@ -134,6 +168,7 @@ public class Turns {
         int generation = rs.getInt("generation");
         return new Turn(rs.getString("run_id"), rs.getInt("epoch"), rs.getString("state"), rs.wasNull() ? null : generation,
                 rs.getString("cma_session_id"), rs.getBoolean("boundary_set"), rs.getString("boundary_event_id"),
-                Db.instant(rs, "boundary_at"), rs.getString("input_event_id"), rs.getString("error"));
+                Db.instant(rs, "boundary_at"), rs.getString("input_event_id"), rs.getString("error"),
+                Db.instant(rs, "created_at"));
     }
 }
