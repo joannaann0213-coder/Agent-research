@@ -5,6 +5,8 @@
 本指南说明如何把两类系统接入事件收件箱：connector 把第三方系统里的变化带进来，agent 运行时负责干活。MCP 服务器属于 agent
 这一侧，是 agent 在 run 里调用的工具，它自己不会往收件箱里写任何东西。每个接口的规格见 [API](api.md)；本指南说明该调用哪些接口、按什么顺序、填什么值。
 
+如果是想让应用直接用上托管好的 agent，而不是自己写一个运行时，请改用 [Agent API](agent-api.md)：agent 服务就是这样一个运行时，跑在 Claude Managed Agents 上，通过 agent 的配置和凭据接入基于 MCP 的系统。
+
 ## 总览
 
 ```mermaid

@@ -1,4 +1,4 @@
-# Proactive Agent: Event Inbox
+# Proactive Agent: Event Inbox and agent service
 
 [中文](README.zh-CN.md)
 
@@ -6,10 +6,12 @@ The Event Inbox is the inbound gate of a proactive agent. Every trigger (a webho
 message, an approval reply) is appended to a per-user inbox through one write API, and the agent
 runtime gets exactly one way to take work out of it: claim a batch of ready events as a run.
 
-This repository holds roadmap stages **M0 and M1** of the inbox as a Spring Boot service on PostgreSQL.
-The agent runtime, the Outbox, the multi-agent layer and memory are described in
-[the architecture](docs/en/architecture.md) but not built here; a scripted worker stands in for the
-agent so that the whole contract can be exercised end to end.
+This repository holds roadmap stages **M0 and M1** of the inbox as a Spring Boot service on PostgreSQL,
+and on top of it the **agent service**, which opens the proactive agent to applications through the
+[Agent API](docs/en/agent-api.md) and runs it on Claude Managed Agents. The multi-agent layer and
+long-term memory are described in [the architecture](docs/en/architecture.md) but not built here. For
+the Inbox on its own, a scripted worker stands in for the agent, so that its contract can be
+exercised end to end.
 
 ## What it guarantees
 
@@ -84,6 +86,31 @@ scripts/inbox-curl.sh order-bot order-bot-secret GET /v1/inbox/u42/events/01M7WZ
 
 Health is at `/actuator/health` and metrics at `/actuator/prometheus`.
 
+## Agent service
+
+The agent service needs the Inbox, with a client for the service. In demo mode a script plays the
+agent, so no Anthropic key is needed.
+
+```bash
+# Terminal 1: the Inbox, with a client for the agent service (roles RUNTIME and PRODUCER, no tenant).
+export INBOX_AUTH_CLIENTS_0_ID=agent-server INBOX_AUTH_CLIENTS_0_SECRET=agent-inbox-secret \
+       INBOX_AUTH_CLIENTS_0_ROLES=RUNTIME,PRODUCER
+java -jar inbox-server/target/inbox-server-0.1.0-SNAPSHOT-exec.jar
+
+# Terminal 2: the agent service, in demo mode.
+export AGENT_ADMIN_KEYS_0=change-me-admin-key-0123456789abcdef \
+       AGENT_TOKENS_SECRETS_0=change-me-token-secret-0123456789abcdef \
+       AGENT_INBOX_SECRET=agent-inbox-secret AGENT_CMA_MODE=demo
+java -jar agent-server/target/agent-server-0.1.0-SNAPSHOT-exec.jar
+
+# Terminal 3: an application, a user and a conversation, step by step.
+examples/agent-api/quickstart.sh
+```
+
+With `AGENT_CMA_MODE=live` and `ANTHROPIC_API_KEY` set, the agents run on Claude Managed Agents;
+check the account first with `scripts/cma-live-check.sh`. [Agent service](docs/en/agent-service.md)
+explains how the service works and how to run it in production.
+
 ## Modules
 
 | Module | What it is |
@@ -94,7 +121,7 @@ Health is at `/actuator/health` and metrics at `/actuator/prometheus`.
 | `openapi-testkit` | Test support: checks a service's HTTP traffic in tests against its OpenAPI document |
 | `agent-cma` | The port to Claude Managed Agents: the interface the agent service uses, its adapter over the official Java SDK, and a scriptable in-process stand-in |
 | `agent-api` | Wire types of the Agent API, shared by the agent service and its clients |
-| `agent-server` | The agent service (under construction): applications, API keys and user tokens so far |
+| `agent-server` | The agent service: the Agent API, turns on Claude Managed Agents, actions, schedules, updates, webhooks and credentials |
 
 ## Documentation
 
@@ -105,6 +132,8 @@ Health is at `/actuator/health` and metrics at `/actuator/prometheus`.
 | [API](docs/en/api.md) | Every endpoint, request signing, error codes, the runtime contract, and where to get the OpenAPI document |
 | [Integration guide](docs/en/integration.md) | How to connect a connector (MCP-based systems included) and an agent, step by step, with Java and Python examples |
 | [Testing](docs/en/testing.md) | How to run the tests and which test proves which acceptance check |
+| [Agent service](docs/en/agent-service.md) | How the agent service works, what it does when something breaks, and how to run it |
+| [Agent API](docs/en/agent-api.md) | The guide for applications: concepts, authentication, conversations, events, actions, schedules, updates, credentials |
 
 ## Configuration
 

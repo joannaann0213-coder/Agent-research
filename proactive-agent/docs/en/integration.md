@@ -8,6 +8,10 @@ the agent side, as tools the agent calls during a run. It does not write to the 
 Every endpoint is specified in [API](api.md); this guide says which calls to make, in what order and
 with what values.
 
+To give an application the hosted agent rather than build a runtime of your own, use the
+[Agent API](agent-api.md) instead: the agent service is such a runtime, on Claude Managed Agents, and
+it connects MCP-based systems through the agent's configuration and its credentials.
+
 ## At a glance
 
 ```mermaid

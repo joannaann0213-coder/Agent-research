@@ -1,13 +1,13 @@
-# 主动式 Agent：事件收件箱
+# 主动式 Agent：事件收件箱与 Agent 服务
 
 [English](README.md)
 
 事件收件箱（Event Inbox）是主动式 agent 的入站关口。每一个触发（webhook、定时器、用户消息、审批回复）都通过同一个写入
 API 追加到每个用户自己的收件箱里；运行时从中取走工作的方式只有一种：把一批就绪事件领取为一个 run。
 
-本仓库实现了收件箱路线图的 **M0 和 M1** 两个阶段，形态是一个基于 PostgreSQL 的 Spring Boot 服务。Agent
-运行时、发件箱（Outbox）、多 agent 层和记忆在[架构文档](docs/zh/architecture.md)中有描述，但不在这里实现；这里用一个脚本化的
-worker 代替 agent，使整套契约可以端到端地跑通。
+本仓库实现了收件箱路线图的 **M0 和 M1** 两个阶段，形态是一个基于 PostgreSQL 的 Spring Boot 服务；在它之上是 **Agent
+服务**，通过 [Agent API](docs/zh/agent-api.md) 把主动式 agent 开放给应用，并让它跑在 Claude Managed Agents 上。多 agent
+层和长期记忆在[架构文档](docs/zh/architecture.md)中有描述，但不在这里实现。单独使用收件箱时，用一个脚本化的 worker 代替 agent，使收件箱的契约可以端到端地跑通。
 
 ## 它保证什么
 
@@ -78,6 +78,29 @@ scripts/inbox-curl.sh order-bot order-bot-secret GET /v1/inbox/u42/events/01M7WZ
 
 健康检查在 `/actuator/health`，指标在 `/actuator/prometheus`。
 
+## Agent 服务
+
+Agent 服务需要收件箱，并在收件箱里为它配置一个 client。演示模式下由脚本扮演 agent，不需要 Anthropic key。
+
+```bash
+# 终端 1：收件箱，为 agent 服务配置一个 client（角色 RUNTIME 和 PRODUCER，不属于任何租户）。
+export INBOX_AUTH_CLIENTS_0_ID=agent-server INBOX_AUTH_CLIENTS_0_SECRET=agent-inbox-secret \
+       INBOX_AUTH_CLIENTS_0_ROLES=RUNTIME,PRODUCER
+java -jar inbox-server/target/inbox-server-0.1.0-SNAPSHOT-exec.jar
+
+# 终端 2：agent 服务，演示模式。
+export AGENT_ADMIN_KEYS_0=change-me-admin-key-0123456789abcdef \
+       AGENT_TOKENS_SECRETS_0=change-me-token-secret-0123456789abcdef \
+       AGENT_INBOX_SECRET=agent-inbox-secret AGENT_CMA_MODE=demo
+java -jar agent-server/target/agent-server-0.1.0-SNAPSHOT-exec.jar
+
+# 终端 3：一个应用、一个用户、一段会话，逐步演示。
+examples/agent-api/quickstart.sh
+```
+
+设置 `AGENT_CMA_MODE=live` 和 `ANTHROPIC_API_KEY` 后，agent 就跑在 Claude Managed Agents 上；先用 `scripts/cma-live-check.sh`
+检查账号。[Agent 服务](docs/zh/agent-service.md)说明服务如何工作，以及如何在生产环境运行。
+
 ## 模块
 
 | 模块 | 内容 |
@@ -88,7 +111,7 @@ scripts/inbox-curl.sh order-bot order-bot-secret GET /v1/inbox/u42/events/01M7WZ
 | `openapi-testkit` | 测试支持：用服务的 OpenAPI 文档核对测试中的 HTTP 流量 |
 | `agent-cma` | 通往 Claude Managed Agents 的端口：agent 服务使用的接口、基于官方 Java SDK 的适配器，以及一个可脚本化的进程内替身 |
 | `agent-api` | Agent API 的传输类型，agent 服务与它的客户端共用 |
-| `agent-server` | Agent 服务（建设中）：目前有应用、API key 和用户 token |
+| `agent-server` | Agent 服务：Agent API、在 Claude Managed Agents 上运行的回合、动作、定时计划、更新、webhook 和凭据 |
 
 ## 文档
 
@@ -99,6 +122,8 @@ scripts/inbox-curl.sh order-bot order-bot-secret GET /v1/inbox/u42/events/01M7WZ
 | [API](docs/zh/api.md) | 全部接口、请求签名、错误码、运行时契约，以及从哪里获取 OpenAPI 文档 |
 | [接入指南](docs/zh/integration.md) | 一步步说明如何接入 connector（包括基于 MCP 的第三方系统）和 agent，附 Java 和 Python 示例 |
 | [测试](docs/zh/testing.md) | 怎么运行测试，以及每一项验收由哪个测试证明 |
+| [Agent 服务](docs/zh/agent-service.md) | Agent 服务如何工作、出了问题怎么办、怎样运行 |
+| [Agent API](docs/zh/agent-api.md) | 写给应用的指南：概念、鉴权、会话、事件、动作、定时计划、更新、凭据 |
 
 ## 配置
 

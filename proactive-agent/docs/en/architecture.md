@@ -57,10 +57,10 @@ event. Memory, governance and observability serve every layer and are not drawn.
 | Trigger sources | Produce events | Any signed HTTP client; timers are part of the Inbox |
 | Event Inbox | Durable queue with one write entry; the source of truth | **Built** (roadmap stages M0 and M1) |
 | Multi-agent hierarchy | Dispatch, execution and concurrency of agents | Not built |
-| Agent runtime | Sleep, wake, run, suspend, resume | Stand-in: `ScriptedWorker` follows the runtime contract without a model |
-| Outbox | Decides what is sent, where and at what pace | Stand-in: `MemoryOutbox` and `FileOutbox` dedupe on `run_id + sequence` |
+| Agent runtime | Sleep, wake, run, suspend, resume | **Built** as the agent service, on Claude Managed Agents (`agent-server`); `ScriptedWorker` stands in for it when the Inbox runs alone |
+| Outbox | Decides what is sent, where and at what pace | **Built** in the agent service: a log of updates per user, read by polling, a stream and webhooks; `MemoryOutbox` and `FileOutbox` stand in when the Inbox runs alone |
 | Memory | Persists across runs | Not built |
-| Governance and observability | Permissions, budgets, audit, product metrics | Only the Inbox's own audit trail and metrics |
+| Governance and observability | Permissions, budgets, audit, product metrics | The Inbox's audit trail and metrics; in the agent service, keys and user tokens, rate limits, notification limits and session budgets |
 
 ## Trigger sources
 
