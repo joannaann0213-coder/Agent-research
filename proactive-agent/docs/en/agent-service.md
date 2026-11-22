@@ -175,7 +175,9 @@ should allow more attempts than its default for long outages (`inbox.retry.max-a
 In demo mode a script plays every agent: it repeats what the user says, reads events and notifies
 about each one, so that the whole service can be tried without a key. Live mode needs an Anthropic
 API key with access to Managed Agents. Before going live, run `scripts/cma-live-check.sh`: it checks
-the behaviour of CMA that the service relies on and that the documentation leaves open.
+the behaviour of CMA that the service relies on and that the documentation leaves open. Then
+`scripts/agent-live-smoke.sh` runs both services against CMA and checks a conversation, a
+notification and a question answered by the user, end to end.
 
 ### Deploying
 

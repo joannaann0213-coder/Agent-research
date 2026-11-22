@@ -125,7 +125,7 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 ### 演示模式与真实模式
 
 演示模式下由脚本扮演所有 agent：它重复用户说的话、读取事件并逐条通知，这样不用 key 也能试用整个服务。真实模式需要一个开通了 Managed Agents 的 Anthropic API
-key。上线前先运行 `scripts/cma-live-check.sh`：它检查本服务所依赖、而文档没有说清的那些 CMA 行为。
+key。上线前先运行 `scripts/cma-live-check.sh`：它检查本服务所依赖、而文档没有说清的那些 CMA 行为。然后运行 `scripts/agent-live-smoke.sh`：它用 CMA 启动两个服务，端到端检查一段会话、一条通知，以及一个由用户回答的提问。
 
 ### 部署
 
