@@ -160,6 +160,12 @@ public final class ThrottledManagedAgents implements ManagedAgents {
     }
 
     @Override
+    public String createMemoryStore(String name, String description, Map<String, String> metadata) {
+        creation();
+        return platform.createMemoryStore(name, description, metadata);
+    }
+
+    @Override
     public String createSession(SessionSpec spec) {
         creation();
         return platform.createSession(spec);

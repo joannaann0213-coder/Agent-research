@@ -220,8 +220,16 @@ public class AgentProfiles {
         if (budget != null && (budget.signum() <= 0 || budget.compareTo(new java.math.BigDecimal("10000")) > 0 || budget.scale() > 2)) {
             throw AgentException.invalid("session_budget_usd is an amount of dollars and cents, more than 0 and at most 10000");
         }
+        String memory = request.memory() == null ? "none" : request.memory();
+        if (!memory.equals("none") && !memory.equals("per_user")) {
+            throw AgentException.invalid("memory is none or per_user");
+        }
+        SandboxConfig sandbox = sandbox(request.sandbox());
+        if (memory.equals("per_user") && !Boolean.TRUE.equals(sandbox.enabled())) {
+            throw AgentException.invalid("memory needs the sandbox: the agent keeps its notes in files there, with its file tools");
+        }
         return new AgentProfileRequest(request.name(), model, request.effort(), request.instructions(),
-                sandbox(request.sandbox()), servers(request.mcpServers()), budget == null ? null : budget.setScale(2));
+                sandbox, servers(request.mcpServers()), budget == null ? null : budget.setScale(2), memory);
     }
 
     private static SandboxConfig sandbox(SandboxConfig sandbox) {
@@ -330,6 +338,7 @@ public class AgentProfiles {
     private static AgentProfileView view(Row row) {
         AgentProfileRequest config = row.config();
         return new AgentProfileView(row.agentKey(), config.name(), config.model(), config.effort(), config.instructions(),
-                config.sandbox(), config.mcpServers(), config.sessionBudgetUsd(), row.revision(), row.createdAt(), row.updatedAt());
+                config.sandbox(), config.mcpServers(), config.sessionBudgetUsd(), config.memory() == null ? "none" : config.memory(),
+                row.revision(), row.createdAt(), row.updatedAt());
     }
 }

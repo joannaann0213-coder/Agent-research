@@ -30,7 +30,9 @@ import com.anthropic.models.beta.environments.EnvironmentCreateParams;
 import com.anthropic.models.beta.environments.EnvironmentUpdateParams;
 import com.anthropic.models.beta.BetaCurrency;
 import com.anthropic.models.beta.BetaMonetaryAmount;
+import com.anthropic.models.beta.memorystores.MemoryStoreCreateParams;
 import com.anthropic.models.beta.sessions.BetaManagedAgentsAgentParams;
+import com.anthropic.models.beta.sessions.BetaManagedAgentsMemoryStoreResourceParam;
 import com.anthropic.models.beta.sessions.BetaManagedAgentsSession;
 import com.anthropic.models.beta.sessions.SessionCreateParams;
 import com.anthropic.models.beta.sessions.events.BetaManagedAgentsSendSessionEvents;
@@ -333,6 +335,16 @@ public final class SdkManagedAgents implements ManagedAgents, AutoCloseable {
             if (!spec.vaultIds().isEmpty()) {
                 params.vaultIds(spec.vaultIds());
             }
+            for (SessionSpec.MemoryMount mount : spec.memory()) {
+                BetaManagedAgentsMemoryStoreResourceParam.Builder resource = BetaManagedAgentsMemoryStoreResourceParam.builder()
+                        .memoryStoreId(mount.storeId())
+                        .access(mount.readOnly() ? BetaManagedAgentsMemoryStoreResourceParam.Access.READ_ONLY
+                                : BetaManagedAgentsMemoryStoreResourceParam.Access.READ_WRITE);
+                if (mount.instructions() != null) {
+                    resource.instructions(mount.instructions());
+                }
+                params.addResource(resource.build());
+            }
             if (spec.budgetUsd() != null) {
                 params.limitBudget(BetaMonetaryAmount.builder().amount(spec.budgetUsd().toPlainString()).currency(BetaCurrency.USD).build());
             }
@@ -492,6 +504,24 @@ public final class SdkManagedAgents implements ManagedAgents, AutoCloseable {
                         credential.archivedAt().isPresent()));
             }
             return stored;
+        });
+    }
+
+    // ================================================================ memory
+
+    @Override
+    public String createMemoryStore(String name, String description, Map<String, String> metadata) {
+        return call(() -> {
+            MemoryStoreCreateParams.Builder params = MemoryStoreCreateParams.builder().name(name);
+            if (description != null) {
+                params.description(description);
+            }
+            if (!metadata.isEmpty()) {
+                MemoryStoreCreateParams.Metadata.Builder tags = MemoryStoreCreateParams.Metadata.builder();
+                metadata.forEach((key, value) -> tags.putAdditionalProperty(key, JsonValue.from(value)));
+                params.metadata(tags.build());
+            }
+            return client.beta().memoryStores().create(params.build()).id();
         });
     }
 

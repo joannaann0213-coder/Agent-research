@@ -25,6 +25,7 @@ import dev.agentflow.agent.api.Update;
 import dev.agentflow.agent.server.events.AppEvents;
 import dev.agentflow.agent.server.events.AppEvents.AppEvent;
 import dev.agentflow.agent.server.credentials.Credentials;
+import dev.agentflow.agent.server.memory.Memories;
 import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.schedules.Schedules;
 import dev.agentflow.agent.server.time.AgentClock;
@@ -142,6 +143,7 @@ public class TurnRunner {
     private final Users users;
     private final Outbound outbound;
     private final Credentials credentials;
+    private final Memories memories;
     private final TurnTools tools;
     private final AgentProfiles profiles;
     private final TransactionTemplate tx;
@@ -152,8 +154,8 @@ public class TurnRunner {
     private final Duration actionTtl;
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
-            Schedules schedules, Actions actions, Users users, Outbound outbound, Credentials credentials, TurnTools tools,
-            AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, Patience patience, TurnHooks hooks,
+            Schedules schedules, Actions actions, Users users, Outbound outbound, Credentials credentials, Memories memories,
+            TurnTools tools, AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, Patience patience, TurnHooks hooks,
             AgentProperties properties) {
         this.cma = cma;
         this.inbox = inbox;
@@ -166,6 +168,7 @@ public class TurnRunner {
         this.users = users;
         this.outbound = outbound;
         this.credentials = credentials;
+        this.memories = memories;
         this.tools = tools;
         this.profiles = profiles;
         this.tx = tx;
@@ -367,13 +370,15 @@ public class TurnRunner {
         }
         AgentProfiles.Ready profile = profiles.ready(thread.appId(), thread.agentKey());
         List<String> vaults = credentials.vaultsFor(thread.appId(), thread.userId());
+        String memory = Memories.access(profile.config().memory(), !thread.chat());
+        List<SessionSpec.MemoryMount> mounts = memories.mounts(thread.appId(), thread.userId(), thread.agentKey(), memory);
         String sessionId = platform(() -> cma.createSession(new SessionSpec(profile.agent(), profile.environmentId(),
                 thread.appId() + " / " + thread.userId() + " / " + thread.mergeKey(),
                 Map.of("app", thread.appId(), "user", thread.userId(), "line", thread.mergeKey(),
                         "generation", Integer.toString(thread.generation() + 1)),
-                vaults, profile.config().sessionBudgetUsd())));
+                vaults, profile.config().sessionBudgetUsd(), mounts)));
         hooks.at(Point.SESSION_CREATED, run);
-        return threads.startSession(thread, sessionId, profile.agent(), vaults);
+        return threads.startSession(thread, sessionId, profile.agent(), vaults, memory);
     }
 
     /**
@@ -390,7 +395,9 @@ public class TurnRunner {
         AgentProfiles.Ready profile = profiles.ready(thread.appId(), thread.agentKey());
         String vaults = String.join(",", credentials.vaultsFor(thread.appId(), thread.userId()));
         String why = !profile.agent().equals(thread.sessionAgent()) ? "the agent was configured anew"
-                : !vaults.equals(thread.vaultIds()) ? "its credentials changed" : null;
+                : !vaults.equals(thread.vaultIds()) ? "its credentials changed"
+                : !Memories.access(profile.config().memory(), !thread.chat()).equals(thread.memory()) ? "its memory was turned on or off"
+                : null;
         if (why != null) {
             log.info("line {} of {}/{} starts a new session: {}", thread.mergeKey(), thread.appId(), thread.userId(), why);
             threads.dropSession(thread);

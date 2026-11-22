@@ -714,6 +714,26 @@ abstract class ManagedAgentsContract {
         assertThat(fake.sessionSpec(session).budgetUsd()).isEqualByComparingTo("2.50");
     }
 
+    // ================================================================ memory
+
+    @Test
+    void aMemoryStoreIsMountedInTheSessionsThatAreCreatedWithIt_readOnlyWhereSoAsked() {
+        String store = cma.createMemoryStore("acme / u42", "What the agent remembers about u42", Map.of("app", "acme", "user", "u42"));
+        AgentRef agent = cma.createAgent(chatAgent());
+        String environment = cma.createEnvironment(new EnvironmentSpec("env", null, null, false, false, null));
+
+        String writes = cma.createSession(new SessionSpec(agent, environment, null, null, List.of(), null,
+                List.of(new SessionSpec.MemoryMount(store, false, "What you know about the user."))));
+        String reads = cma.createSession(new SessionSpec(agent, environment, null, null, List.of(), null,
+                List.of(new SessionSpec.MemoryMount(store, true, null))));
+
+        assertThat(fake.memoryStores()).containsEntry(store, "acme / u42");
+        assertThat(fake.sessionSpec(writes).memory()).containsExactly(new SessionSpec.MemoryMount(store, false, "What you know about the user."));
+        assertThat(fake.sessionSpec(reads).memory()).containsExactly(new SessionSpec.MemoryMount(store, true, null));
+        assertThat(kindOf(() -> cma.createSession(new SessionSpec(agent, environment, null, null, List.of(), null,
+                List.of(new SessionSpec.MemoryMount("memstore_nothing", false, null)))))).isEqualTo(CmaException.Kind.NOT_FOUND);
+    }
+
     // ================================================================ the tail
 
     @Test

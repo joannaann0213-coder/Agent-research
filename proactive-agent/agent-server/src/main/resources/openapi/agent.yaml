@@ -1552,6 +1552,13 @@ components:
             how the agent is woken and how it reaches the user.
         sandbox:
           $ref: '#/components/schemas/SandboxConfig'
+        memory:
+          type: string
+          enum: [none, per_user]
+          description: |
+            `per_user`: the agent keeps notes about each user across sessions, in files of its
+            sandbox, which must be enabled. It writes them in conversations and only reads them in
+            the background, where it works on what other systems say. `none` when absent.
         session_budget_usd:
           type: number
           minimum: 0.01
@@ -1583,6 +1590,13 @@ components:
           type: string
         sandbox:
           $ref: '#/components/schemas/SandboxConfig'
+        memory:
+          type: string
+          enum: [none, per_user]
+          description: |
+            `per_user`: the agent keeps notes about each user across sessions, in files of its
+            sandbox, which must be enabled. It writes them in conversations and only reads them in
+            the background, where it works on what other systems say. `none` when absent.
         session_budget_usd:
           type: number
           minimum: 0.01

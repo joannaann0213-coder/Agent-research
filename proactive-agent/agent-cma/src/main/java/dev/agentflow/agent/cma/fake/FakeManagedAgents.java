@@ -75,7 +75,8 @@ public final class FakeManagedAgents implements ManagedAgents {
         CREATE_CREDENTIAL,
         UPDATE_CREDENTIAL,
         ARCHIVE_CREDENTIAL,
-        LIST_CREDENTIALS
+        LIST_CREDENTIALS,
+        CREATE_MEMORY_STORE
     }
 
     /**
@@ -121,6 +122,7 @@ public final class FakeManagedAgents implements ManagedAgents {
     private final Map<String, List<AgentSpec>> agents = new LinkedHashMap<>();
     private final Map<String, Session> sessions = new LinkedHashMap<>();
     private final Map<String, Vault> vaults = new LinkedHashMap<>();
+    private final Map<String, String> memoryStores = new LinkedHashMap<>();
     private final Map<Operation, Deque<Fault>> faults = new EnumMap<>(Operation.class);
     private final Map<String, Function<JsonNode, ToolOutcome>> platformTools = new LinkedHashMap<>();
     private final List<Call> calls = new ArrayList<>();
@@ -149,6 +151,7 @@ public final class FakeManagedAgents implements ManagedAgents {
             agents.clear();
             sessions.clear();
             vaults.clear();
+            memoryStores.clear();
             faults.clear();
             platformTools.clear();
             calls.clear();
@@ -416,6 +419,12 @@ public final class FakeManagedAgents implements ManagedAgents {
                 vault(vaultId);
             }
             require(spec.budgetUsd() == null || spec.budgetUsd().signum() > 0, "a budget is more than nothing");
+            require(spec.memory().size() <= 8, "a session takes at most 8 memory stores");
+            for (SessionSpec.MemoryMount mount : spec.memory()) {
+                if (!memoryStores.containsKey(mount.storeId())) {
+                    throw CmaException.notFound("no memory store " + mount.storeId());
+                }
+            }
             String id = "sesn_" + sequence();
             sessions.put(id, new Session(id, spec, agent));
             end(fault);
@@ -641,6 +650,25 @@ public final class FakeManagedAgents implements ManagedAgents {
                     .map(stored -> new McpCredential.Stored(stored.id(), stored.mcpServerUrl(), false)).toList();
             end(fault);
             return list;
+        }
+    }
+
+    @Override
+    public String createMemoryStore(String name, String description, Map<String, String> metadata) {
+        synchronized (lock) {
+            Fault fault = begin(Operation.CREATE_MEMORY_STORE, null, name);
+            require(name != null && !name.isBlank(), "a memory store needs a name");
+            String id = "memstore_" + sequence();
+            memoryStores.put(id, name);
+            end(fault);
+            return id;
+        }
+    }
+
+    /** The name of every memory store, by id, in the order they were made. For tests. */
+    public Map<String, String> memoryStores() {
+        synchronized (lock) {
+            return Map.copyOf(memoryStores);
         }
     }
 

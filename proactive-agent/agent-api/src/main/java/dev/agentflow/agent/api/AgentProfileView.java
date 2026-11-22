@@ -12,6 +12,6 @@ import java.util.List;
  *     pick up a new revision at their next turn
  */
 public record AgentProfileView(String agentKey, String name, String model, String effort, String instructions,
-        SandboxConfig sandbox, List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd, int revision, Instant createdAt,
-        Instant updatedAt) {
+        SandboxConfig sandbox, List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd, String memory, int revision,
+        Instant createdAt, Instant updatedAt) {
 }

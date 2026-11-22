@@ -218,6 +218,7 @@ curl -s -X PUT $API/v1/users/u42/credentials/notes -H "Authorization: Bearer $KE
 | `mcp_servers` | 第三方系统：`name`、https 的 `url`、`approval`（`always_ask`、`auto` 或 `always_allow`）和 `approver`（`app` 或 `user`） |
 | `sandbox` | 带内置工具（shell、文件、网页搜索与抓取）的容器及其网络：`none`、`limited` 到 `allowed_hosts`，或 `unrestricted` |
 | `session_budget_usd` | 一个 session 最多能花多少钱；花完的会话在新的 session 里继续 |
+| `memory` | `per_user`：agent 跨 session 记住每个用户，笔记存在沙箱的文件里，因此必须开启沙箱。会话里写，后台只读 |
 
 服务给每个 agent 四个自带工具：`read_events`、`notify_user`、`ask_user` 和 `schedule_followup`。正在进行的会话在下一轮采用改过的配置，换到一个新的 session，并被告知之前说过的内容。
 

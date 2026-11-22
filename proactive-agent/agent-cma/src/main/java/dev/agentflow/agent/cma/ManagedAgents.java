@@ -63,6 +63,14 @@ public interface ManagedAgents {
     /** The vault's active credentials. */
     List<McpCredential.Stored> listCredentials(String vaultId);
 
+    // ------------------------------------------------------------------ memory
+
+    /**
+     * Creates a memory store: small text documents that persist across sessions. A session that has
+     * it mounted reads and writes it with its file tools. Returns its id.
+     */
+    String createMemoryStore(String name, String description, Map<String, String> metadata);
+
     // ------------------------------------------------------------------ sessions
 
     /**

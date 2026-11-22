@@ -40,6 +40,8 @@ final class CmaWireStub implements AutoCloseable {
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final String BETA = "managed-agents-2026-04-01";
+    /** Memory stores have a beta of their own, and refuse a request that carries both. */
+    private static final String MEMORY_BETA = "agent-memory-2026-07-22";
     private static final Instant CREATED = Instant.parse("2026-11-20T10:00:00Z");
 
     private final FakeManagedAgents fake;
@@ -107,7 +109,13 @@ final class CmaWireStub implements AutoCloseable {
                 error(exchange, 401, "authentication_error", "an API key is required", null);
                 return;
             }
-            if (!String.join(",", exchange.getRequestHeaders().getOrDefault("anthropic-beta", List.of())).contains(BETA)) {
+            String betas = String.join(",", exchange.getRequestHeaders().getOrDefault("anthropic-beta", List.of()));
+            if (path.startsWith("/v1/memory_stores")) {
+                if (!betas.contains(MEMORY_BETA) || betas.contains(BETA)) {
+                    error(exchange, 400, "invalid_request_error", "memory store calls take the " + MEMORY_BETA + " beta, and only it", null);
+                    return;
+                }
+            } else if (!betas.contains(BETA)) {
                 error(exchange, 404, "not_found_error", "not found (the beta header is missing)", null);
                 return;
             }
@@ -142,6 +150,18 @@ final class CmaWireStub implements AutoCloseable {
                 respond(exchange, 200, page(match.group(1), query(exchange)));
             } else if (method.equals("GET") && (match = STREAM.matcher(path)).matches()) {
                 stream(exchange, match.group(1));
+            } else if (method.equals("POST") && path.equals("/v1/memory_stores")) {
+                JsonNode body = body(exchange);
+                String id = fake.createMemoryStore(body.path("name").asString(null), body.path("description").asString(null),
+                        strings(body.path("metadata")));
+                ObjectNode store = JSON.createObjectNode();
+                store.put("id", id).put("type", "memory_store").put("name", body.path("name").asString())
+                        .put("created_at", "2026-11-20T10:00:00Z").put("updated_at", "2026-11-20T10:00:00Z");
+                store.set("metadata", body.path("metadata").isMissingNode() ? JSON.createObjectNode() : body.path("metadata"));
+                if (body.has("description")) {
+                    store.put("description", body.path("description").asString());
+                }
+                respond(exchange, 200, store);
             } else if (method.equals("POST") && path.equals("/v1/vaults")) {
                 JsonNode body = body(exchange);
                 String id = fake.createVault(body.path("display_name").asString(null), strings(body.path("metadata")));
@@ -281,9 +301,15 @@ final class CmaWireStub implements AutoCloseable {
         List<String> vaults = new ArrayList<>();
         body.path("vault_ids").forEach(vault -> vaults.add(vault.asString()));
         JsonNode amount = body.path("budget").findValue("amount");
+        List<SessionSpec.MemoryMount> memory = new ArrayList<>();
+        for (JsonNode resource : body.path("resources")) {
+            expect("memory_store".equals(resource.path("type").asString("")), "only memory stores are expected as resources");
+            memory.add(new SessionSpec.MemoryMount(resource.path("memory_store_id").asString(),
+                    "read_only".equals(resource.path("access").asString("read_write")), resource.path("instructions").asString(null)));
+        }
         return new SessionSpec(new AgentRef(agent.path("id").asString(), agent.path("version").asInt()),
                 body.path("environment_id").asString(null), body.path("title").asString(null),
-                strings(body.path("metadata")), vaults, amount == null ? null : new java.math.BigDecimal(amount.asString()));
+                strings(body.path("metadata")), vaults, amount == null ? null : new java.math.BigDecimal(amount.asString()), memory);
     }
 
     private static List<Outgoing> outgoing(JsonNode body) {

@@ -255,6 +255,7 @@ from the next call on. With a refresh token, the platform renews the access toke
 | `mcp_servers` | Third-party systems: `name`, an https `url`, `approval` (`always_ask`, `auto` or `always_allow`) and `approver` (`app` or `user`) |
 | `sandbox` | A container with built-in tools (shell, files, web search and fetch) and its network: `none`, `limited` to `allowed_hosts`, or `unrestricted` |
 | `session_budget_usd` | What one session may spend at most; a conversation whose session has spent it goes on in a new one |
+| `memory` | `per_user`: the agent keeps notes about each user across sessions, in files of its sandbox, which must be enabled. It writes them in conversations and only reads them in the background |
 
 The service gives every agent four tools of its own: `read_events`, `notify_user`, `ask_user` and
 `schedule_followup`. A conversation that is under way takes a changed configuration on at its next

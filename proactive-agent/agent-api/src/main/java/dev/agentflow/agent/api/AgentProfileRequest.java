@@ -17,12 +17,20 @@ import java.util.List;
  * @param mcpServers the third-party systems the agent may use; none when absent
  * @param sessionBudgetUsd what one session of the agent may spend at most, in US dollars; no limit
  *     when absent. A conversation whose session has spent it goes on in a new one
+ * @param memory {@code per_user}: the agent keeps notes about each user across sessions, in files of
+ *     its sandbox, which must be enabled; it writes them in conversations and reads them in the
+ *     background. {@code none} when absent
  */
 public record AgentProfileRequest(String name, String model, String effort, String instructions, SandboxConfig sandbox,
-        List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd) {
+        List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd, String memory) {
 
     public AgentProfileRequest(String name, String model, String effort, String instructions, SandboxConfig sandbox,
             List<McpServerConfig> mcpServers) {
-        this(name, model, effort, instructions, sandbox, mcpServers, null);
+        this(name, model, effort, instructions, sandbox, mcpServers, null, null);
+    }
+
+    public AgentProfileRequest(String name, String model, String effort, String instructions, SandboxConfig sandbox,
+            List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd) {
+        this(name, model, effort, instructions, sandbox, mcpServers, sessionBudgetUsd, null);
     }
 }

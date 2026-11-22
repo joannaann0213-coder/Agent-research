@@ -129,6 +129,15 @@ creation; the platform adds the matching credential to every MCP call. A changed
 the next call on. A session cannot take on a vault later, so a user's first credential renews their
 lines' sessions at their next turn.
 
+## Memory
+
+An agent configured with `memory: per_user` keeps notes about each user in a memory store on CMA,
+one per user and agent, which a session finds as files under `/mnt/memory/`. A conversation's
+session has it to read and write. A session in the background has it to read only: there the agent
+works on what other systems say, and that must not end up in what it remembers about the user. The
+store is made the first time a session of the user needs it; turning memory on or off takes effect
+at the next turn of each line, in a new session.
+
 ## Security
 
 - API keys are stored as SHA-256 hashes. User tokens are signed with a key derived per application,
@@ -190,6 +199,7 @@ the behaviour of CMA that the service relies on and that the documentation leave
 
 - Streaming the reply word by word, and steering a turn with a message that arrives during it, are
   not built: a message waits for the next turn.
-- Memory across sessions is not built. A conversation's new session is told the recent dialogue.
+- Memory is per user and agent, and only for agents with a sandbox. A conversation's new session is
+  also told the recent dialogue.
 - The rate limits and the stream's wake-ups are per instance.
 - Notifications are not sent to other channels (push, e-mail); applications do that from the updates.
