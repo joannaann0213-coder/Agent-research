@@ -1,0 +1,7 @@
+# Only the sources go into the build; everything built or local stays out.
+**/target/
+.env
+.idea/
+.vscode/
+*.iml
+**/__pycache__/

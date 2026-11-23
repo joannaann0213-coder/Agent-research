@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
@@ -169,6 +170,39 @@ class FakeManagedAgentsTest {
     private String session(AgentSpec agent) {
         return fake.createSession(new SessionSpec(fake.createAgent(agent),
                 fake.createEnvironment(new EnvironmentSpec("env", null, null, false, false, null)), null, null, null));
+    }
+
+    @Test
+    void aPlatformMadeAnewTakesBackWhatTheServiceStillNames_inDemoMode() {
+        // What the service made before it restarted, and still names in its database.
+        FakeManagedAgents before = new FakeManagedAgents();
+        AgentSpec spec = new AgentSpec("Chat", null, "claude-opus-5-5", null, "Be kind.", null, null, null, null);
+        AgentRef agent = before.updateAgent(before.createAgent(spec),
+                new AgentSpec("Chat", null, "claude-opus-5-5", null, "Be brief.", null, null, null, null));
+        String environment = before.createEnvironment(new EnvironmentSpec("env", null, null, false, false, null));
+        String vault = before.createVault("acme / u42", Map.of());
+        String credential = before.createCredential(vault, new McpCredential("https://mcp.example.com/tickets", null, "one", null));
+        String store = before.createMemoryStore("u42", null, Map.of());
+        SessionSpec session = new SessionSpec(agent, environment, "conversation", Map.of(), List.of(vault), null,
+                List.of(new SessionSpec.MemoryMount(store, false, null)));
+
+        // The platform of the restarted service knows none of it, and says so unless it is told to take it back.
+        FakeManagedAgents after = new FakeManagedAgents();
+        assertThat(ManagedAgentsContract.kindOf(() -> after.createSession(session))).isEqualTo(CmaException.Kind.NOT_FOUND);
+        AgentSpec current = new AgentSpec("Chat", null, "claude-opus-5-5", null, "Be brief.", null, null, null, null);
+        after.restoreForgotten(id -> id.equals(agent.id()) ? Optional.of(current) : Optional.empty());
+        after.startIdsAt(1_000);
+
+        String id = after.createSession(session);
+        assertThat(after.getSession(id).agent()).isEqualTo(agent);
+        assertThat(after.agentSpec(agent)).isEqualTo(current);
+        after.updateCredential(vault, credential, "two");
+        assertThat(after.updateAgent(agent, spec)).isEqualTo(new AgentRef(agent.id(), agent.version() + 1));
+        after.updateEnvironment(environment, new EnvironmentSpec("env", null, null, false, false, null));
+
+        // An agent that the service does not name stays unknown, and new ids do not repeat old ones.
+        assertThat(ManagedAgentsContract.kindOf(() -> after.getAgent("agent_nobody"))).isEqualTo(CmaException.Kind.NOT_FOUND);
+        assertThat(after.createAgent(spec).id()).isEqualTo("agent_001001");
     }
 
     private static void assertInvalid(org.assertj.core.api.ThrowableAssert.ThrowingCallable call) {

@@ -7,3 +7,4 @@ target/
 .settings/
 *.log
 __pycache__/
+.env

@@ -1,0 +1,86 @@
+# PostgreSQL, the Event Inbox and the agent service on one machine.
+#
+#   docker compose up -d --build        # the first build downloads dependencies: a few minutes
+#   examples/agent-api/quickstart.sh    # try it
+#
+# Without a .env file it runs in demo mode, where a script plays the agent, with the example secrets
+# of the documentation, and the API listens on 127.0.0.1:8090 only. Copy .env.example to .env and
+# fill it in to change that. docs/en/tutorial.md (中文: docs/zh/tutorial.md) walks through it all.
+name: proactive-agent
+
+x-service: &service
+  build: .
+  image: proactive-agent:local
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      INBOX_DB_PASSWORD: ${INBOX_DB_PASSWORD:-inbox}
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:-agent}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres-init.sh:/docker-entrypoint-initdb.d/10-databases.sh:ro
+    healthcheck:
+      # The agent database exists once the init script has run.
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "agent"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  inbox:
+    <<: *service
+    command: ["inbox-server.jar"]
+    environment:
+      INBOX_JDBC_URL: jdbc:postgresql://postgres:5432/inbox
+      INBOX_DB_PASSWORD: ${INBOX_DB_PASSWORD:-inbox}
+      INBOX_AUTH_CLIENTS_0_ID: agent-server
+      INBOX_AUTH_CLIENTS_0_SECRET: ${AGENT_INBOX_SECRET:-change-me-inbox-secret-0123456789abcdef}
+      INBOX_AUTH_CLIENTS_0_ROLES: RUNTIME,PRODUCER
+      # More attempts than the default, so that runs outlast an outage of the agent platform.
+      INBOX_RETRY_MAXATTEMPTS: "20"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8080/actuator/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+
+  agent:
+    <<: *service
+    command: ["agent-server.jar"]
+    environment:
+      AGENT_JDBC_URL: jdbc:postgresql://postgres:5432/agent
+      AGENT_DB_PASSWORD: ${AGENT_DB_PASSWORD:-agent}
+      AGENT_INBOX_URL: http://inbox:8080
+      AGENT_INBOX_SECRET: ${AGENT_INBOX_SECRET:-change-me-inbox-secret-0123456789abcdef}
+      AGENT_ADMIN_KEYS_0: ${AGENT_ADMIN_KEYS_0:-change-me-admin-key-0123456789abcdef}
+      AGENT_TOKENS_SECRETS_0: ${AGENT_TOKENS_SECRETS_0:-change-me-token-secret-0123456789abcdef}
+      AGENT_CMA_MODE: ${AGENT_CMA_MODE:-demo}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Only to try webhooks on one machine: deliveries to private addresses over plain http.
+      AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS: ${AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS:-false}
+      AGENT_WEBHOOKS_ALLOWPLAINHTTP: ${AGENT_WEBHOOKS_ALLOWPLAINHTTP:-false}
+    ports:
+      - "${AGENT_PUBLISH:-127.0.0.1:8090}:8090"
+    extra_hosts:
+      # So that a webhook receiver on this machine is host.docker.internal on Linux too.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      inbox:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://localhost:8090/actuator/health"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+
+volumes:
+  pgdata:

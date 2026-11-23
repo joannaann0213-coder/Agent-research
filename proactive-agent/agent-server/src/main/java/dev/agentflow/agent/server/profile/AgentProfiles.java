@@ -5,6 +5,7 @@ import dev.agentflow.agent.api.AgentProfileView;
 import dev.agentflow.agent.api.McpServerConfig;
 import dev.agentflow.agent.api.SandboxConfig;
 import dev.agentflow.agent.cma.AgentRef;
+import dev.agentflow.agent.cma.AgentSpec;
 import dev.agentflow.agent.cma.CmaException;
 import dev.agentflow.agent.cma.ManagedAgents;
 import dev.agentflow.agent.server.api.AgentException;
@@ -141,6 +142,18 @@ public class AgentProfiles {
         }
         return new Ready(appId, agentKey, current.config(), current.revision(),
                 new AgentRef(current.agentId(), current.agentVersion()), current.environmentId());
+    }
+
+    /**
+     * The configuration of the platform's agent {@code cmaAgentId}, from the profile that it was made
+     * for. The platform of the demo mode asks for it when a restart of the service made it forget the agent.
+     */
+    public Optional<AgentSpec> platformAgent(String cmaAgentId) {
+        return jdbc.sql(SELECT + " WHERE cma_agent_id = :agentId")
+                .param("agentId", cmaAgentId)
+                .query(AgentProfiles::row)
+                .optional()
+                .map(row -> ProfileSpec.of(row.appId(), row.agentKey(), row.config()).agent());
     }
 
     // ================================================================ the platform

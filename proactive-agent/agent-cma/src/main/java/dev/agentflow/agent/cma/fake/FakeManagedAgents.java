@@ -18,6 +18,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.EnumMap;
 import java.util.HashSet;
@@ -131,6 +132,8 @@ public final class FakeManagedAgents implements ManagedAgents {
     private AutoJudge autoJudge = (server, tool, input) -> Permission.ALLOW;
     private boolean interruptsHaveIds = true;
     private long nextId = 1;
+    /** Set in the demo mode of the service: finds the configuration of an agent that a restart made this platform forget. */
+    private Function<String, Optional<AgentSpec>> forgotten;
 
     public FakeManagedAgents() {
         this(Instant::now);
@@ -159,6 +162,29 @@ public final class FakeManagedAgents implements ManagedAgents {
             brain = FakeBrains.echo();
             autoJudge = (server, tool, input) -> Permission.ALLOW;
             interruptsHaveIds = true;
+            forgotten = null;
+        }
+    }
+
+    /**
+     * For the demo mode of the service, where this platform lives in the service's memory: it forgets
+     * everything when the service restarts, while the service's database still names what it made.
+     * With this set, an environment, agent, vault, credential or memory store that the platform is
+     * asked about and does not know is taken as one it made before the restart. An agent comes back
+     * with the configuration that {@code agents} finds for its id, and stays unknown when that finds
+     * none; the others come back empty. Sessions do not come back: the service replaces a session
+     * that the platform does not know.
+     */
+    public void restoreForgotten(Function<String, Optional<AgentSpec>> agents) {
+        synchronized (lock) {
+            this.forgotten = agents;
+        }
+    }
+
+    /** Ids from here on count from {@code first}, so that a platform made anew does not repeat the ids of one before it. */
+    public void startIdsAt(long first) {
+        synchronized (lock) {
+            this.nextId = first;
         }
     }
 
@@ -376,7 +402,7 @@ public final class FakeManagedAgents implements ManagedAgents {
     public AgentRef updateAgent(AgentRef current, AgentSpec spec) {
         synchronized (lock) {
             Fault fault = begin(Operation.UPDATE_AGENT, current.id(), spec);
-            List<AgentSpec> versions = agents.get(current.id());
+            List<AgentSpec> versions = known(current.id(), current.version());
             if (versions == null) {
                 throw CmaException.notFound("no such agent: " + current.id());
             }
@@ -397,7 +423,7 @@ public final class FakeManagedAgents implements ManagedAgents {
     public AgentRef getAgent(String agentId) {
         synchronized (lock) {
             Fault fault = begin(Operation.GET_AGENT, agentId, null);
-            List<AgentSpec> versions = agents.get(agentId);
+            List<AgentSpec> versions = known(agentId, 1);
             if (versions == null) {
                 throw CmaException.notFound("no such agent: " + agentId);
             }
@@ -421,6 +447,9 @@ public final class FakeManagedAgents implements ManagedAgents {
             require(spec.budgetUsd() == null || spec.budgetUsd().signum() > 0, "a budget is more than nothing");
             require(spec.memory().size() <= 8, "a session takes at most 8 memory stores");
             for (SessionSpec.MemoryMount mount : spec.memory()) {
+                if (!memoryStores.containsKey(mount.storeId()) && forgotten != null) {
+                    memoryStores.put(mount.storeId(), "made before a restart");
+                }
                 if (!memoryStores.containsKey(mount.storeId())) {
                     throw CmaException.notFound("no memory store " + mount.storeId());
                 }
@@ -709,6 +738,10 @@ public final class FakeManagedAgents implements ManagedAgents {
 
     private Vault vault(String vaultId) {
         Vault vault = vaults.get(vaultId);
+        if (vault == null && forgotten != null && vaultId != null) {
+            vault = new Vault("made before a restart", Map.of(), new LinkedHashMap<>());
+            vaults.put(vaultId, vault);
+        }
         if (vault == null) {
             throw CmaException.notFound("no vault " + vaultId);
         }
@@ -717,6 +750,11 @@ public final class FakeManagedAgents implements ManagedAgents {
 
     private StoredCredential credential(String vaultId, String credentialId) {
         StoredCredential stored = vault(vaultId).credentials().get(credentialId);
+        if (stored == null && forgotten != null && credentialId != null) {
+            // Its server is not known any more; an address that matches no server stands in for it.
+            stored = new StoredCredential(credentialId, "https://made-before-a-restart.invalid/", null, false);
+            vault(vaultId).credentials().put(credentialId, stored);
+        }
         if (stored == null) {
             throw CmaException.notFound("no credential " + credentialId + " in vault " + vaultId);
         }
@@ -893,14 +931,33 @@ public final class FakeManagedAgents implements ManagedAgents {
 
     private EnvironmentSpec environment(String environmentId) {
         EnvironmentSpec environment = environments.get(environmentId);
+        if (environment == null && forgotten != null && environmentId != null) {
+            environment = new EnvironmentSpec("made before a restart", null, List.of(), true, true, Map.of());
+            environments.put(environmentId, environment);
+        }
         if (environment == null) {
             throw CmaException.notFound("no such environment: " + environmentId);
         }
         return environment;
     }
 
+    /** The versions of an agent. One that a restart made this platform forget comes back, at {@code version}, if it can. */
+    private List<AgentSpec> known(String agentId, int version) {
+        List<AgentSpec> versions = agents.get(agentId);
+        if (versions != null || forgotten == null || version < 1) {
+            return versions;
+        }
+        Optional<AgentSpec> spec = forgotten.apply(agentId);
+        if (spec.isEmpty()) {
+            return null;
+        }
+        versions = new ArrayList<>(Collections.nCopies(version, spec.get()));
+        agents.put(agentId, versions);
+        return versions;
+    }
+
     private AgentSpec version(AgentRef agent) {
-        List<AgentSpec> versions = agents.get(agent.id());
+        List<AgentSpec> versions = known(agent.id(), agent.version());
         if (versions == null || agent.version() < 1 || agent.version() > versions.size()) {
             throw CmaException.notFound("no such agent version: " + agent);
         }
