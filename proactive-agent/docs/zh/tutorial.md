@@ -15,7 +15,7 @@
 | Claude Managed Agents | Anthropic 运行 agent 及其工具的平台。演示模式下由 `agent-server` 里的脚本代替 |
 
 服务以演示模式启动，不需要任何 key：agent 会复述用户说的话，并把每个事件告诉用户。这已经足够开发和测试接入。真实模式用 Anthropic API key 把 Claude
-接到同一套 API 后面（[第 10 步](#10-切换到真实模式)）。
+接到同一套 API 后面（[第 11 步](#11-切换到真实模式)）。
 
 ## 1. 启动服务
 
@@ -176,7 +176,8 @@ curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
 
 `message_id` 是你给这条消息的 id：重复发送没有副作用，所以超时后可以放心重试。每个 `conversation_id` 是一个独立的会话，不指定时是 `default`。
 
-回复，以及用户身上发生的其他一切，都是一条更新：`message.created`、`action.created`、`action.resolved` 或 `run.failed`。后端有两种方式拿到它们。
+回复，以及用户身上发生的其他一切，都是一条更新：`message.created`、`action.created`、`action.resolved` 或 `run.failed`；用了主 agent，还有 `task.created` 和
+`task.updated`。后端有两种方式拿到它们。
 
 | 方式 | 怎么做 | 适合 |
 | --- | --- | --- |
@@ -268,7 +269,7 @@ export function followUser(userId, getToken, after, onUpdate) {
     try {
       const { ticket } = await call(await getToken(), "POST", `/v1/users/${userId}/stream-tickets`);
       stream = new EventSource(`${API}/v1/users/${userId}/stream?ticket=${encodeURIComponent(ticket)}&after=${after}`);
-      for (const type of ["message.created", "action.created", "action.resolved", "run.failed"]) {
+      for (const type of ["message.created", "action.created", "action.resolved", "task.created", "task.updated", "run.failed"]) {
         stream.addEventListener(type, (event) => {
           const update = JSON.parse(event.data);
           after = update.seq;
@@ -353,7 +354,79 @@ curl -s -X POST $API/v1/users/u-1001/schedules -H "Authorization: Bearer $KEY" \
        "cron": "0 8 * * 1-5", "time_zone": "Asia/Shanghai", "subject": "orders"}'
 ```
 
-## 10. 切换到真实模式
+## 10. 把工作交给 worker 的主 agent
+
+到这里为止，每个会话、你的事件的每个主题，各有自己的 agent session。主 agent 则是在它所服务的会话里得知用户一切的那一个 agent：用户写的话、你的事件和定时计划、它的 worker
+的汇报。每一次它自己判断是行动、告诉用户，还是保持安静；耗时的工作交给 worker，也就是各有自己 session 的 agent。它如何工作见[主 agent 与 worker](main-agent.md)。
+
+worker 就是普通的 agent；一个 agent 列出自己的 worker，就成了主 agent。把下面的内容存为 `main-agent.json`：
+
+```json
+{
+  "name": "Shop assistant",
+  "instructions": "You look after the customers of My Shop. Hand research on orders to the research worker.",
+  "coordinator": {
+    "workers": [
+      {"role": "research", "agent": "researcher", "description": "Looks things up in the order system and reports what it found.", "start": "ask"}
+    ]
+  }
+}
+```
+
+```bash
+curl -s -X PUT $API/v1/agents/researcher -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Researcher", "instructions": "You look things up in the order system and report what you found."}'
+curl -s -X PUT $API/v1/agents/default -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d @main-agent.json
+```
+
+用户要求的事直接开始。演示模式下，脚本会把 "task:" 后面的内容交出去：
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"conversation_id": "support", "text": "task: find out why order 1234 is late"}'
+```
+
+稍后任务就出现了，worker 查到的结果会作为一条通知回到用户那里：
+
+```bash
+curl -s "$API/v1/users/u-1001/tasks?status=all" -H "Authorization: Bearer $KEY"
+```
+
+主 agent 自己起意的事要等用户。把事件发到用户看得到的那个会话；演示模式下，事件 data 里有一段 `task` 文字，主 agent 就会提出要做这件事：
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/events -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "order.delayed", "subject": "order-1234", "conversation_id": "support",
+       "data": {"task": "find a new delivery slot for order 1234"}}'
+```
+
+这个提议是一个状态为 `proposed` 的任务，同时是会话里一条 `kind: proposal` 的消息，用 `task_id` 指明是哪个任务。用户确认之前，什么都不会运行，agent
+平台上也不产生任何费用。
+
+```bash
+curl -s "$API/v1/users/u-1001/tasks?status=proposed" -H "Authorization: Bearer $KEY"
+```
+
+| 用户 | 你的应用 |
+| --- | --- |
+| 确认 | `POST /v1/users/{user_id}/tasks/{task_id}/start`；或者用户在会话里让 agent 去做 |
+| 拒绝 | `POST /v1/users/{user_id}/tasks/{task_id}/close` |
+| 让这类工作以后自己开始 | `PUT /v1/users/{user_id}/grants/{agent_key}/{role}`，用 `DELETE` 收回 |
+| 不理会 | 3 天后任务被关闭 |
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/tasks/TASK_ID/start -H "Authorization: Bearer $KEY"
+curl -s -X PUT $API/v1/users/u-1001/grants/default/research -H "Authorization: Bearer $KEY"
+```
+
+worker 的汇报回到主 agent，由它决定告诉用户什么。你的应用通过 `task.created` 和 `task.updated` 这两种更新跟踪任务。
+`examples/agent-api/main-agent.sh` 会一步步把这些都跑一遍。
+
+## 11. 切换到真实模式
 
 需要一个开通了 Claude Managed Agents 的 Anthropic API key。真实模式不接受文档里的示例密钥，所以先生成你自己的：
 
@@ -392,8 +465,9 @@ scripts/agent-live-smoke.sh --api http://localhost:8090 --admin-key "$ADMIN"
 | --- | --- |
 | 构建在 Maven 下载依赖时停住 | Docker 构建需要访问 Maven Central；在代理后面时，要为 Docker 配置代理 |
 | 8090 端口被占用 | 在 `.env` 里设置 `AGENT_PUBLISH=127.0.0.1:18090`，改用这个端口 |
-| agent 服务启动失败：“live mode needs secrets of your own” | 按[第 10 步](#10-切换到真实模式)在 `.env` 里设置你自己的密钥 |
+| agent 服务启动失败：“live mode needs secrets of your own” | 按[第 11 步](#11-切换到真实模式)在 `.env` 里设置你自己的密钥 |
 | `401 unauthenticated` | 凭据错误、已吊销或已过期：用户 token 默认只有 15 分钟 |
+| 主 agent 提出要做一件事，之后没有动静 | 任务在等用户：把 `proposal` 消息展示出来，用户确认时调用 `POST .../tasks/{task_id}/start`，见[第 10 步](#10-把工作交给-worker-的主-agent) |
 | 一直没有回复 | 看 `docker compose logs agent`；`run.failed` 更新会说明一轮为什么失败。真实模式下检查 key 和模型 |
 | 演示模式里建的应用在真实模式下不回复 | 登记一个新应用，或者从空数据库重新开始 |
 | `PUT /v1/webhook` 返回 `400` | 地址不是 https、不是公网地址，或者域名解析不到；要在本机试，见[第 6 步](#在本机试-webhook) |

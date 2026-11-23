@@ -18,7 +18,7 @@ endpoint; [Agent service](agent-service.md) explains how the service works insid
 
 The service starts in demo mode, which needs no key: the agent repeats what users say and tells them
 about every event. That is enough to build and test an integration. Live mode puts Claude behind the
-same API, with an Anthropic API key ([step 10](#10-switch-to-live-mode)).
+same API, with an Anthropic API key ([step 11](#11-switch-to-live-mode)).
 
 ## 1. Start the service
 
@@ -197,7 +197,8 @@ curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
 timeout. Each `conversation_id` is a conversation of its own, `default` unless named.
 
 The reply, and everything else that happens for a user, is an update: `message.created`,
-`action.created`, `action.resolved` or `run.failed`. Your back end gets them one of two ways.
+`action.created`, `action.resolved` or `run.failed`, and with a main agent `task.created` and
+`task.updated`. Your back end gets them one of two ways.
 
 | Way | How | Good for |
 | --- | --- | --- |
@@ -296,7 +297,7 @@ export function followUser(userId, getToken, after, onUpdate) {
     try {
       const { ticket } = await call(await getToken(), "POST", `/v1/users/${userId}/stream-tickets`);
       stream = new EventSource(`${API}/v1/users/${userId}/stream?ticket=${encodeURIComponent(ticket)}&after=${after}`);
-      for (const type of ["message.created", "action.created", "action.resolved", "run.failed"]) {
+      for (const type of ["message.created", "action.created", "action.resolved", "task.created", "task.updated", "run.failed"]) {
         stream.addEventListener(type, (event) => {
           const update = JSON.parse(event.data);
           after = update.seq;
@@ -388,7 +389,87 @@ curl -s -X POST $API/v1/users/u-1001/schedules -H "Authorization: Bearer $KEY" \
        "cron": "0 8 * * 1-5", "time_zone": "Asia/Shanghai", "subject": "orders"}'
 ```
 
-## 10. Switch to live mode
+## 10. A main agent that hands work to workers
+
+So far, each conversation and each subject of your events had an agent session of its own. A main
+agent is one agent that hears of everything about a user, in the conversation it serves: what the
+user writes, your events and schedules, and what its workers report. Each time it decides whether to
+act, to tell the user, or to stay quiet, and it hands work that takes long to workers, which are
+agents with a session of their own. [Main agent and workers](main-agent.md) explains how it works.
+
+A worker is an ordinary agent, and an agent becomes a main agent by naming its workers. Save this as
+`main-agent.json`:
+
+```json
+{
+  "name": "Shop assistant",
+  "instructions": "You look after the customers of My Shop. Hand research on orders to the research worker.",
+  "coordinator": {
+    "workers": [
+      {"role": "research", "agent": "researcher", "description": "Looks things up in the order system and reports what it found.", "start": "ask"}
+    ]
+  }
+}
+```
+
+```bash
+curl -s -X PUT $API/v1/agents/researcher -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Researcher", "instructions": "You look things up in the order system and report what you found."}'
+curl -s -X PUT $API/v1/agents/default -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d @main-agent.json
+```
+
+What the user asks for starts at once. In demo mode the script hands on whatever follows "task:":
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"conversation_id": "support", "text": "task: find out why order 1234 is late"}'
+```
+
+A moment later the task is there, and what its worker found comes back to the user as a
+notification:
+
+```bash
+curl -s "$API/v1/users/u-1001/tasks?status=all" -H "Authorization: Bearer $KEY"
+```
+
+What the main agent begins by itself waits for the user. Send the event to the conversation that the
+user sees; in demo mode a text `task` in its data makes the main agent offer that work:
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/events -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "order.delayed", "subject": "order-1234", "conversation_id": "support",
+       "data": {"task": "find a new delivery slot for order 1234"}}'
+```
+
+The offer is a task with the status `proposed`, and a message of the conversation with
+`kind: proposal` that names the task in `task_id`. Nothing runs, and nothing is spent on the agent
+platform, until the user confirms.
+
+```bash
+curl -s "$API/v1/users/u-1001/tasks?status=proposed" -H "Authorization: Bearer $KEY"
+```
+
+| The user | Your application |
+| --- | --- |
+| Confirms | `POST /v1/users/{user_id}/tasks/{task_id}/start`; or the user tells the agent in the conversation to go ahead |
+| Declines | `POST /v1/users/{user_id}/tasks/{task_id}/close` |
+| Lets this kind of work start by itself from now on | `PUT /v1/users/{user_id}/grants/{agent_key}/{role}`, and `DELETE` to take it back |
+| Does nothing | The task is closed after 3 days |
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/tasks/TASK_ID/start -H "Authorization: Bearer $KEY"
+curl -s -X PUT $API/v1/users/u-1001/grants/default/research -H "Authorization: Bearer $KEY"
+```
+
+The worker's report goes back to the main agent, which decides what to tell the user. Your
+application follows a task through the updates `task.created` and `task.updated`.
+`examples/agent-api/main-agent.sh` runs all of this, step by step.
+
+## 11. Switch to live mode
 
 You need an Anthropic API key with access to Claude Managed Agents. Live mode does not start with the
 example secrets of the documentation, so make secrets of your own:
@@ -435,8 +516,9 @@ platform keeps the history of every session until it is deleted, and this servic
 | --- | --- |
 | The build stops while Maven downloads | Docker's build needs Maven Central; behind a proxy, set it up for Docker |
 | Port 8090 is taken | Set `AGENT_PUBLISH=127.0.0.1:18090` in `.env`, and call that port |
-| The agent service does not start: "live mode needs secrets of your own" | Set your own secrets in `.env`, as in [step 10](#10-switch-to-live-mode) |
+| The agent service does not start: "live mode needs secrets of your own" | Set your own secrets in `.env`, as in [step 11](#11-switch-to-live-mode) |
 | `401 unauthenticated` | The credential is wrong, revoked or expired: a user token lasts 15 minutes unless asked otherwise |
+| The main agent offered to do something, and nothing happens | The task waits for the user: show the `proposal` message, and call `POST .../tasks/{task_id}/start` when they confirm, as in [step 10](#10-a-main-agent-that-hands-work-to-workers) |
 | No reply comes | `docker compose logs agent`; a `run.failed` update says why a turn failed. In live mode, check the key and the model |
 | An application made in demo mode does not answer in live mode | Register a new application, or start again from an empty database |
 | `PUT /v1/webhook` answers `400` | The address is not https, not public, or its host cannot be found; see [step 6](#try-a-webhook-on-your-machine) to try one locally |
