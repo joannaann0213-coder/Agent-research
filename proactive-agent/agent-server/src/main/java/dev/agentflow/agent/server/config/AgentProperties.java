@@ -754,6 +754,12 @@ public class AgentProperties {
         /** How much of a worker's report is kept and passed on, in characters. */
         private int maxReport = 16000;
 
+        /** How many tasks of one main agent's conversation may wait for the user's confirmation at a time. */
+        private int maxProposed = 5;
+
+        /** How long a task waits for the user's confirmation. After that it can no longer be started. */
+        private Duration proposalTtl = Duration.ofDays(3);
+
         public String getLane() {
             return lane;
         }
@@ -792,6 +798,22 @@ public class AgentProperties {
 
         public void setMaxReport(int maxReport) {
             this.maxReport = maxReport;
+        }
+
+        public int getMaxProposed() {
+            return maxProposed;
+        }
+
+        public void setMaxProposed(int maxProposed) {
+            this.maxProposed = maxProposed;
+        }
+
+        public Duration getProposalTtl() {
+            return proposalTtl;
+        }
+
+        public void setProposalTtl(Duration proposalTtl) {
+            this.proposalTtl = proposalTtl;
         }
     }
 

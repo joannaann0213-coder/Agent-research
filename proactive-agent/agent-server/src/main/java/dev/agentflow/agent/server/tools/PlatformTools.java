@@ -25,6 +25,7 @@ public final class PlatformTools {
     public static final String SCHEDULE_FOLLOWUP = "schedule_followup";
 
     public static final String DELEGATE_TASK = "delegate_task";
+    public static final String START_TASK = "start_task";
     public static final String MESSAGE_WORKER = "message_worker";
     public static final String LIST_TASKS = "list_tasks";
     public static final String CLOSE_TASK = "close_task";
@@ -63,6 +64,12 @@ public final class PlatformTools {
         StringBuilder roles = new StringBuilder();
         for (WorkerConfig worker : workers) {
             roles.append("\n- ").append(worker.role()).append(": ").append(worker.description());
+            // What the application decided for the role, where it is not the usual rule.
+            if (WorkerConfig.ALWAYS_ASK.equals(worker.startRule())) {
+                roles.append(" (The user confirms every task of this role before it starts.)");
+            } else if (WorkerConfig.ALWAYS_ALLOW.equals(worker.startRule())) {
+                roles.append(" (Its tasks start without the user's confirmation.)");
+            }
         }
         ObjectNode delegate = (ObjectNode) Json.STORED.readTree("""
                 {
@@ -79,6 +86,14 @@ public final class PlatformTools {
                     "instructions": {
                       "type": "string",
                       "description": "What the worker is to do, everything it needs to know to do it, and what you want back. At most 8000 characters."
+                    },
+                    "summary": {
+                      "type": "string",
+                      "description": "For the user: what you want to do and why, in a sentence or two. It is what they are shown when the task has to be confirmed, so give it whenever you delegate without having been asked. At most 500 characters."
+                    },
+                    "ask_first": {
+                      "type": "boolean",
+                      "description": "True to have the user confirm the task before it starts, also where you could start it yourself. Use it when you are not sure that the user wants it."
                     }
                   },
                   "required": ["role", "title", "instructions"],
@@ -95,8 +110,28 @@ public final class PlatformTools {
                         needs into `instructions`. You do not wait for the worker. End your turn as usual; \
                         when the worker has something for you, the service wakes you and read_events \
                         gives you its report. If the user is waiting for an answer, tell them what you \
-                        have started. The roles you can delegate to:""" + roles,
+                        have started. A task that the user asked you for starts at once. A task that you \
+                        begin on your own initiative, in a turn that the user did not start, may have to \
+                        be confirmed by the user first: the result says so, the user is shown your \
+                        `summary` in the application, and the task starts when they confirm it. The \
+                        roles you can delegate to:""" + roles,
                         delegate),
+                new AgentSpec.CustomTool(START_TASK, """
+                        Starts a task that waits for the user's confirmation, when the user has told you \
+                        in this conversation to go ahead with it. It works only in a turn that the user \
+                        began with a message: in the background, the user confirms in the application.""",
+                        Json.STORED.readTree("""
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "task_id": {
+                                      "type": "string",
+                                      "description": "The task, as delegate_task or list_tasks named it."
+                                    }
+                                  },
+                                  "required": ["task_id"],
+                                  "additionalProperties": false
+                                }""")),
                 new AgentSpec.CustomTool(MESSAGE_WORKER, """
                         Sends the worker of a task you delegated a further message: the answer to a \
                         question it asked in its report, a correction, or more work on the same task. The \
@@ -119,8 +154,9 @@ public final class PlatformTools {
                                   "additionalProperties": false
                                 }""")),
                 new AgentSpec.CustomTool(LIST_TASKS, """
-                        Returns the tasks you have delegated that are not closed, each with its state and \
-                        the beginning of the worker's latest report. Use it when you are not sure what is \
+                        Returns the tasks you have delegated that are not closed, each with its state \
+                        (`proposed` while it waits for the user's confirmation) and the beginning of the \
+                        worker's latest report. Use it when you are not sure what is \
                         under way, for example in a new session, or before you tell the user how things \
                         stand.""",
                         Json.STORED.readTree("""
@@ -131,8 +167,9 @@ public final class PlatformTools {
                                 }""")),
                 new AgentSpec.CustomTool(CLOSE_TASK, """
                         Closes a task: its work is done, or no longer wanted. A worker that is still \
-                        working on it is stopped, and nothing more comes from it. Close a task once you \
-                        have what you wanted from it; only so many can be open at a time.""",
+                        working on it is stopped, and nothing more comes from it. A task that still waits \
+                        for the user's confirmation is withdrawn. Close a task once you have what you \
+                        wanted from it; only so many can be open at a time.""",
                         Json.STORED.readTree("""
                                 {
                                   "type": "object",

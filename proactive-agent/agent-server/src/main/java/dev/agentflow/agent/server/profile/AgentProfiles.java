@@ -64,7 +64,9 @@ public class AgentProfiles {
     private static final Set<String> APPROVALS = Set.of("always_ask", "auto", "always_allow");
     private static final Set<String> APPROVERS = Set.of("app", "user");
     private static final int MAX_INSTRUCTIONS = 50_000;
-    private static final Pattern ROLE = Pattern.compile("[a-z0-9][a-z0-9_-]{0,31}");
+    /** What a worker's role is named like. The same names are used where a user allows a role to start unasked. */
+    public static final Pattern ROLE = Pattern.compile("[a-z0-9][a-z0-9_-]{0,31}");
+    private static final Set<String> STARTS = Set.of(WorkerConfig.ASK, WorkerConfig.ALWAYS_ASK, WorkerConfig.ALWAYS_ALLOW);
     private static final int MAX_WORKERS = 10;
     private static final int MAX_ROLE_DESCRIPTION = 500;
     private static final int MAX_ACTIVE_TASKS = 20;
@@ -322,7 +324,10 @@ public class AgentProfiles {
                 throw AgentException.invalid("worker role " + worker.role() + " needs a description of at most "
                         + MAX_ROLE_DESCRIPTION + " characters: the main agent reads it to decide whom to give a task");
             }
-            normalised.add(new WorkerConfig(worker.role(), worker.agent(), worker.description().strip()));
+            if (worker.start() != null && !STARTS.contains(worker.start())) {
+                throw AgentException.invalid("the start of worker role " + worker.role() + " is one of ask, always_ask, always_allow");
+            }
+            normalised.add(new WorkerConfig(worker.role(), worker.agent(), worker.description().strip(), worker.startRule()));
         }
         Integer active = coordinator.maxActiveTasks();
         if (active != null && (active < 1 || active > MAX_ACTIVE_TASKS)) {

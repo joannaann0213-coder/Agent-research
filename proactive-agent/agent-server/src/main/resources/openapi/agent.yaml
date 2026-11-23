@@ -44,6 +44,11 @@ tags:
       The work a user's main agent has handed to workers. A main agent is an agent with a
       `coordinator` block: everything about a user reaches its one session, and it delegates what
       takes long to other agents, each working in a session of its own and reporting back to it.
+
+      What the user asks the main agent for starts at once. What the main agent begins on its own
+      initiative waits for the user's confirmation, as a task with the status `proposed`, unless
+      the application lets the role start unasked (`start` of the worker) or the user has given a
+      standing authorisation for the role (a grant).
   - name: Updates
     description: |
       What happened for a user: a message, an action that waits or was decided, a task that a main
@@ -163,6 +168,7 @@ paths:
                       - role: researcher
                         agent: research
                         description: Looks things up in the order system and the carriers' sites, and reports what it found.
+                        start: ask
                     max_active_tasks: 4
       responses:
         '200':
@@ -766,11 +772,12 @@ paths:
       summary: What the main agent has handed to workers
       description: |
         Returns the user's tasks, newest first, at most 200: the pieces of work that a main agent
-        delegated to workers. A task is `queued` while its worker has not taken up what the main
-        agent last sent, `working` while a turn of the worker is under way, `idle` when the worker
-        has reported and waits, and `closed` when it is over.
+        delegated to workers. A task is `proposed` while it waits for the user's confirmation and
+        has not started, `queued` while its worker has not taken up what the main agent last sent,
+        `working` while a turn of the worker is under way, `idle` when the worker has reported and
+        waits, and `closed` when it is over.
 
-        Nobody but a main agent starts a task: it does when it finds, in a conversation or because
+        Nobody but a main agent makes a task: it does when it finds, in a conversation or because
         of something that happened, that a piece of work is better done by a worker. An API key or
         the user's own token may call this; only an API key gets `report`, the beginning of what
         each task's worker last reported.
@@ -782,10 +789,12 @@ paths:
             type: string
         - name: status
           in: query
-          description: '`open` (the default) leaves the closed tasks out; `all` returns them too.'
+          description: |
+            `open` (the default) leaves the closed tasks out; `proposed` returns only the tasks that
+            wait for the user's confirmation; `all` returns every task.
           schema:
             type: string
-            enum: [open, all]
+            enum: [open, proposed, all]
       responses:
         '200':
           description: The tasks, newest first.
@@ -851,6 +860,9 @@ paths:
         itself are cancelled. The main agent is told that the task was closed, and by whom. Closing
         a task that is closed already changes nothing.
 
+        Closing a task that waits for the user's confirmation declines it: it never starts, and the
+        main agent is told that it was declined.
+
         An API key or the user's own token may call this, so that users can stop what the agent does
         for them.
       responses:
@@ -868,6 +880,151 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/tasks/{task_id}/start:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [Tasks]
+      operationId: startTask
+      summary: Confirm a task that waits for it
+      description: |
+        Confirms a `proposed` task, so that its worker starts on it. The task is `queued` from then
+        on, and `authorized_by` says who confirmed it: `user` for the user's own token, `app` for an
+        API key. The main agent is not woken by the confirmation; the worker's report wakes it.
+        Confirming a task that has started already changes nothing.
+
+        A task waits for a confirmation until `expires_at`. After that it is closed, and confirming
+        it is a 409, as it is for a task that was closed for any other reason.
+
+        To decline a task, close it.
+      responses:
+        '200':
+          description: The task, started.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: '`conflict`: the task is closed, or waited too long for a confirmation.'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/grants:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Tasks]
+      operationId: listGrants
+      summary: What the user's main agents may start unasked
+      description: |
+        Returns the user's standing authorisations, by main agent and role. With one, the main
+        agent starts the tasks of that role on its own initiative without asking the user each
+        time; without one, such a task waits for the user's confirmation. An API key or the user's
+        own token may call this.
+      responses:
+        '200':
+          description: The authorisations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/grants/{agent_key}/{role}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - name: agent_key
+        in: path
+        required: true
+        description: The key of the main agent.
+        schema:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'
+      - name: role
+        in: path
+        required: true
+        description: A role of the main agent's list of workers.
+        schema:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,31}$'
+    put:
+      tags: [Tasks]
+      operationId: grantRole
+      summary: Let the main agent start tasks of a role unasked
+      description: |
+        Gives the user's standing authorisation for a role: from now on the main agent starts the
+        tasks of that role for this user without asking each time. It does not start the tasks
+        that wait for a confirmation already; confirm those. Giving an authorisation that is there
+        already changes nothing.
+
+        The request has no body. An API key or the user's own token may call this: the
+        authorisation is the user's to give, and the application can give it for them. It is a 400
+        for a role whose `start` is `always_ask`, for which the application allows none.
+      responses:
+        '200':
+          description: The authorisation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+    delete:
+      tags: [Tasks]
+      operationId: revokeGrant
+      summary: Take a standing authorisation back
+      description: |
+        From now on the main agent's own tasks of the role wait for the user's confirmation again.
+        Tasks that have started go on. Taking back an authorisation that is not there changes
+        nothing. An API key or the user's own token may call this.
+      responses:
+        '204':
+          description: Taken back.
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '429':
           $ref: '#/components/responses/RateLimited'
         default:
@@ -1703,6 +1860,16 @@ components:
           minLength: 1
           maxLength: 500
           description: What this worker is good for. The main agent reads it when it decides whom to give a task.
+        start:
+          type: string
+          enum: [ask, always_ask, always_allow]
+          description: |
+            When a task of this role may start. `ask`, which it is when absent: what the user asks
+            for in a conversation starts at once, and a task that the main agent begins on its own
+            initiative waits for the user's confirmation, unless the user has given a standing
+            authorisation for the role. `always_ask`: every task of the role waits for the user's
+            confirmation, and no standing authorisation is possible. `always_allow`: every task
+            starts at once.
 
     CoordinatorConfig:
       type: object
@@ -2222,7 +2389,7 @@ components:
 
     TaskView:
       type: object
-      description: A piece of work that a main agent handed to a worker.
+      description: A piece of work that a main agent handed to a worker, or proposes to hand to one.
       required: [task_id, conversation_id, role, agent, title, status, created_at, updated_at]
       properties:
         task_id:
@@ -2239,15 +2406,34 @@ components:
         title:
           type: string
           description: A short name, as the main agent gave it.
+        summary:
+          type: string
+          description: |
+            What the main agent wants to do and why, written for the user. Always there for a task
+            that waits for a confirmation: it is what the user decides on.
         status:
           type: string
-          enum: [queued, working, idle, closed]
+          enum: [proposed, queued, working, idle, closed]
+          description: '`proposed` while the task waits for the user''s confirmation and has not started.'
+        authorized_by:
+          type: string
+          enum: [conversation, user, app, grant, policy]
+          description: |
+            Why the task was allowed to start. `conversation`: the main agent delegated it, or
+            started it, in a turn that the user began. `user`, `app`: the user's own client, or the
+            application, confirmed it. `grant`: the user's standing authorisation for the role.
+            `policy`: the application lets the role start unasked. Absent while the task waits for
+            a confirmation, and for one that was closed before it got one.
+        expires_at:
+          type: string
+          format: date-time
+          description: For a task that waits for a confirmation, until when it can be given.
         closed_by:
           type: string
           enum: [agent, user, app, service]
           description: |
             For a closed task. `agent` is the main agent; `service` closes a task that nobody had
-            touched for too long.
+            touched, or confirmed, for too long.
         closed_reason:
           type: string
         report:
@@ -2278,6 +2464,36 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/TaskView'
+
+    GrantView:
+      type: object
+      description: |
+        A user's standing authorisation: the main agent may start the tasks of one role on its own
+        initiative, without asking the user each time.
+      required: [agent, role, granted_by, created_at]
+      properties:
+        agent:
+          type: string
+          description: The key of the main agent.
+        role:
+          type: string
+          description: The role of its list of workers.
+        granted_by:
+          type: string
+          enum: [user, app]
+          description: '`user` when the user''s own client gave it, `app` when the application did for them.'
+        created_at:
+          type: string
+          format: date-time
+
+    GrantPage:
+      type: object
+      required: [grants]
+      properties:
+        grants:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantView'
 
     OAuthTokens:
       type: object

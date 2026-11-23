@@ -133,7 +133,7 @@ examples/agent-api/quickstart.sh
 | [测试](docs/zh/testing.md) | 怎么运行测试，以及每一项验收由哪个测试证明 |
 | [Agent 服务](docs/zh/agent-service.md) | Agent 服务如何工作、出了问题怎么办、怎样运行 |
 | [Agent API](docs/zh/agent-api.md) | 写给应用的指南：概念、鉴权、会话、事件、动作、定时计划、更新、凭据 |
-| [主 agent 与 worker](docs/zh/main-agent.md) | 得知用户一切并把工作交给 worker agent 的那个 agent：回顾、决策及其理由、它如何工作 |
+| [主 agent 与 worker](docs/zh/main-agent.md) | 得知用户一切并把工作交给 worker agent 的那个 agent：回顾、决策及其理由、它如何工作，以及谁让任务开始：用户的确认或长期授权 |
 | [教程](docs/zh/tutorial.md) | 用 Docker 运行服务，一步步接入应用：后端、用户端、业务事件、审批、真实模式、上线 |
 
 ## 配置

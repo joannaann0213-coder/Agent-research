@@ -75,8 +75,14 @@ it into a run like any other input.
 Workers run on the Inbox's lane `batch`, so that a worker's long turn does not hold up what wakes
 the main agent; the cap of that lane is how many workers of one user run at a time. A worker cannot
 reach the user: what it writes last in a turn is its report, which wakes the main agent, and when
-its turn fails the service writes a note in its place. [Main agent and workers](main-agent.md) has
-the design, the tools and the reasons.
+its turn fails the service writes a note in its place.
+
+A task that the main agent begins on its own initiative does not start by itself. It waits, as
+`proposed`, for the user's confirmation, unless the rule of its role (`start`) or the user's
+standing authorisation lets it start. A task that waits has no session and no event in the Inbox;
+confirming it queues the event that wakes the worker.
+[Main agent and workers](main-agent.md#who-lets-a-task-start) has the rules, and the rest of that
+document the design, the tools and the reasons.
 
 ## When something breaks
 
@@ -190,6 +196,7 @@ Every setting is under `agent.*` and can be set by environment variable.
 | `agent.worker.claim-wait` | `5s` | How long a claim waits in the Inbox for work |
 | `agent.tasks.lane` | `batch` | The Inbox lane on which the workers of a main agent run: `batch` or `background` |
 | `agent.tasks.max-open`, `idle-ttl` | `20`, `7d` | Open tasks per main agent's conversation, and how long an idle task is kept before it is closed to make room |
+| `agent.tasks.max-proposed`, `proposal-ttl` | `5`, `3d` | Tasks per main agent's conversation that may wait for the user's confirmation, and for how long one waits |
 | `AGENT_CORS_ALLOWEDORIGINS` | none | Origins of web pages that may call the API from the browser, comma-separated |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`, `false` | Webhooks to private addresses and over plain http; only to try them on one machine |
 

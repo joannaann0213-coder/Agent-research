@@ -29,7 +29,8 @@ curl -s http://localhost:8090/openapi.yaml -o agent-api.yaml
 | 事件 | 应用系统里发生的、和某个用户有关的事。同一个 `subject` 的事件由一个记得之前事件的 agent 处理 |
 | 动作 | agent 等人来决定的事：对一次工具调用的审批，或者向用户提的问题 |
 | 定时计划 | agent 在某个时间要做的事：由应用设置，或者是 agent 给自己设的跟进 |
-| 任务 | 主 agent 交给 worker 的一件工作；worker 是应用的另一个 agent，有自己的 session |
+| 任务 | 主 agent 交给 worker 的一件工作；worker 是应用的另一个 agent，有自己的 session。主 agent 自己起意的任务先要等用户确认 |
+| 长期授权 | 用户给出的长期授权：他的主 agent 可以自己开始某个角色的任务，不用每次都问 |
 | 更新 | 用户身上发生的、应用可能想知道的事：一条消息、一个动作、一次失败。可以轮询、订阅流，或者推送到 webhook |
 | 凭据 | MCP 服务器放行 agent 所需的东西。保存在 agent 平台的 vault 里，本服务从不保存 |
 
@@ -41,7 +42,7 @@ curl -s http://localhost:8090/openapi.yaml -o agent-api.yaml
 | --- | --- | --- | --- |
 | 管理员 key | 至少 32 个字符，来自配置 | 服务的运维方 | 只能用 `/v1/admin`：应用和应用的 API key |
 | API key | `afk.<key_id>.<secret>` | 应用的后端 | 应用的一切，针对所有用户 |
-| 用户 token | `aft.<payload>.<signature>` | 某个用户的客户端，从应用后端拿到 | 这个用户的消息、动作、更新、定时计划、任务和凭据；不能写事件，不能改 agent |
+| 用户 token | `aft.<payload>.<signature>` | 某个用户的客户端，从应用后端拿到 | 这个用户的消息、动作、更新、定时计划、任务、长期授权和凭据；不能写事件，不能改 agent |
 
 API key 只在创建时显示一次，存储的是哈希。用户 token 默认 15 分钟有效，最长一小时；后端用 `POST /v1/users/{user_id}/tokens` 签发，对同一路径调用 `DELETE` 吊销该用户的所有 token。网页和本服务不在同一个源时，把网页的源加进
 `AGENT_CORS_ALLOWEDORIGINS` 之后就可以使用用户 token。
@@ -225,9 +226,9 @@ curl -s -X PUT $API/v1/users/u42/credentials/notes -H "Authorization: Bearer $KE
 | `sandbox` | 带内置工具（shell、文件、网页搜索与抓取）的容器及其网络：`none`、`limited` 到 `allowed_hosts`，或 `unrestricted` |
 | `session_budget_usd` | 一个 session 最多能花多少钱；花完的会话在新的 session 里继续 |
 | `memory` | `per_user`：agent 跨 session 记住每个用户，笔记存在沙箱的文件里，因此必须开启沙箱。会话里写，后台只读 |
-| `coordinator` | 让这个 agent 成为主 agent。`workers` 列出它可以把工作交给谁：每一项有 `role`、扮演这个角色的 `agent` 的 key，以及告诉主 agent 这个角色用来做什么的 `description` |
+| `coordinator` | 让这个 agent 成为主 agent。`workers` 列出它可以把工作交给谁：每一项有 `role`、扮演这个角色的 `agent` 的 key、告诉主 agent 这个角色用来做什么的 `description`，需要时还有 `start`，规定这个角色的任务何时可以开始 |
 
-服务给每个 agent 四个自带工具：`read_events`、`notify_user`、`ask_user` 和 `schedule_followup`；主 agent 另有四个用来交出工作的工具：`delegate_task`、`message_worker`、`list_tasks`
+服务给每个 agent 四个自带工具：`read_events`、`notify_user`、`ask_user` 和 `schedule_followup`；主 agent 另有五个用来交出工作的工具：`delegate_task`、`start_task`、`message_worker`、`list_tasks`
 和 `close_task`。正在进行的会话在下一轮采用改过的配置，换到一个新的 session，并被告知之前说过的内容。
 
 ## 主 agent 和它的任务
@@ -251,20 +252,33 @@ curl -s -X PUT $API/v1/agents/default -H "Authorization: Bearer $KEY" \
 # 主 agent 替某个用户交出去的工作，以及怎样叫停其中一个任务。
 curl -s $API/v1/users/u42/tasks -H "Authorization: Bearer $KEY"
 curl -s -X POST $API/v1/users/u42/tasks/task_01EXAMPLE/close -H "Authorization: Bearer $KEY"
+
+# 等用户确认的任务，以及确认其中一个。要拒绝就关闭它。
+curl -s "$API/v1/users/u42/tasks?status=proposed" -H "Authorization: Bearer $KEY"
+curl -s -X POST $API/v1/users/u42/tasks/task_01EXAMPLE/start -H "Authorization: Bearer $KEY"
+
+# 用户给某个角色的长期授权，以及收回它。
+curl -s -X PUT $API/v1/users/u42/grants/default/research -H "Authorization: Bearer $KEY"
+curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: Bearer $KEY"
 ```
 
 调用 API 的方式没有别的变化：用户照旧写到 `POST /v1/users/{user_id}/messages`，你的系统照旧提交事件。变的是它们去哪里。
 
 - 发给主 agent 的事件和定时计划，在 `conversation_id` 指定的会话里（不指定时是 `default`）处理，由在那里和用户说话的那个 session
   负责。如果这个会话由别的 agent 服务，请求返回 409。
-- 只有主 agent 能开任务。`GET /v1/users/{user_id}/tasks` 列出开着的任务，加上 `status=all` 连已关闭的也列出；`POST .../tasks/{task_id}/close`
+- 只有主 agent 能建任务。`GET /v1/users/{user_id}/tasks` 列出开着的任务，加上 `status=all` 连已关闭的也列出；`POST .../tasks/{task_id}/close`
   叫停一个任务，主 agent 会被告知。
+- 用户向主 agent 要求的事直接开始。主 agent 自己起意的事是一个状态为 `proposed` 的任务：把它连同 `summary` 展示给用户，用户确认时调用
+  `POST .../tasks/{task_id}/start`，用户拒绝时关闭它。它可以在 3 天内被确认。
+- 有了长期授权，用户就允许主 agent 不问自己而开始某个角色的任务：`PUT /v1/users/{user_id}/grants/{agent_key}/{role}` 给出授权，对同一路径调用
+  `DELETE` 收回。角色的 `start` 决定规则：`ask` 是默认值，也就是上面说的做法；`always_ask` 要求这个角色的每个任务都确认；`always_allow` 一个都不用确认。
 - 用户自己的客户端可以列出和关闭任务。worker 汇报了什么、两个 agent 之间写了什么，只返回给 API key。
 - 用户是从主 agent 那里听说任务的。worker 不能通知用户，也不能向用户提问；但它需要审批的工具调用照常出现在[动作](#动作)里。
 - 应用里任何不是主 agent 的 agent 都可以当 worker。关于用户和会话，它只知道主 agent 写进任务里的内容。
 - 一个用户的 worker 一次只运行一个，除非收件箱放宽这个上限（`inbox.lanes.batch.cap`）。
 
-演示模式下，脚本会把用户写在 `task:` 后面的内容交出去，worker 回答说做完了；`examples/agent-api/main-agent.sh` 把整个过程走一遍。
+演示模式下，脚本会把用户写在 `task:` 后面的内容交出去，worker 回答说做完了；事件的数据里如果有一段文字 `task`，脚本会自己提出做这件事。`examples/agent-api/main-agent.sh`
+把两种情况都走一遍。
 
 ## 限制
 
@@ -279,4 +293,5 @@ curl -s -X POST $API/v1/users/u42/tasks/task_01EXAMPLE/close -H "Authorization: 
 | 一轮最长的工作时间 | 10 分钟 | `agent.turn.deadline` |
 | 一个主 agent 会话里的任务：排队或进行中的，以及开着的 | 4 个和 20 个 | agent 的 `max_active_tasks`、`agent.tasks.max-open` |
 | 任务的指令，以及 worker 的汇报 | 8,000 和 16,000 个字符 | `agent.tasks.max-instructions`、`max-report` |
+| 一个主 agent 会话里等确认的任务数，以及等多久 | 5 个，等 3 天 | `agent.tasks.max-proposed`、`proposal-ttl` |
 | 消息文本、事件数据 | 32,000 个字符、16 KB | 固定 |

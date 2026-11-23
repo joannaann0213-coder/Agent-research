@@ -512,8 +512,9 @@ class CoordinatorIT extends AgentTestBase {
     @Test
     void aMainAgentHasTheToolsToDelegate_andItsWorkersDoNot() {
         AgentProfileView main = acme.get("/v1/agents/default").as(AgentProfileView.class);
-        assertThat(main.coordinator()).isEqualTo(new CoordinatorConfig(
-                List.of(new WorkerConfig("researcher", "research", "Looks things up and reports what it found.")), 4));
+        assertThat(main.coordinator()).as("with what was left out: the usual rule for when a task starts, and the usual limit")
+                .isEqualTo(new CoordinatorConfig(
+                        List.of(new WorkerConfig("researcher", "research", "Looks things up and reports what it found.", "ask")), 4));
         assertThat(acme.get("/v1/agents/research").as(AgentProfileView.class).coordinator()).isNull();
 
         userSays(acme, USER, "research flights to Tokyo");

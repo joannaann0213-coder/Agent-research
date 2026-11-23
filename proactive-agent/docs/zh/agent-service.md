@@ -53,7 +53,10 @@ flowchart LR
 里运行。双方从不直接调用对方。一方要给另一方的东西存成任务的一条记录，并在同一个事务里给对方的工作线排一个事件，于是收件箱像对待任何输入一样把它变成一个 run。
 
 worker 跑在收件箱的 `batch` lane 上，这样 worker 的长回合不会挡住唤醒主 agent 的东西；这条 lane 的上限就是一个用户同时运行多少个
-worker。worker 接触不到用户：它在一轮里最后写的文字就是汇报，汇报会唤醒主 agent；它的回合失败时，由服务替它写一条记录。设计、工具和理由见[主 agent 与 worker](main-agent.md)。
+worker。worker 接触不到用户：它在一轮里最后写的文字就是汇报，汇报会唤醒主 agent；它的回合失败时，由服务替它写一条记录。
+
+主 agent 自己起意的任务不会自己开始。它以 `proposed` 状态等用户确认，除非它那个角色的规则（`start`）或者用户的长期授权允许它直接开始。在等的任务没有 session，收件箱里也没有它的事件；确认之后才排上唤醒
+worker 的事件。规则见[主 agent 与 worker](main-agent.md#谁让任务开始)，设计、工具和理由见那份文档的其余部分。
 
 ## 出了问题时
 
@@ -135,6 +138,7 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 | `agent.worker.claim-wait` | `5s` | 一次领取在收件箱里等待工作的最长时间 |
 | `agent.tasks.lane` | `batch` | 主 agent 的 worker 运行所在的收件箱 lane：`batch` 或 `background` |
 | `agent.tasks.max-open`, `idle-ttl` | `20`、`7d` | 每个主 agent 会话里开着的任务数，以及闲置的任务保留多久之后会被关闭以腾出位置 |
+| `agent.tasks.max-proposed`, `proposal-ttl` | `5`、`3d` | 每个主 agent 会话里可以等用户确认的任务数，以及一个任务等多久 |
 | `AGENT_CORS_ALLOWEDORIGINS` | 无 | 可以从浏览器调用 API 的网页的源，用逗号分隔 |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`、`false` | 允许 webhook 投递到内网地址、使用明文 http；只用于在一台机器上试用 |
 

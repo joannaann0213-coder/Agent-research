@@ -96,7 +96,8 @@ class TurnTools {
             case PlatformTools.READ_EVENTS -> readEvents(line, work, call.input());
             case PlatformTools.NOTIFY_USER -> notifyUser(run, turn, line, work, call.input(), ordinal);
             case PlatformTools.SCHEDULE_FOLLOWUP -> scheduleFollowup(run, turn, line, work, call.input(), ordinal);
-            case PlatformTools.DELEGATE_TASK -> delegateTask(run, turn, line, call.input(), ordinal);
+            case PlatformTools.DELEGATE_TASK -> delegateTask(run, turn, line, work, call.input(), ordinal);
+            case PlatformTools.START_TASK -> startTask(turn, line, work, call.input());
             case PlatformTools.MESSAGE_WORKER -> messageWorker(run, turn, line, call.input(), ordinal);
             case PlatformTools.LIST_TASKS -> listTasks(line);
             case PlatformTools.CLOSE_TASK -> closeTask(turn, line, call.input());
@@ -265,7 +266,7 @@ class TurnTools {
         return PlatformTools.delegates(coordinator) ? coordinator.workers() : List.of();
     }
 
-    private Answer delegateTask(ClaimedRun run, Turn turn, Threads.Thread line, JsonNode input, int ordinal) {
+    private Answer delegateTask(ClaimedRun run, Turn turn, Threads.Thread line, Work work, JsonNode input, int ordinal) {
         String refusal = notAMainAgent(line);
         if (refusal != null) {
             return Answer.failed("Not delegated: " + refusal);
@@ -289,20 +290,84 @@ class TurnTools {
         if (profiles.configIfThere(line.appId(), worker.get().agent()).filter(config -> config.coordinator() == null).isEmpty()) {
             return Answer.failed("Not delegated: the agent behind the role " + role + " is not available as a worker any more.");
         }
+        JsonNode given = input.path("summary");
+        String summary = given.isMissingNode() || given.isNull() ? null : given.asString("").strip();
+        if (summary != null && (summary.isEmpty() || summary.length() > Tasks.MAX_SUMMARY)) {
+            return Answer.failed("Not delegated: summary has at most " + Tasks.MAX_SUMMARY + " characters: what you want to do and "
+                    + "why, written for the user.");
+        }
+        boolean askFirst = input.path("ask_first").asBoolean(false);
+        // A turn that the user began is the user's word; anything else is the main agent's own initiative.
+        boolean userTurn = work instanceof Work.Chat;
         int maxActive = coordinator.maxActiveTasks() == null ? Tasks.DEFAULT_MAX_ACTIVE : coordinator.maxActiveTasks();
         // The same call of the same run always names the same task, in whatever session and at whatever attempt it is made.
         Tasks.Delegated done = tx.execute(status -> {
             users.lock(line.appId(), line.userId());
             turns.stillHeld(turn);
-            return tasks.delegate(line, run.runId(), ordinal, worker.get(), title.strip(), instructions, maxActive);
+            return tasks.delegate(line, run.runId(), ordinal, worker.get(), title.strip(), instructions, summary, userTurn,
+                    askFirst, maxActive);
         });
         if (done.refused() != null) {
             return Answer.failed(done.refused());
         }
         ObjectNode result = Json.STORED.createObjectNode();
         result.put("task_id", done.task().taskId()).put("role", done.task().role()).put("status", done.task().status());
-        result.put("next", "The worker's report wakes you. Until then there is nothing to wait for in this turn.");
+        if (done.task().proposed()) {
+            boolean oneByOne = WorkerConfig.ALWAYS_ASK.equals(worker.get().startRule());
+            result.put("next", "Not started: the user has to confirm it first, and sees your summary of it in the application. "
+                    + "You are told if they decline. "
+                    + (oneByOne ? "Tasks of this role are confirmed there, one by one. "
+                            : "If they tell you in the conversation to go ahead, start it with start_task. ")
+                    + "Once it has started, the worker's report wakes you. There is nothing to wait for in this turn.");
+        } else {
+            if (Tasks.BY_GRANT.equals(done.task().authorizedBy())) {
+                result.put("started", "The user has allowed you to start tasks of this role without asking.");
+            }
+            result.put("next", "The worker's report wakes you. Until then there is nothing to wait for in this turn.");
+        }
         return Answer.ok(result.toString());
+    }
+
+    /**
+     * Starts a task that waits for the user's confirmation, because the user told the main agent to go
+     * ahead. That is the user's word only in a turn that the user began, and not for a role whose
+     * tasks the application wants confirmed one by one.
+     */
+    private Answer startTask(Turn turn, Threads.Thread line, Work work, JsonNode input) {
+        String refusal = notAMainAgent(line);
+        if (refusal != null) {
+            return Answer.failed("Not started: " + refusal);
+        }
+        String taskId = input == null ? null : input.path("task_id").asString(null);
+        if (taskId == null || taskId.isBlank()) {
+            return Answer.failed("Not started: task_id is required, as delegate_task or list_tasks named the task.");
+        }
+        if (!(work instanceof Work.Chat)) {
+            return Answer.failed("Not started: only the user can confirm a task, in the application or by telling you in the "
+                    + "conversation to go ahead. The user did not begin this turn.");
+        }
+        List<WorkerConfig> workers = workersOf(line);
+        return tx.execute(status -> {
+            users.lock(line.appId(), line.userId());
+            turns.stillHeld(turn);
+            Optional<Tasks.Task> task = ownTask(line, taskId);
+            if (task.isEmpty()) {
+                return Answer.failed("Not started: you have no task " + taskId + ". list_tasks shows the open ones.");
+            }
+            boolean oneByOne = workers.stream().filter(worker -> worker.role().equals(task.get().role()))
+                    .anyMatch(worker -> WorkerConfig.ALWAYS_ASK.equals(worker.startRule()));
+            if (oneByOne && task.get().proposed()) {
+                return Answer.failed("Not started: tasks of the role " + task.get().role() + " are confirmed by the user in the "
+                        + "application, one by one. Tell them that it waits for them there.");
+            }
+            return switch (tasks.startIn(task.get(), Tasks.BY_CONVERSATION)) {
+                case STARTED -> Answer.ok("Started. The worker's report wakes you.");
+                case RUNNING -> Answer.ok("It had started already. The worker's report wakes you.");
+                case CLOSED -> Answer.failed("Not started: the task is closed. Delegate it anew if it is still wanted.");
+                case EXPIRED -> Answer.failed("Not started: the task waited too long for a confirmation and was closed. "
+                        + "Delegate it anew if it is still wanted.");
+            };
+        });
     }
 
     private Answer messageWorker(ClaimedRun run, Turn turn, Threads.Thread line, JsonNode input, int ordinal) {
@@ -327,6 +392,11 @@ class TurnTools {
             }
             if (task.get().closed()) {
                 return Answer.failed("Not sent: the task is closed. Delegate a new task for what is left to do.");
+            }
+            if (task.get().proposed()) {
+                // What the user confirms is what was proposed to them: it is not changed behind the proposal.
+                return Answer.failed("Not sent: the task has not started, because the user has not confirmed it yet. If it "
+                        + "should be different, close it and delegate it anew.");
             }
             tasks.message(task.get(), run.runId(), ordinal, text);
             return Answer.ok("Sent. The worker's next report wakes you.");

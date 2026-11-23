@@ -3,7 +3,7 @@
 [English](../en/main-agent.md)
 
 主 agent 是关于一个用户的一切都会到达的那一个 agent：用户写的话、应用系统里发生的事、到期的事，以及替它干活的 agent 的汇报。每一件事该怎么办由它判断：告诉用户，或者保持安静；耗时的工作交给
-worker，也就是各有自己 session 的 agent。本文先回顾改动之前的服务，再记录主 agent 为什么这样实现，最后说明它如何工作。应用这一侧的用法见
+worker，也就是各有自己 session 的 agent。它自己起意要做的事要等用户确认，除非用户授权过这类工作。本文先回顾改动之前的服务，再记录主 agent 为什么这样实现，最后说明它如何工作。应用这一侧的用法见
 [Agent API](agent-api.md#主-agent-和它的任务)。
 
 ## 总览
@@ -97,11 +97,58 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 
 汇报之后任务仍然开着。worker 的 session 记得这个任务，所以后来发给它的消息是接着干，而不是从头再来。
 
+## 谁让任务开始
+
+主 agent 委派的任务不一定马上开始。关键在于这件事是谁的主意，而这由回合决定：用户用一条消息开启的回合里，主 agent 是照用户的话办事；其他回合里，是它自己起意。应用按角色定规则，写在主 agent 的
+worker 名单里每个角色的 `start` 上。
+
+| 角色的 `start` | 用户在对话里要求的 | 主 agent 自己起意的 |
+| --- | --- | --- |
+| `ask`，默认值 | 直接开始 | 等用户确认，除非用户已经给这个角色做过长期授权 |
+| `always_ask` | 等用户确认 | 等用户确认；不能做长期授权 |
+| `always_allow` | 直接开始 | 直接开始 |
+
+在等的任务状态是 `proposed`。它在平台上不花任何钱：worker 要到任务开始时才有 session。应用把它展示给用户，附上主 agent 写的 `summary`（想做什么、为什么），这段文字随更新
+`task.created` 一起到达。用户有三种回应方式。
+
+1. 在应用里：`POST /v1/users/{user_id}/tasks/{task_id}/start` 确认任务，关闭它就是拒绝。拒绝会告知主
+   agent，免得它再提同样的事。
+2. 在对话里：用户写一句让主 agent 去做，主 agent 就用 `start_task` 开始这个任务。这只在用户开启的回合里有效。
+3. 不回应：3 天之后这个任务就不能再开始了。
+
+长期授权由用户自己给、自己收回，用 `PUT` 和 `DELETE /v1/users/{user_id}/grants/{agent_key}/{role}`；应用可以替用户做这两件事，agent
+做不了。授权针对的是角色，而一个角色能做什么取决于它那个 worker 的 agent 能做什么，所以授权的范围就是应用给这个角色划的范围。同一个 agent 可以站在几个角色后面，所以应用想要更细的规则，就把角色分得更细。
+
+每个任务都在 `authorized_by` 里记着它为什么可以开始：`conversation`、`user`、`app`、`grant` 或 `policy`。提出的任务里被用户确认的比例，就是[架构文档](architecture.md#治理与可观测性)要的接受率。确认针对的是任务，不是
+worker 之后做的每一件事：需要审批的工具调用仍然要等审批。
+
+## Use case 验证
+
+新需求是逐条 use case 对照设计验证的。标“新增”的是这次验证之后补上的。
+
+| 场景 | 是否支持 | 怎么支持 |
+| --- | --- | --- |
+| 用户在对话里要求做一件事 | 支持 | 用户开启的回合里调用 `delegate_task`，直接开始 |
+| 发生了一件事，主 agent 看出有它能做的工作 | 支持 | 事件进入它的 session，和对话以及其他等着它的东西放在一起 |
+| 用户在应用里确认这件工作 | 支持，新增 | 任务保持 `proposed`，直到 `POST .../tasks/{task_id}/start` |
+| 用户拒绝 | 支持，新增 | 关闭一个待确认的任务就是拒绝，主 agent 会被告知 |
+| 用户授权过这类工作，它自己就跑 | 支持，新增 | 给角色的长期授权；任务上记着 `grant` |
+| 用户收回授权 | 支持，新增 | 之后的任务重新等确认；已经开始的继续 |
+| 应用要求某个角色永远确认、另一个永远不用 | 支持，新增 | `always_ask` 和 `always_allow` |
+| 用户改在对话里回答 | 支持，新增 | `start_task`，只在用户的回合里有效 |
+| 没人回应 | 支持，新增 | 3 天之后任务不能再开始 |
+| 几件事挨得很近地发生 | 支持 | 同一轮一起拿到，所以一个任务可以涵盖它们 |
+| 进行中的工作需要对某个具体动作做决定 | 支持 | worker 的工具调用等它的审批，和任何 agent 一样 |
+| 用户叫停自动开始的工作 | 支持 | 关闭任务，或者告诉主 agent |
+| 用户想先看计划再确认 | 不支持 | 用户确认的是主 agent 的摘要；worker 不会先做计划 |
+| 用户想按比角色更细的粒度授权 | 不支持 | 授权针对的是角色；应用可以把角色分得更细 |
+
 ## 工具
 
 | 工具 | 对主 agent | 对任务里的 worker |
 | --- | --- | --- |
-| `delegate_task` | 给它名单里的某个角色开一个任务，返回任务的 id | 没有 |
+| `delegate_task` | 给它名单里的某个角色建一个任务，返回任务的 id，以及它是已经开始还是在等用户 | 没有 |
+| `start_task` | 用户在对话里说了可以做之后，开始一个在等的任务 | 没有 |
 | `message_worker` | 给一个开着的任务的 worker 再说点什么：一个回答、一处纠正、下一步 | 没有 |
 | `list_tasks` | 开着的任务、各自的状态和最近一条回话 | 没有 |
 | `close_task` | 结束一个任务。worker 正在进行的回合会停下，它在等的东西会作废 | 没有 |
@@ -113,13 +160,14 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 
 | 状态 | 含义 |
 | --- | --- |
+| `proposed` | 任务在等用户确认；它的 worker 还没有被唤醒 |
 | `queued` | 主 agent 发来的东西在等 worker |
 | `working` | worker 的一轮正在进行 |
 | `idle` | worker 已经汇报，或者没事可做；任务在等主 agent |
 | `closed` | 结束了，不会再有任何东西从它那里来 |
 
 关闭任务的可以是主 agent（`close_task`）、用户或应用（`POST /v1/users/{user_id}/tasks/{task_id}/close`），也可以是服务：主 agent
-再次委派时，已经闲置 7 天的任务会被关掉。不是主 agent 自己关的，主 agent 会被告知。
+再次委派时，已经闲置 7 天、或者等确认等了 3 天的任务会被关掉。不是主 agent 自己关的，主 agent 会被告知。
 
 对应的表是 `delegated_task` 和 `task_note`。任务记着主 agent 的工作线、角色、worker 的 agent，以及创建它的那次调用；每条记录有方向、种类（`assignment`、`message`、`report`、`failure`
 或 `closed`）和正文。任务状态的每次变化都记录为一条更新：`task.created` 或 `task.updated`。
@@ -134,8 +182,10 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 | worker 干活时任务被关闭 | worker 的 session 被中断，不保存任何汇报 |
 | 主 agent 的 session 被替换 | 新 session 的第一轮会被告知之前说过什么、还有任务开着，即使这一轮是在后台开始的 |
 | 主 agent 委派得越来越多 | 排队或进行中的任务达到 4 个，或者开着的任务达到 20 个时，`delegate_task` 会被拒绝并说明原因 |
+| 待确认的任务没人确认 | 3 天之后它不能再开始：再去确认会被拒绝并把它关掉，主 agent 下一次委派时也会把它关掉 |
+| 主 agent 提出得越来越多 | 等确认的任务达到 5 个时，`delegate_task` 会被拒绝 |
 
-`CoordinatorIT` 里每一行都有一个测试。
+`CoordinatorIT` 和 `TaskConfirmationIT` 里每一行都有一个测试。
 
 ## 信任边界
 
@@ -144,6 +194,8 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 - worker 接触不到用户。worker 的工具调用如果需要审批，仍然交给该审批的人，和任何 agent 一样。
 - 用户自己的客户端能看到任务的标题、角色和状态，也能关闭它。worker 汇报了什么、两个 agent 之间写了什么，只有 API key 能看。
 - 委派只有一层：worker 永远不是主 agent，已经在某份 worker 名单上的 agent 也不能变成主 agent。
+- 主 agent 不能确认自己提出的任务，也不能给自己授权：不在用户的回合里，`start_task` 会被拒绝；授权则根本没有对应的工具。
+- 用户确认的就是当初提出的那件事：还没开始的任务，主 agent 不能再给它追加消息。
 - worker 的 session 对它那个 agent 的记忆只读，和所有后台 session 一样。主 agent 的 session 是例外：它既读事件和汇报，又能写记忆。把两者分开的只有它的指令，所以如果这对你的应用来说不够，就不要给主
   agent 打开 `memory`。
 
@@ -152,6 +204,9 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 | 项目 | 默认值 | 配置项 |
 | --- | --- | --- |
 | 主 agent 名单上的角色 | 最多 10 个 | 固定 |
+| 某个角色的任务何时可以开始 | `ask` | agent 的 `coordinator` 里该角色的 `start` |
+| 一个会话里等确认的任务 | 5 个 | `agent.tasks.max-proposed` |
+| 任务等确认等多久 | 3 天 | `agent.tasks.proposal-ttl` |
 | 一个会话里排队或进行中的任务 | 4 个 | agent 的 `coordinator` 里的 `max_active_tasks`，1 到 20 |
 | 一个会话里开着的任务 | 20 个 | `agent.tasks.max-open` |
 | 闲置的任务保留多久 | 7 天 | `agent.tasks.idle-ttl` |
@@ -171,6 +226,7 @@ worker 有自己的 lane，这样 worker 的长回合永远不会挡住唤醒主
 | worker 应该放在收件箱的工作线上，而不是主 session 的 thread 里 | 80% | 平台关于多 agent session 的文档（2026 年 11 月读取）：thread 共用 session 的资源，客户端不能往 thread 里发消息 | 平台让 thread 有自己的资源，并允许客户端往里发消息；或者大多数任务其实需要共用的工作目录 |
 | 一个用户的一切都进同一个 session，成本承受得起 | 70% | 主 agent 只做分拣和委派的回合很短；耗时的工作是 worker 的 | 用户的消息经常要排在后台回合后面；主 agent 回合的输入 token 随每个事件增长 |
 | 在 worker 内部，平台的 thread 是合适的工具 | 65% | 它不用新开 session 就能启动，还共用文件，正是一个任务的多个步骤需要的 | 官方 SDK 不支持它，或者每个 thread 的成本接近一个 session |
+| 确认应该落在任务上，长期授权应该落在角色上 | 85% | 角色是应用用工具和审批划定边界的单位，所以不用知道具体任务也能对它授权 | 用户要求改成按事件种类或按金额上限授权，或者想确认的是计划而不是摘要 |
 
 反对这个决策的最强理由是成本和延迟。什么都听得到的主 agent，要为每件事跑一轮，包括它随后决定不理会的事；而这一轮进行时用户的消息只能等，因为一条线一次只跑一轮。Anthropic
 [报告](https://www.anthropic.com/engineering/multi-agent-research-system)过，它自己的多 agent 研究系统用掉的 token 大约是普通对话的 15
@@ -181,6 +237,7 @@ worker 有自己的 lane，这样 worker 的长回合永远不会挡住唤醒主
 - 用户的消息排在同一条线的后台回合后面要等多久，看 95 分位。
 - 每个用户每天主 agent 回合的输入 token，以及其中有多少轮既没发消息也没开任务。
 - 有多少任务以失败记录告终，有多少是用户关掉的。
+- 提出的任务里，用户确认、拒绝和放到过期的各有多少，按角色看。
 
 ## 没有实现什么
 
@@ -188,4 +245,7 @@ worker 有自己的 lane，这样 worker 的长回合永远不会挡住唤醒主
 - 用户直接给 worker 写消息。用户和主 agent 说，由主 agent 转达。
 - 引导：主 agent 在后台工作时到达的消息，要等这一轮结束。
 - worker 没有主 agent 对用户的记忆。它需要知道的东西要写进任务里。
+- 先看计划再确认。用户确认的是主 agent 对任务的摘要；worker 不会先替用户起草一份计划。
+- 比角色更细的授权，比如按事件种类，或者设一个金额上限。
+- 主 agent 在后台回合里刚得到用户对某个提问的回答，随后委派的任务仍然算它自己起意。
 - 这里的一切都没有对着模型或平台运行过：测试用的是脚本化的替身。

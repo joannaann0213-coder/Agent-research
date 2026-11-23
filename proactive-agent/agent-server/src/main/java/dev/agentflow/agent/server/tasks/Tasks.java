@@ -44,6 +44,11 @@ import tools.jackson.databind.node.ObjectNode;
  * agent's line. So a report is input like any other: it is deduplicated, it waits its turn, and it
  * survives a worker of this service that dies.
  *
+ * <p>A task does not always start when it is delegated. What the main agent begins on its own
+ * initiative waits for the user's confirmation, as a proposal, unless the application lets the role
+ * start unasked or the user has given a standing authorisation for it ({@link Grants}). A proposal
+ * costs nothing on the agent platform: its worker is woken, and gets a session, only when it starts.
+ *
  * <p>The methods that change a task expect the caller's transaction to hold the lock of the user's
  * row, as everything does that records updates for a user; the ones that take it themselves say so.
  */
@@ -58,6 +63,7 @@ public class Tasks {
     /** The type of the Inbox event that tells a main agent that a task has something for it. Its payload names the note. */
     public static final String REPORT_EVENT = "agent.task_report.v1";
 
+    public static final String PROPOSED = "proposed";
     public static final String QUEUED = "queued";
     public static final String WORKING = "working";
     public static final String IDLE = "idle";
@@ -77,19 +83,37 @@ public class Tasks {
     public static final String BY_APP = "app";
     public static final String BY_SERVICE = "service";
 
+    /** Why a task may start: see the column {@code authorized_by}. */
+    public static final String BY_CONVERSATION = "conversation";
+    public static final String BY_GRANT = "grant";
+    public static final String BY_POLICY = "policy";
+
     public static final int MAX_TITLE = 200;
     public static final int MAX_REASON = 500;
+    public static final int MAX_SUMMARY = 500;
     public static final int DEFAULT_MAX_ACTIVE = 4;
 
     /** How much of a report a list shows. */
     private static final int EXCERPT = 1000;
 
+    private static final String NOT_CONFIRMED_IN_TIME = "it was not confirmed in time";
+
+    /**
+     * @param summary what the user is shown about the task, in the main agent's words; {@code null} when it gave none
+     * @param authorizedBy why the task was allowed to start; {@code null} while it waits for a confirmation
+     * @param expiresAt until when a task that waits for a confirmation can get it
+     */
     public record Task(String appId, String userId, String taskId, String hubKey, String conversationId, String role,
-            String agentKey, String title, String status, String closedBy, String closedReason, Instant createdAt,
-            Instant updatedAt, Instant closedAt) {
+            String agentKey, String title, String summary, String status, String authorizedBy, Instant expiresAt,
+            String closedBy, String closedReason, Instant createdAt, Instant updatedAt, Instant closedAt) {
 
         public boolean closed() {
             return CLOSED.equals(status);
+        }
+
+        /** Whether the task waits for the user's confirmation: it has not started, and its worker knows nothing of it. */
+        public boolean proposed() {
+            return PROPOSED.equals(status);
         }
 
         /** The line the worker runs on. */
@@ -126,12 +150,25 @@ public class Tasks {
     public record Delegated(Task task, boolean created, String refused) {
     }
 
+    /** What starting a task came to. */
+    public enum Start {
+        /** It waited for a confirmation and has started now. */
+        STARTED,
+        /** It had started before. */
+        RUNNING,
+        /** It is closed. */
+        CLOSED,
+        /** It waited too long for a confirmation, and was closed for that just now. */
+        EXPIRED
+    }
+
     private final JdbcClient jdbc;
     private final TransactionTemplate tx;
     private final Users users;
     private final Threads threads;
     private final Actions actions;
     private final Schedules schedules;
+    private final Grants grants;
     private final InboxRelay relay;
     private final Outbound outbound;
     private final AgentClock clock;
@@ -140,13 +177,14 @@ public class Tasks {
     private final Lane lane;
 
     public Tasks(JdbcClient jdbc, TransactionTemplate tx, Users users, Threads threads, Actions actions, Schedules schedules,
-            InboxRelay relay, Outbound outbound, AgentClock clock, Ids ids, AgentProperties properties) {
+            Grants grants, InboxRelay relay, Outbound outbound, AgentClock clock, Ids ids, AgentProperties properties) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
         this.threads = threads;
         this.actions = actions;
         this.schedules = schedules;
+        this.grants = grants;
         this.relay = relay;
         this.outbound = outbound;
         this.clock = clock;
@@ -168,15 +206,20 @@ public class Tasks {
     // ================================================================ for the main agent's turn
 
     /**
-     * Hands a piece of work to a worker: the task, its line, the note that says what to do, and the
-     * event that wakes the worker. The call is named by the run and its place among the run's calls,
-     * so a run that is delivered again gets the task it made the first time.
+     * Hands a piece of work to a worker: the task, its line, the note that says what to do, and, if
+     * the task may start, the event that wakes the worker. A task that may not start yet waits for
+     * the user's confirmation, and its worker is woken by {@link #startIn}. The call is named by the
+     * run and its place among the run's calls, so a run that is delivered again gets the task it made
+     * the first time.
      *
      * @param hub the main agent's line
+     * @param summary what the user is shown about the task; needed when it has to be confirmed
+     * @param userTurn whether the user began the turn in which the main agent delegates
+     * @param askFirst whether the main agent wants the user to confirm the task whatever the rules say
      * @param maxActive how many tasks of the line may be queued or worked on at a time
      */
     public Delegated delegate(Threads.Thread hub, String runId, int call, WorkerConfig worker, String title, String instructions,
-            int maxActive) {
+            String summary, boolean userTurn, boolean askFirst, int maxActive) {
         Optional<Task> earlier = jdbc.sql(SELECT + " WHERE created_by_run = :runId AND created_by_call = :call")
                 .param("runId", runId).param("call", call)
                 .query(Tasks::task)
@@ -185,10 +228,24 @@ public class Tasks {
             return new Delegated(earlier.get(), false, null);
         }
         closeStale(hub);
-        long active = count(hub, " AND status IN ('queued', 'working')");
-        if (active >= maxActive) {
-            return new Delegated(null, false, "Not delegated: " + active + " tasks are queued or being worked on, which is the "
-                    + "limit. Wait for a report, or close a task you no longer need with close_task.");
+        String authorizedBy = askFirst ? null : authorization(hub, worker, userTurn);
+        if (authorizedBy == null) {
+            if (summary == null) {
+                return new Delegated(null, false, "Not delegated: the user has to confirm this task before it starts, and is "
+                        + "shown your summary of it to decide. Call again with `summary`: what you want to do and why, in a "
+                        + "sentence or two written for the user.");
+            }
+            long waiting = count(hub, " AND status = 'proposed'");
+            if (waiting >= config.getMaxProposed()) {
+                return new Delegated(null, false, "Not delegated: " + waiting + " tasks already wait for the user's confirmation, "
+                        + "which is the limit. Wait for the user's answers, or withdraw one with close_task.");
+            }
+        } else {
+            long active = count(hub, " AND status IN ('queued', 'working')");
+            if (active >= maxActive) {
+                return new Delegated(null, false, "Not delegated: " + active + " tasks are queued or being worked on, which is the "
+                        + "limit. Wait for a report, or close a task you no longer need with close_task.");
+            }
         }
         long open = count(hub, " AND status <> 'closed'");
         if (open >= config.getMaxOpen()) {
@@ -197,23 +254,88 @@ public class Tasks {
         }
         Instant now = clock.now();
         String taskId = ids.next("task");
+        boolean starts = authorizedBy != null;
         jdbc.sql("""
-                INSERT INTO delegated_task (app_id, user_id, task_id, hub_key, conversation_id, role, agent_key, title, status,
-                                            created_by_run, created_by_call, created_at, updated_at)
-                VALUES (:appId, :userId, :taskId, :hubKey, :conversationId, :role, :agentKey, :title, 'queued', :runId, :call,
-                        :now, :now)
+                INSERT INTO delegated_task (app_id, user_id, task_id, hub_key, conversation_id, role, agent_key, title, summary,
+                                            status, authorized_by, authorized_at, expires_at, created_by_run, created_by_call,
+                                            created_at, updated_at)
+                VALUES (:appId, :userId, :taskId, :hubKey, :conversationId, :role, :agentKey, :title, :summary, :status,
+                        :authorizedBy, :authorizedAt, :expiresAt, :runId, :call, :now, :now)
                 """)
                 .param("appId", hub.appId()).param("userId", hub.userId()).param("taskId", taskId)
                 .param("hubKey", hub.mergeKey()).param("conversationId", hub.conversationId()).param("role", worker.role())
-                .param("agentKey", worker.agent()).param("title", title).param("runId", runId).param("call", call)
-                .param("now", Db.ts(now))
+                .param("agentKey", worker.agent()).param("title", title).param("summary", summary)
+                .param("status", starts ? QUEUED : PROPOSED).param("authorizedBy", authorizedBy)
+                .param("authorizedAt", starts ? Db.ts(now) : null)
+                .param("expiresAt", starts ? null : Db.ts(now.plus(config.getProposalTtl())))
+                .param("runId", runId).param("call", call).param("now", Db.ts(now))
                 .update();
         threads.ensureWork(hub.appId(), hub.userId(), taskId, hub.conversationId(), worker.agent());
         Task task = find(hub.appId(), hub.userId(), taskId).orElseThrow();
         Written assignment = write(task, TO_WORKER, ASSIGNMENT, instructions, "assign", runId);
-        wakeWorker(task, assignment.note());
+        if (starts) {
+            wakeWorker(task, assignment.note());
+        }
         outbound.record(task.appId(), task.userId(), Update.TASK_CREATED, view(task, false, false));
         return new Delegated(task, true, null);
+    }
+
+    /**
+     * Why a task for this worker may start now, or {@code null} when the user has to confirm it first.
+     * In a turn that the user began the main agent acts at the user's word. What it begins on its own
+     * initiative needs the application's leave for the role, or the user's standing authorisation.
+     */
+    private String authorization(Threads.Thread hub, WorkerConfig worker, boolean userTurn) {
+        String rule = worker.startRule();
+        if (WorkerConfig.ALWAYS_ASK.equals(rule)) {
+            return null;
+        }
+        if (userTurn) {
+            return BY_CONVERSATION;
+        }
+        if (WorkerConfig.ALWAYS_ALLOW.equals(rule)) {
+            return BY_POLICY;
+        }
+        return grants.granted(hub.appId(), hub.userId(), hub.agentKey(), worker.role()) ? BY_GRANT : null;
+    }
+
+    /**
+     * Starts a task that waits for a confirmation, in the caller's transaction: its worker is woken
+     * with what the main agent wrote for it when it proposed the task. The main agent is not woken:
+     * the worker's report will be.
+     *
+     * @param by who confirmed it: {@code user}, {@code app}, or {@code conversation} when the user
+     *     told the main agent to go ahead
+     */
+    public Start startIn(Task task, String by) {
+        if (task.closed()) {
+            return Start.CLOSED;
+        }
+        if (!task.proposed()) {
+            return Start.RUNNING;
+        }
+        Instant now = clock.now();
+        if (!now.isBefore(task.expiresAt())) {
+            closeIn(task, BY_SERVICE, NOT_CONFIRMED_IN_TIME);
+            return Start.EXPIRED;
+        }
+        boolean started = jdbc.sql("""
+                UPDATE delegated_task SET status = 'queued', authorized_by = :by, authorized_at = :now, updated_at = :now
+                 WHERE app_id = :appId AND user_id = :userId AND task_id = :taskId AND status = 'proposed'
+                """)
+                .param("by", by).param("now", Db.ts(now)).param("appId", task.appId()).param("userId", task.userId())
+                .param("taskId", task.taskId())
+                .update() == 1;
+        if (!started) {
+            return Start.RUNNING;
+        }
+        for (Note note : notes(task)) {
+            if (TO_WORKER.equals(note.direction()) && note.readAt() == null) {
+                wakeWorker(task, note);
+            }
+        }
+        outbound.record(task.appId(), task.userId(), Update.TASK_UPDATED, view(find(task).orElseThrow(), false, false));
+        return Start.STARTED;
     }
 
     /**
@@ -379,7 +501,9 @@ public class Tasks {
         actions.supersede(task.appId(), task.userId(), task.line(), "the task was closed");
         if (!BY_AGENT.equals(by)) {
             String who = BY_USER.equals(by) ? "The user" : BY_APP.equals(by) ? "The application" : "The service";
-            Written written = write(task, TO_MAIN, CLOSED_NOTE, who + " closed this task" + (reason == null ? "." : ": " + reason),
+            // A task that waited for a confirmation and is closed by a person was declined: the main agent should know the difference.
+            String did = task.proposed() && !BY_SERVICE.equals(by) ? " declined this task, which had not started" : " closed this task";
+            Written written = write(task, TO_MAIN, CLOSED_NOTE, who + did + (reason == null ? "." : ": " + reason),
                     "closed", null);
             if (written.created() && !BY_SERVICE.equals(by)) {
                 wakeMain(task, written.note());
@@ -401,7 +525,7 @@ public class Tasks {
         }
     }
 
-    /** Closes the tasks of a main agent's line that nobody has touched for too long, to make room. */
+    /** Closes the tasks of a main agent's line that nobody has touched, or confirmed, for too long, to make room. */
     private void closeStale(Threads.Thread hub) {
         // A task whose worker has set itself a follow-up is waiting for something, however long ago it was touched.
         List<Task> stale = jdbc.sql(SELECT + """
@@ -417,6 +541,16 @@ public class Tasks {
         for (Task task : stale) {
             closeIn(task, BY_SERVICE, "nobody had touched it for " + config.getIdleTtl().toDays() + " days");
         }
+        List<Task> unconfirmed = jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND hub_key = :hubKey AND status = 'proposed' AND expires_at <= :now
+                """)
+                .param("appId", hub.appId()).param("userId", hub.userId()).param("hubKey", hub.mergeKey())
+                .param("now", Db.ts(clock.now()))
+                .query(Tasks::task)
+                .list();
+        for (Task task : unconfirmed) {
+            closeIn(task, BY_SERVICE, NOT_CONFIRMED_IN_TIME);
+        }
     }
 
     // ================================================================ for people
@@ -425,10 +559,11 @@ public class Tasks {
      * The user's tasks, newest first.
      *
      * @param conversationId only the tasks of this conversation's main agent; {@code null} for all
-     * @param openOnly whether to leave out the closed ones
+     * @param which {@code open} for the tasks that are not closed, {@code proposed} for those that
+     *     wait for a confirmation, {@code all} for every task
      * @param forApp whether the reader is the application, which also gets the beginning of each task's latest report
      */
-    public TaskPage list(String appId, String userId, String conversationId, boolean openOnly, int limit, boolean forApp) {
+    public TaskPage list(String appId, String userId, String conversationId, String which, int limit, boolean forApp) {
         Names.userId(userId);
         if (conversationId != null) {
             Names.localId(conversationId, "conversation_id");
@@ -436,12 +571,12 @@ public class Tasks {
         List<TaskView> tasks = jdbc.sql(SELECT + """
                  WHERE app_id = :appId AND user_id = :userId
                    AND (CAST(:conversationId AS text) IS NULL OR conversation_id = :conversationId)
-                   AND (NOT :openOnly OR status <> 'closed')
+                   AND (:which = 'all' OR (:which = 'open' AND status <> 'closed') OR (:which = 'proposed' AND status = 'proposed'))
                  ORDER BY created_at DESC, task_id DESC
                  LIMIT :limit
                 """)
                 .param("appId", appId).param("userId", userId).param("conversationId", conversationId)
-                .param("openOnly", openOnly).param("limit", limit)
+                .param("which", which).param("limit", limit)
                 .query(Tasks::task)
                 .list().stream().map(task -> view(task, forApp, false)).toList();
         return new TaskPage(tasks);
@@ -459,8 +594,37 @@ public class Tasks {
     }
 
     /**
+     * Confirms a task that waits for it, for the user or for the application, so that it starts.
+     * Confirming a task that has started already changes nothing. Takes the user's lock itself.
+     *
+     * @param by {@code user} or {@code app}
+     */
+    public TaskView start(String appId, String userId, String taskId, String by) {
+        Names.userId(userId);
+        Start outcome = tx.execute(status -> {
+            if (users.find(appId, userId).isEmpty()) {
+                throw AgentException.notFound("no task " + taskId + " for this user");
+            }
+            users.lock(appId, userId);
+            Task found = find(appId, userId, taskId)
+                    .orElseThrow(() -> AgentException.notFound("no task " + taskId + " for this user"));
+            return startIn(found, by);
+        });
+        // The refusals come after the transaction, which has closed a task that waited too long.
+        if (outcome == Start.EXPIRED) {
+            throw AgentException.conflict("task " + taskId + " waited too long for a confirmation and was closed");
+        }
+        if (outcome == Start.CLOSED) {
+            throw AgentException.conflict("task " + taskId + " is closed");
+        }
+        return view(find(appId, userId, taskId).orElseThrow(() -> AgentException.notFound("no task " + taskId + " for this user")),
+                BY_APP.equals(by), false);
+    }
+
+    /**
      * Closes a task for somebody other than the main agent, which is then told. Closing a task that
-     * is closed already changes nothing. Takes the user's lock itself.
+     * waits for a confirmation declines it. Closing a task that is closed already changes nothing.
+     * Takes the user's lock itself.
      *
      * @param by {@code user} or {@code app}
      */
@@ -501,8 +665,9 @@ public class Tasks {
     public TaskView view(Task task, boolean withReport, boolean withNotes) {
         String report = !withReport ? null
                 : lastForMain(task).filter(note -> REPORT.equals(note.kind())).map(note -> excerpt(note.text())).orElse(null);
-        return new TaskView(task.taskId(), task.conversationId(), task.role(), task.agentKey(), task.title(), task.status(),
-                task.closedBy(), task.closedReason(), report, task.createdAt(), task.updatedAt(), task.closedAt(),
+        return new TaskView(task.taskId(), task.conversationId(), task.role(), task.agentKey(), task.title(), task.summary(),
+                task.status(), task.authorizedBy(), task.proposed() ? task.expiresAt() : null, task.closedBy(), task.closedReason(),
+                report, task.createdAt(), task.updatedAt(), task.closedAt(),
                 withNotes ? notes(task).stream().map(Note::view).toList() : null);
     }
 
@@ -627,8 +792,8 @@ public class Tasks {
     // ================================================================ rows
 
     private static final String SELECT = """
-            SELECT app_id, user_id, task_id, hub_key, conversation_id, role, agent_key, title, status, closed_by, closed_reason,
-                   created_at, updated_at, closed_at
+            SELECT app_id, user_id, task_id, hub_key, conversation_id, role, agent_key, title, summary, status, authorized_by,
+                   expires_at, closed_by, closed_reason, created_at, updated_at, closed_at
               FROM delegated_task
             """;
 
@@ -639,7 +804,8 @@ public class Tasks {
     private static Task task(ResultSet rs, int rowNumber) throws SQLException {
         return new Task(rs.getString("app_id"), rs.getString("user_id"), rs.getString("task_id"), rs.getString("hub_key"),
                 rs.getString("conversation_id"), rs.getString("role"), rs.getString("agent_key"), rs.getString("title"),
-                rs.getString("status"), rs.getString("closed_by"), rs.getString("closed_reason"), Db.instant(rs, "created_at"),
+                rs.getString("summary"), rs.getString("status"), rs.getString("authorized_by"), Db.instant(rs, "expires_at"),
+                rs.getString("closed_by"), rs.getString("closed_reason"), Db.instant(rs, "created_at"),
                 Db.instant(rs, "updated_at"), Db.instant(rs, "closed_at"));
     }
 

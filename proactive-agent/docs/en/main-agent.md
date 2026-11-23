@@ -5,7 +5,9 @@
 A main agent is the one agent that everything about a user reaches: what they write, what happens in
 the application's systems, what falls due, and what the agents that work for it report. It decides
 what each of these calls for, tells the user or stays quiet, and hands longer work to workers, which
-are agents with sessions of their own. This document reviews the service as it was before, records
+are agents with sessions of their own. What it begins on its own initiative waits for the user's
+confirmation, unless the user has authorised that kind of work. This document reviews the service as
+it was before, records
 why the main agent is built the way it is, and explains how it works.
 [Agent API](agent-api.md#a-main-agent-and-its-tasks) has the application's side.
 
@@ -122,11 +124,70 @@ their subject, as before; only what is sent for the main agent goes to its conve
 A task stays open after a report. The worker's session remembers the task, so a later message to it
 continues the work instead of starting it over.
 
+## Who lets a task start
+
+A task does not always start when the main agent delegates it. What decides is whose idea the task
+was, and the turn tells: in a turn that the user began with a message the main agent acts at the
+user's word, in any other turn on its own initiative. The application sets the rule per role, with
+`start` in the main agent's list of workers.
+
+| `start` of the role | The user asked for it in the conversation | The main agent's own initiative |
+| --- | --- | --- |
+| `ask`, the default | Starts | Waits for the user's confirmation, unless the user has given a standing authorisation for the role |
+| `always_ask` | Waits for the user's confirmation | Waits for the user's confirmation; no standing authorisation is possible |
+| `always_allow` | Starts | Starts |
+
+A task that waits has the state `proposed`. It costs nothing on the platform: its worker gets a
+session only when the task starts. The application shows it to the user with the main agent's
+`summary` of it, what it wants to do and why, which comes with the update `task.created`. The user
+answers in one of three ways.
+
+1. In the application: `POST /v1/users/{user_id}/tasks/{task_id}/start` confirms the task, and
+   closing it declines it. The main agent is told of a decline, so that it does not propose the same
+   again.
+2. In the conversation: when the user writes that the main agent should go ahead, the main agent
+   starts the task with `start_task`. That works only in a turn that the user began.
+3. Not at all: after 3 days the task can no longer be started.
+
+A standing authorisation is the user's to give and to take back, with `PUT` and
+`DELETE /v1/users/{user_id}/grants/{agent_key}/{role}`; the application can do both for them, and no
+agent can. It names a role, and a role can do what its worker's agent can do, so an authorisation is
+as wide as the application made the role. The same agent can stand behind several roles, so an
+application that wants finer rules makes finer roles.
+
+Every task records in `authorized_by` why it was allowed to start: `conversation`, `user`, `app`,
+`grant` or `policy`. The share of proposed tasks that users confirm is the acceptance rate that
+[the architecture](architecture.md#governance-and-observability) asks for. A confirmation is for the
+task, not for everything the worker then does: a tool call that needs an approval still waits for
+one.
+
+## Use cases
+
+The requirement was checked against the design case by case. "New" marks what the check added.
+
+| Case | Supported | How |
+| --- | --- | --- |
+| The user asks for work in the conversation | Yes | `delegate_task` in a turn that the user began starts at once |
+| Something happens, and the main agent sees work that it could do | Yes | The event reaches its session, next to the conversation and whatever else is waiting |
+| The user confirms that work in the application | Yes, new | The task is `proposed` until `POST .../tasks/{task_id}/start` |
+| The user declines it | Yes, new | Closing a proposed task declines it, and the main agent is told |
+| The user has authorised that kind of work, and it runs by itself | Yes, new | A grant for the role; the task records `grant` |
+| The user takes the authorisation back | Yes, new | Later tasks wait again; those that have started go on |
+| The application wants one role always confirmed, and another never | Yes, new | `always_ask` and `always_allow` |
+| The user answers in the conversation instead | Yes, new | `start_task`, in a turn of the user only |
+| Nobody answers | Yes, new | The task can no longer be started after 3 days |
+| Several things happen close together | Yes | One turn gets them together, so one task can cover them |
+| Work under way needs a decision on one action | Yes | The worker's tool call waits for its approval, as for any agent |
+| The user stops work that started by itself | Yes | They close the task, or tell the main agent |
+| The user wants to see a plan before confirming | No | The user confirms the main agent's summary; a worker does not plan first |
+| The user authorises more narrowly than a role | No | An authorisation names a role; the application can make its roles finer |
+
 ## Tools
 
 | Tool | For the main agent | For a worker in a task |
 | --- | --- | --- |
-| `delegate_task` | Starts a task for one of its roles and answers with the task's id | Not there |
+| `delegate_task` | Makes a task for one of its roles, and answers with the task's id and whether it has started or waits for the user | Not there |
+| `start_task` | Starts a task that waits, when the user has said in the conversation to go ahead | Not there |
 | `message_worker` | Sends the worker of an open task more: an answer, a correction, a next step | Not there |
 | `list_tasks` | The open tasks, their state and the latest word from each | Not there |
 | `close_task` | Ends a task. A turn of the worker that is under way stops, and what it waits for is withdrawn | Not there |
@@ -138,6 +199,7 @@ continues the work instead of starting it over.
 
 | State | Meaning |
 | --- | --- |
+| `proposed` | The task waits for the user's confirmation; its worker has not been woken |
 | `queued` | Something the main agent sent waits for the worker |
 | `working` | A turn of the worker is under way |
 | `idle` | The worker has reported, or has nothing to do; the task waits for the main agent |
@@ -145,8 +207,8 @@ continues the work instead of starting it over.
 
 A task is closed by the main agent (`close_task`), by the user or the application
 (`POST /v1/users/{user_id}/tasks/{task_id}/close`), or by the service, when the main agent delegates
-again and the task has been idle for 7 days. When somebody other than the main agent closes a task,
-the main agent is told.
+again and the task has been idle for 7 days or has waited 3 days for a confirmation. When somebody
+other than the main agent closes a task, the main agent is told.
 
 The tables are `delegated_task` and `task_note`. A task names the main agent's line, the role, the
 worker's agent and the call that made it; a note has a direction, a kind (`assignment`, `message`,
@@ -163,8 +225,10 @@ update, `task.created` or `task.updated`.
 | The task is closed while the worker works | The worker's session is interrupted, and no report is stored |
 | The main agent's session is replaced | The first turn of the new session is told what was said before and that tasks are open, also when that turn starts in the background |
 | The main agent delegates more and more | `delegate_task` is refused, with the reason, while 4 tasks are queued or worked on, or 20 are open |
+| Nobody confirms a proposed task | After 3 days it can no longer be started: an attempt is refused and closes it, and so does the main agent's next delegation |
+| The main agent proposes more and more | `delegate_task` is refused while 5 tasks wait for a confirmation |
 
-`CoordinatorIT` has a test for each row.
+`CoordinatorIT` and `TaskConfirmationIT` have a test for each row.
 
 ## Trust
 
@@ -178,6 +242,10 @@ update, `task.created` or `task.updated`.
   reported and what the two agents wrote to each other is for the API key only.
 - Delegating is one level deep: a worker is never a main agent, and an agent that is on a list of
   workers cannot become one.
+- The main agent cannot confirm what it proposed, and cannot authorise itself: `start_task` is
+  refused outside a turn of the user, and there is no tool for a grant.
+- What the user confirms is what was proposed: a task that has not started takes no further message
+  from the main agent.
 - A worker's session has its agent's memory to read only, like every session in the background. The
   main agent's session is the exception: it reads events and reports, and it can write the memory.
   Only its instructions keep the two apart, so an application for which that is not enough leaves
@@ -188,6 +256,9 @@ update, `task.created` or `task.updated`.
 | What | Default | Setting |
 | --- | --- | --- |
 | Roles on a main agent's list | at most 10 | fixed |
+| When a task of a role may start | `ask` | `start` of the role in the agent's `coordinator` |
+| Tasks of one conversation that wait for a confirmation | 5 | `agent.tasks.max-proposed` |
+| How long a task waits for a confirmation | 3 days | `agent.tasks.proposal-ttl` |
 | Tasks of one conversation that are queued or worked on | 4 | `max_active_tasks` of the agent's `coordinator`, 1 to 20 |
 | Tasks of one conversation that are open | 20 | `agent.tasks.max-open` |
 | How long an idle task is kept | 7 days | `agent.tasks.idle-ttl` |
@@ -209,6 +280,7 @@ percentages are estimates of the author, made in November 2026 for the following
 | Workers belong on lines of the Inbox, not on threads of the main session | 80% | The platform's documentation of its multi-agent sessions, read in November 2026: threads share the session's resources, and a client cannot post into one | The platform gives threads resources of their own and lets clients post into them; or most tasks turn out to need a shared working directory |
 | One session for everything about a user is affordable | 70% | A turn of the main agent that only sorts and delegates is short; long work is the workers' | A user's message often waits behind a turn in the background; the input tokens of the main agent's turns grow with every event |
 | The platform's threads are the right tool inside a worker | 65% | They start without a new session and share files, which is what several steps of one task need | The official SDK does not carry them, or their cost per thread is close to a session's |
+| Confirmation belongs to the task, and standing authorisation to the role | 85% | A role is what the application bounds with tools and approvals, so it can be authorised without knowing the task | Users ask to authorise by kind of event or up to an amount instead, or want a plan to confirm and not a summary |
 
 The strongest argument against the decision is cost and delay. A main agent that hears everything
 runs a turn for everything, including what it then decides to ignore, and a user's message waits
@@ -226,6 +298,7 @@ What to measure once the service runs with a model:
 - The input tokens of the main agent's turns per user and day, and how many of those turns end
   without a message or a task.
 - How many tasks end with a failure note, and how many are closed by the user.
+- How many proposed tasks users confirm, decline and let expire, by role.
 
 ## What is not built
 
@@ -236,4 +309,9 @@ What to measure once the service runs with a model:
   to end.
 - A worker does not have the main agent's memory of the user. What it needs to know is written into
   the task.
+- A plan to confirm. The user confirms the main agent's summary of a task; the worker does not draft
+  a plan for them first.
+- Authorisations narrower than a role, for example by kind of event or up to an amount.
+- A task that the main agent delegates in the background right after the user answered a question of
+  that turn still counts as its own initiative.
 - Nothing here ran against a model or the platform: the tests use the scripted stand-in.

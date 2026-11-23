@@ -34,7 +34,8 @@ curl -s http://localhost:8090/openapi.yaml -o agent-api.yaml
 | Event | Something that happened in the application's systems that concerns a user. Events of one `subject` are handled by an agent that remembers the earlier ones |
 | Action | What the agent waits for a person to decide: an approval of a tool call, or a question to the user |
 | Schedule | What the agent is to do at a given time: set up by the application, or a follow-up the agent set itself |
-| Task | A piece of work that a main agent handed to a worker: another agent of the application, in a session of its own |
+| Task | A piece of work that a main agent handed to a worker: another agent of the application, in a session of its own. What the main agent begins on its own initiative waits for the user's confirmation first |
+| Grant | A user's standing authorisation: their main agent may start the tasks of one role on its own initiative, without asking each time |
 | Update | What happened for a user that the application may want to know: a message, an action, a failure. Read by polling, by a stream, or at a webhook |
 | Credential | What an MCP server needs to let the agent in. Kept in vaults on the agent platform, never by this service |
 
@@ -46,7 +47,7 @@ Every `/v1` request carries a credential as `Authorization: Bearer <credential>`
 | --- | --- | --- | --- |
 | Administration key | 32 characters or more, from the configuration | The operators of the service | `/v1/admin` and nothing else: applications and their API keys |
 | API key | `afk.<key_id>.<secret>` | The application's back end | Everything of the application, for every user |
-| User token | `aft.<payload>.<signature>` | One user's client, which gets it from the application's back end | That user's messages, actions, updates, schedules, tasks and credentials; not events, not the agents |
+| User token | `aft.<payload>.<signature>` | One user's client, which gets it from the application's back end | That user's messages, actions, updates, schedules, tasks, grants and credentials; not events, not the agents |
 
 An API key is shown once, when it is made, and stored as a hash. A user token lasts 15 minutes by
 default and at most an hour; the back end gets one with `POST /v1/users/{user_id}/tokens` and revokes
@@ -263,12 +264,12 @@ from the next call on. With a refresh token, the platform renews the access toke
 | `sandbox` | A container with built-in tools (shell, files, web search and fetch) and its network: `none`, `limited` to `allowed_hosts`, or `unrestricted` |
 | `session_budget_usd` | What one session may spend at most; a conversation whose session has spent it goes on in a new one |
 | `memory` | `per_user`: the agent keeps notes about each user across sessions, in files of its sandbox, which must be enabled. It writes them in conversations and only reads them in the background |
-| `coordinator` | Makes the agent a main agent. `workers` lists who it may hand work to: each with a `role`, the key of the `agent` that plays it, and a `description` that tells the main agent what the role is for |
+| `coordinator` | Makes the agent a main agent. `workers` lists who it may hand work to: each with a `role`, the key of the `agent` that plays it, a `description` that tells the main agent what the role is for, and if wanted `start`, the rule for when a task of the role may start |
 
 The service gives every agent four tools of its own: `read_events`, `notify_user`, `ask_user` and
-`schedule_followup`; a main agent gets four more to hand work on, `delegate_task`, `message_worker`,
-`list_tasks` and `close_task`. A conversation that is under way takes a changed configuration on at
-its next turn, in a new session that is told what was said before.
+`schedule_followup`; a main agent gets five more to hand work on, `delegate_task`, `start_task`,
+`message_worker`, `list_tasks` and `close_task`. A conversation that is under way takes a changed
+configuration on at its next turn, in a new session that is told what was said before.
 
 ## A main agent and its tasks
 
@@ -293,6 +294,14 @@ curl -s -X PUT $API/v1/agents/default -H "Authorization: Bearer $KEY" \
 # What the main agent has handed on for a user, and how to stop one of those tasks.
 curl -s $API/v1/users/u42/tasks -H "Authorization: Bearer $KEY"
 curl -s -X POST $API/v1/users/u42/tasks/task_01EXAMPLE/close -H "Authorization: Bearer $KEY"
+
+# What waits for the user's confirmation, and confirming one of those tasks. To decline it, close it.
+curl -s "$API/v1/users/u42/tasks?status=proposed" -H "Authorization: Bearer $KEY"
+curl -s -X POST $API/v1/users/u42/tasks/task_01EXAMPLE/start -H "Authorization: Bearer $KEY"
+
+# The user's standing authorisation for a role, and taking it back.
+curl -s -X PUT $API/v1/users/u42/grants/default/research -H "Authorization: Bearer $KEY"
+curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: Bearer $KEY"
 ```
 
 Nothing else changes in how you call the API: users write to `POST /v1/users/{user_id}/messages` and
@@ -301,9 +310,17 @@ your systems post events, as before. What changes is where those go.
 - Events and schedules for a main agent are handled in the conversation that `conversation_id` names
   (`default` unless named), by the session that talks to the user there. If another agent serves
   that conversation, the request is a 409.
-- Only the main agent starts a task. `GET /v1/users/{user_id}/tasks` lists the open ones, with
+- Only the main agent makes a task. `GET /v1/users/{user_id}/tasks` lists the open ones, with
   `status=all` the closed ones too, and `POST .../tasks/{task_id}/close` stops one; the main agent is
   told.
+- What the user asks the main agent for starts at once. What the main agent begins on its own
+  initiative is a task with the status `proposed`: show it to the user with its `summary`, and call
+  `POST .../tasks/{task_id}/start` when they confirm it, or close it when they decline. It can be
+  confirmed for 3 days.
+- With a grant the user lets the main agent start the tasks of a role without asking:
+  `PUT /v1/users/{user_id}/grants/{agent_key}/{role}` gives it, and `DELETE` on the same path takes it
+  back. A role's `start` sets the rule: `ask`, which is the default and what was just described,
+  `always_ask`, which has every task of the role confirmed, or `always_allow`, which has none.
 - A user's own client may list and close tasks. What a worker reported, and what the two agents
   wrote to each other, is returned to an API key only.
 - The user hears of a task from the main agent. A worker cannot notify or ask the user, but its tool
@@ -313,7 +330,8 @@ your systems post events, as before. What changes is where those go.
 - The workers of one user run one at a time, unless the Inbox allows more (`inbox.lanes.batch.cap`).
 
 In demo mode the script hands on whatever the user writes after `task:`, and the worker answers that
-it is done; `examples/agent-api/main-agent.sh` walks through it.
+it is done; an event whose data has a text `task` makes the script propose that work by itself.
+`examples/agent-api/main-agent.sh` walks through both.
 
 ## Limits
 
@@ -328,4 +346,5 @@ it is done; `examples/agent-api/main-agent.sh` walks through it.
 | How long a turn may work | 10 minutes | `agent.turn.deadline` |
 | Tasks of one main agent's conversation: queued or worked on, and open | 4 and 20 | `max_active_tasks` of the agent, `agent.tasks.max-open` |
 | Instructions of a task, and a worker's report | 8,000 and 16,000 characters | `agent.tasks.max-instructions`, `max-report` |
+| Tasks of one main agent's conversation that wait for a confirmation, and for how long | 5, for 3 days | `agent.tasks.max-proposed`, `proposal-ttl` |
 | Message text, event data | 32,000 characters, 16 KB | fixed |

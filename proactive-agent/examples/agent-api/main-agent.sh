@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # A main agent and a worker (docs/en/main-agent.md), step by step, against a running agent service.
 # Works in demo mode, where a script plays both: the main agent hands on whatever the user writes
-# after "task:", and the worker answers that it is done.
+# after "task:", and the worker answers that it is done. An event whose data has a text "task" makes
+# the main agent take that work up by itself: it then waits for the user's confirmation, unless the
+# user has allowed the role to start unasked.
 #
 #   API=http://localhost:8090 ADMIN=<an administration key> examples/agent-api/main-agent.sh
 #
@@ -80,11 +82,43 @@ BEFORE=$(notifications)
 call POST /v1/users/$USER_ID/events '{"type": "order.delayed", "subject": "order-1234", "data": {"order_id": "1234", "new_delivery_date": "2026-11-27"}}'; echo
 echo "   notification: $(wait_for_notification "$BEFORE")"
 
-echo "11. With the API key, the task shows what the two agents told each other."
+echo "11. Something happens that the main agent could act on by itself. It proposes the work, and waits for the user."
+call POST /v1/users/$USER_ID/events '{"type": "order.delayed", "subject": "order-1234", "data": {"task": "find a new delivery slot for order 1234"}}'; echo
+PROPOSED=""
+for _ in $(seq 1 30); do
+  PROPOSED=$(call GET "/v1/users/$USER_ID/tasks?status=proposed" '' "$TOKEN" \
+    | python3 -c "import json,sys; t=json.load(sys.stdin)['tasks']; print(t[0]['task_id'] if t else '')")
+  [[ -n $PROPOSED ]] && break
+  sleep 1
+done
+[[ -n $PROPOSED ]] || { echo "   (no task to confirm within 30 seconds)"; exit 1; }
+call GET "/v1/users/$USER_ID/tasks?status=proposed" '' "$TOKEN" \
+  | python3 -c "import json,sys; [print('  ', x['task_id'], x['status'], '-', x['summary']) for x in json.load(sys.stdin)['tasks']]"
+
+echo "12. The user confirms it in their own client, and the worker starts."
+BEFORE=$(notifications)
+echo "   confirmed by: $(call POST "/v1/users/$USER_ID/tasks/$PROPOSED/start" '' "$TOKEN" | json "['authorized_by']")"
+echo "   notification: $(wait_for_notification "$BEFORE")"
+
+echo "13. The user allows the main agent to start tasks of this role by itself from now on."
+call PUT "/v1/users/$USER_ID/grants/default/research" '' "$TOKEN"; echo
+
+echo "14. The next time, the work starts without a question."
+BEFORE=$(notifications)
+call POST /v1/users/$USER_ID/events '{"type": "order.delayed", "subject": "order-5678", "data": {"task": "find a new delivery slot for order 5678"}}'; echo
+echo "   notification: $(wait_for_notification "$BEFORE")"
+call GET "/v1/users/$USER_ID/tasks?status=all" \
+  | python3 -c "import json,sys; [print('  ', x['task_id'], x['status'], 'authorized by', x.get('authorized_by', '-'), '-', x['title']) for x in json.load(sys.stdin)['tasks']]"
+
+echo "15. The user takes the authorisation back."
+call DELETE "/v1/users/$USER_ID/grants/default/research" '' "$TOKEN"
+call GET "/v1/users/$USER_ID/grants" '' "$TOKEN"; echo
+
+echo "16. With the API key, a task shows what the two agents told each other."
 TASK=$(call GET "/v1/users/$USER_ID/tasks?status=all" | json "['tasks'][0]['task_id']")
 call GET "/v1/users/$USER_ID/tasks/$TASK" \
   | python3 -c "import json,sys; [print('  ', n['seq'], n['from'], n['kind'] + ':', n['text']) for n in json.load(sys.stdin)['notes']]"
 
-echo "12. Everything that happened for the user, in order:"
+echo "17. Everything that happened for the user, in order:"
 call GET "/v1/users/$USER_ID/updates?after=0" '' "$TOKEN" \
   | python3 -c "import json,sys; [print('  ', x['seq'], x['type'], x['data'].get('kind', x['data'].get('status', ''))) for x in json.load(sys.stdin)['updates']]"

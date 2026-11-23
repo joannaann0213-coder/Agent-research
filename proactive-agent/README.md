@@ -143,7 +143,7 @@ explains how the service works and how to run it in production.
 | [Testing](docs/en/testing.md) | How to run the tests and which test proves which acceptance check |
 | [Agent service](docs/en/agent-service.md) | How the agent service works, what it does when something breaks, and how to run it |
 | [Agent API](docs/en/agent-api.md) | The guide for applications: concepts, authentication, conversations, events, actions, schedules, updates, credentials |
-| [Main agent and workers](docs/en/main-agent.md) | The agent that hears of everything about a user and hands work to worker agents: the review, the decision and its reasons, how it works |
+| [Main agent and workers](docs/en/main-agent.md) | The agent that hears of everything about a user and hands work to worker agents: the review, the decision and its reasons, how it works, and who lets a task start: the user's confirmation or standing authorisation |
 | [Tutorial](docs/en/tutorial.md) | Run the service with Docker and connect an application step by step: back end, users' apps, events, approvals, live mode, going live |
 
 ## Configuration
