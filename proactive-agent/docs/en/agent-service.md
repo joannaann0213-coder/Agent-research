@@ -166,6 +166,9 @@ Every setting is under `agent.*` and can be set by environment variable.
 | `agent.worker.concurrency` | `8` | Turns that one instance works on at once |
 | `agent.turn.deadline` | `10m` | Longest turn; keep it below the Inbox's `inbox.lease.max-duration` |
 | `agent.cma.creations-per-minute`, `requests-per-minute` | `300`, `600` | CMA's rate limits; with several instances, give each its share |
+| `agent.worker.claim-wait` | `5s` | How long a claim waits in the Inbox for work |
+| `AGENT_CORS_ALLOWEDORIGINS` | none | Origins of web pages that may call the API from the browser, comma-separated |
+| `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`, `false` | Webhooks to private addresses and over plain http; only to try them on one machine |
 
 The Inbox needs a client for the service with the roles `RUNTIME` and `PRODUCER` and no tenant, and
 should allow more attempts than its default for long outages (`inbox.retry.max-attempts`).
@@ -177,11 +180,20 @@ about each one, so that the whole service can be tried without a key. Live mode 
 API key with access to Managed Agents. Before going live, run `scripts/cma-live-check.sh`: it checks
 the behaviour of CMA that the service relies on and that the documentation leaves open. Then
 `scripts/agent-live-smoke.sh` runs both services against CMA and checks a conversation, a
-notification and a question answered by the user, end to end.
+notification and a question answered by the user, end to end; with `--api` and `--admin-key` it
+checks a service that runs already, such as the one of `docker-compose.yml`.
+
+The platform of demo mode lives in the service's memory. After a restart it takes back what the
+database still names, an agent with the configuration of its profile, but what it made exists nowhere
+else: live mode starts with new applications.
 
 ### Deploying
 
+- `docker-compose.yml` runs the database, the Inbox and the service on one machine;
+  [the tutorial](tutorial.md) shows how, and what to check before going live.
 - Run several instances behind a load balancer; they coordinate through the Inbox and the database.
+- An instance that stops lets the claims it has under way finish and gives back at once what they
+  bring, so that no run waits for a lease to run out.
 - The background loops (relay, workers, sweep, webhook deliveries) run in every instance.
 - Rate limits and CMA limits count per instance.
 - Back up the database: it holds the conversations; CMA holds the sessions' history until they are

@@ -10,6 +10,7 @@ with directly.
 
 This is the guide for application developers. Every endpoint, field and status is specified in the
 OpenAPI document; [Agent service](agent-service.md) explains how the service works inside.
+[The tutorial](tutorial.md) runs the service and connects an application step by step.
 
 ## OpenAPI specification
 
@@ -47,7 +48,8 @@ Every `/v1` request carries a credential as `Authorization: Bearer <credential>`
 
 An API key is shown once, when it is made, and stored as a hash. A user token lasts 15 minutes by
 default and at most an hour; the back end gets one with `POST /v1/users/{user_id}/tokens` and revokes
-all of a user's tokens with `DELETE` on the same path.
+all of a user's tokens with `DELETE` on the same path. A web page on another origin than the service
+can use one once its origin is in `AGENT_CORS_ALLOWEDORIGINS`.
 
 ## Errors
 

@@ -7,6 +7,7 @@ Agent API 把主动式 agent 开放给应用。应用的后端，或者应用用
 CMA 打交道。
 
 这是写给应用开发者的指南。每个接口、字段和状态码都以 OpenAPI 文档为准；服务内部如何工作见 [Agent 服务](agent-service.md)。
+[教程](tutorial.md)一步步演示如何运行服务并接入应用。
 
 ## OpenAPI 规范
 
@@ -40,7 +41,8 @@ curl -s http://localhost:8090/openapi.yaml -o agent-api.yaml
 | API key | `afk.<key_id>.<secret>` | 应用的后端 | 应用的一切，针对所有用户 |
 | 用户 token | `aft.<payload>.<signature>` | 某个用户的客户端，从应用后端拿到 | 这个用户的消息、动作、更新、定时计划和凭据；不能写事件，不能改 agent |
 
-API key 只在创建时显示一次，存储的是哈希。用户 token 默认 15 分钟有效，最长一小时；后端用 `POST /v1/users/{user_id}/tokens` 签发，对同一路径调用 `DELETE` 吊销该用户的所有 token。
+API key 只在创建时显示一次，存储的是哈希。用户 token 默认 15 分钟有效，最长一小时；后端用 `POST /v1/users/{user_id}/tokens` 签发，对同一路径调用 `DELETE` 吊销该用户的所有 token。网页和本服务不在同一个源时，把网页的源加进
+`AGENT_CORS_ALLOWEDORIGINS` 之后就可以使用用户 token。
 
 ## 错误
 

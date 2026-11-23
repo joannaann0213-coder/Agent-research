@@ -119,17 +119,24 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 | `agent.worker.concurrency` | `8` | 一个实例同时处理的回合数 |
 | `agent.turn.deadline` | `10m` | 一轮的最长时间；要小于收件箱的 `inbox.lease.max-duration` |
 | `agent.cma.creations-per-minute`, `requests-per-minute` | `300`、`600` | CMA 的限流；多个实例时按份分给每个实例 |
+| `agent.worker.claim-wait` | `5s` | 一次领取在收件箱里等待工作的最长时间 |
+| `AGENT_CORS_ALLOWEDORIGINS` | 无 | 可以从浏览器调用 API 的网页的源，用逗号分隔 |
+| `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`、`false` | 允许 webhook 投递到内网地址、使用明文 http；只用于在一台机器上试用 |
 
 收件箱需要为本服务配置一个 client，角色为 `RUNTIME` 和 `PRODUCER`，不属于任何租户；为了扛住较长的故障，应把最大尝试次数调得比默认值高（`inbox.retry.max-attempts`）。
 
 ### 演示模式与真实模式
 
 演示模式下由脚本扮演所有 agent：它重复用户说的话、读取事件并逐条通知，这样不用 key 也能试用整个服务。真实模式需要一个开通了 Managed Agents 的 Anthropic API
-key。上线前先运行 `scripts/cma-live-check.sh`：它检查本服务所依赖、而文档没有说清的那些 CMA 行为。然后运行 `scripts/agent-live-smoke.sh`：它用 CMA 启动两个服务，端到端检查一段会话、一条通知，以及一个由用户回答的提问。
+key。上线前先运行 `scripts/cma-live-check.sh`：它检查本服务所依赖、而文档没有说清的那些 CMA 行为。然后运行 `scripts/agent-live-smoke.sh`：它用 CMA 启动两个服务，端到端检查一段会话、一条通知，以及一个由用户回答的提问；加上 `--api` 和 `--admin-key` 时，它检查一个已经在运行的服务，比如 `docker-compose.yml` 启动的那个。
+
+演示模式的平台在服务的内存里。重启之后，它会认领数据库里仍然记着的东西（agent 按其配置恢复），但它创建的东西别处都没有：真实模式要从新的应用开始。
 
 ### 部署
 
+- `docker-compose.yml` 在一台机器上运行数据库、收件箱和本服务；[教程](tutorial.md)说明怎么用，以及上线前要检查什么。
 - 在负载均衡后面跑多个实例；它们通过收件箱和数据库协调。
+- 实例停止时，会等它进行中的领取结束，并立即交还领到的 run，这样没有 run 需要等租约过期。
 - 后台循环（中继、worker、清扫、webhook 投递）在每个实例里都会运行。
 - 限流和 CMA 配额都按实例计算。
 - 备份数据库：会话内容在里面；session 的历史保存在 CMA，直到被删除为止。

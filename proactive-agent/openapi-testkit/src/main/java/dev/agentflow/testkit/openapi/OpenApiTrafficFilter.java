@@ -22,6 +22,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.springframework.web.cors.CorsUtils;
 import org.springframework.web.util.ContentCachingResponseWrapper;
 
 /**
@@ -50,7 +51,9 @@ public final class OpenApiTrafficFilter implements Filter {
             throws IOException, ServletException {
         HttpServletRequest request = (HttpServletRequest) servletRequest;
         HttpServletResponse response = (HttpServletResponse) servletResponse;
-        if (request.getDispatcherType() != DispatcherType.REQUEST || !request.getRequestURI().startsWith(pathPrefix)) {
+        // A browser's preflight asks whether a request from another origin may be sent; it is not a call of the API.
+        if (request.getDispatcherType() != DispatcherType.REQUEST || !request.getRequestURI().startsWith(pathPrefix)
+                || CorsUtils.isPreFlightRequest(request)) {
             chain.doFilter(servletRequest, servletResponse);
             return;
         }

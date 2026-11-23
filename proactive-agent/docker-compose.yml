@@ -1,7 +1,7 @@
 # PostgreSQL, the Event Inbox and the agent service on one machine.
 #
-#   docker compose up -d --build        # the first build downloads dependencies: a few minutes
-#   examples/agent-api/quickstart.sh    # try it
+#   docker compose up -d --build --wait   # the first build downloads dependencies: a few minutes
+#   examples/agent-api/quickstart.sh      # try it
 #
 # Without a .env file it runs in demo mode, where a script plays the agent, with the example secrets
 # of the documentation, and the API listens on 127.0.0.1:8090 only. Copy .env.example to .env and
@@ -64,6 +64,8 @@ services:
       AGENT_TOKENS_SECRETS_0: ${AGENT_TOKENS_SECRETS_0:-change-me-token-secret-0123456789abcdef}
       AGENT_CMA_MODE: ${AGENT_CMA_MODE:-demo}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Web pages of these origins may call the API from the browser; comma-separated.
+      AGENT_CORS_ALLOWEDORIGINS: ${AGENT_CORS_ALLOWEDORIGINS:-}
       # Only to try webhooks on one machine: deliveries to private addresses over plain http.
       AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS: ${AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS:-false}
       AGENT_WEBHOOKS_ALLOWPLAINHTTP: ${AGENT_WEBHOOKS_ALLOWPLAINHTTP:-false}

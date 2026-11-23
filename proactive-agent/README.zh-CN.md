@@ -80,7 +80,15 @@ scripts/inbox-curl.sh order-bot order-bot-secret GET /v1/inbox/u42/events/01M7WZ
 
 ## Agent 服务
 
-Agent 服务需要收件箱，并在收件箱里为它配置一个 client。演示模式下由脚本扮演 agent，不需要 Anthropic key。
+最快的运行方式是 Docker。下面的命令在一台机器上运行 PostgreSQL、收件箱和 agent 服务，使用演示模式：由脚本扮演 agent，不需要 Anthropic
+key；[教程](docs/zh/tutorial.md)从这里继续讲如何接入应用、如何上线。
+
+```bash
+docker compose up -d --build --wait
+examples/agent-api/quickstart.sh
+```
+
+不用 Docker 时，agent 服务需要收件箱，并在收件箱里为它配置一个 client：
 
 ```bash
 # 终端 1：收件箱，为 agent 服务配置一个 client（角色 RUNTIME 和 PRODUCER，不属于任何租户）。
@@ -124,6 +132,7 @@ examples/agent-api/quickstart.sh
 | [测试](docs/zh/testing.md) | 怎么运行测试，以及每一项验收由哪个测试证明 |
 | [Agent 服务](docs/zh/agent-service.md) | Agent 服务如何工作、出了问题怎么办、怎样运行 |
 | [Agent API](docs/zh/agent-api.md) | 写给应用的指南：概念、鉴权、会话、事件、动作、定时计划、更新、凭据 |
+| [教程](docs/zh/tutorial.md) | 用 Docker 运行服务，一步步接入应用：后端、用户端、业务事件、审批、真实模式、上线 |
 
 ## 配置
 

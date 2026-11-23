@@ -24,6 +24,7 @@ public class AgentProperties {
     private final Stream stream = new Stream();
     private final Limits limits = new Limits();
     private final Scheduling scheduling = new Scheduling();
+    private final Cors cors = new Cors();
 
     public Admin getAdmin() {
         return admin;
@@ -83,6 +84,28 @@ public class AgentProperties {
 
     public Scheduling getScheduling() {
         return scheduling;
+    }
+
+    public Cors getCors() {
+        return cors;
+    }
+
+    /** Web pages that call the API from the browser. */
+    public static class Cors {
+
+        /**
+         * Origins of web pages, such as {@code https://app.example.com}, that may call the API from
+         * the browser, with a user token. Without one, a browser reaches the API only from its own origin.
+         */
+        private List<String> allowedOrigins = new ArrayList<>();
+
+        public List<String> getAllowedOrigins() {
+            return allowedOrigins;
+        }
+
+        public void setAllowedOrigins(List<String> allowedOrigins) {
+            this.allowedOrigins = allowedOrigins;
+        }
     }
 
     /** The administration API. */
@@ -332,8 +355,11 @@ public class AgentProperties {
         /** How many turns this instance works on at once. */
         private int concurrency = 8;
 
-        /** How long a claim waits in the Inbox for work before it asks again. */
-        private Duration claimWait = Duration.ofSeconds(20);
+        /**
+         * How long a claim waits in the Inbox for work before it asks again. Short, because an instance
+         * that stops lets its claims under way finish first.
+         */
+        private Duration claimWait = Duration.ofSeconds(5);
 
         public String getId() {
             return id;

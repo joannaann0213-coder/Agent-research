@@ -88,8 +88,16 @@ Health is at `/actuator/health` and metrics at `/actuator/prometheus`.
 
 ## Agent service
 
-The agent service needs the Inbox, with a client for the service. In demo mode a script plays the
-agent, so no Anthropic key is needed.
+The quickest way to run it is Docker. This runs PostgreSQL, the Inbox and the agent service on one
+machine, in demo mode, where a script plays the agent and no Anthropic key is needed;
+[the tutorial](docs/en/tutorial.md) goes on from there to connecting an application and going live.
+
+```bash
+docker compose up -d --build --wait
+examples/agent-api/quickstart.sh
+```
+
+Without Docker, the agent service needs the Inbox, with a client for the service:
 
 ```bash
 # Terminal 1: the Inbox, with a client for the agent service (roles RUNTIME and PRODUCER, no tenant).
@@ -134,6 +142,7 @@ explains how the service works and how to run it in production.
 | [Testing](docs/en/testing.md) | How to run the tests and which test proves which acceptance check |
 | [Agent service](docs/en/agent-service.md) | How the agent service works, what it does when something breaks, and how to run it |
 | [Agent API](docs/en/agent-api.md) | The guide for applications: concepts, authentication, conversations, events, actions, schedules, updates, credentials |
+| [Tutorial](docs/en/tutorial.md) | Run the service with Docker and connect an application step by step: back end, users' apps, events, approvals, live mode, going live |
 
 ## Configuration
 
