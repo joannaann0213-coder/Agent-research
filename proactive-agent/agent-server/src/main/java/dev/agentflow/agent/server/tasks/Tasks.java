@@ -148,8 +148,14 @@ public class Tasks {
      * @param task the task; {@code null} when there is none
      * @param created whether this call made it, rather than found the one an earlier delivery of the run made
      * @param refused why there is no task, in words for the agent; {@code null} when there is one
+     * @param held why the task waits for the user although its role may start unasked, in words for the
+     *     agent; {@code null} when that is not so
      */
-    public record Delegated(Task task, boolean created, String refused) {
+    public record Delegated(Task task, boolean created, String refused, String held) {
+
+        Delegated(Task task, boolean created, String refused) {
+            this(task, created, refused, null);
+        }
     }
 
     /** What starting a task came to. */
@@ -234,6 +240,22 @@ public class Tasks {
         }
         closeStale(hub);
         String authorizedBy = askFirst ? null : authorization(hub, worker, userTurn);
+        String held = null;
+        if (BY_GRANT.equals(authorizedBy) || BY_POLICY.equals(authorizedBy)) {
+            // Nobody is asked about such a task, so there is a limit to how many of them a day brings.
+            long unasked = jdbc.sql("""
+                    SELECT count(*) FROM delegated_task
+                     WHERE app_id = :appId AND user_id = :userId AND authorized_by IN ('grant', 'policy') AND authorized_at > :since
+                    """)
+                    .param("appId", hub.appId()).param("userId", hub.userId())
+                    .param("since", Db.ts(clock.now().minus(java.time.Duration.ofHours(24))))
+                    .query(Long.class).single();
+            if (unasked >= config.getMaxUnaskedPerDay()) {
+                authorizedBy = null;
+                held = "You have started " + unasked + " tasks without asking the user in the last 24 hours, which is the "
+                        + "limit, so this one waits for their confirmation.";
+            }
+        }
         if (authorizedBy == null) {
             if (summary == null) {
                 return new Delegated(null, false, "Not delegated: the user has to confirm this task before it starts, and is "
@@ -286,7 +308,7 @@ public class Tasks {
             // The user is asked where they are: in the conversation, whatever else the application shows.
             messages.storeProposal(task.appId(), task.userId(), task.conversationId(), task.hubKey(), taskId, summary, runId);
         }
-        return new Delegated(task, true, null);
+        return new Delegated(task, true, null, held);
     }
 
     /**

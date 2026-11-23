@@ -317,6 +317,9 @@ class TurnTools {
         result.put("task_id", done.task().taskId()).put("role", done.task().role()).put("status", done.task().status());
         if (done.task().proposed()) {
             boolean oneByOne = WorkerConfig.ALWAYS_ASK.equals(worker.get().startRule());
+            if (done.held() != null) {
+                result.put("held", done.held());
+            }
             result.put("next", "Not started: the user has to confirm it first. Your summary of it has been put before them as a "
                     + "message in the conversation, so do not send it again. You are told if they decline. "
                     + (oneByOne ? "Tasks of this role are confirmed in the application, one by one. "

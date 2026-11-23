@@ -760,8 +760,39 @@ public class AgentProperties {
         /** How long a task waits for the user's confirmation. After that it can no longer be started. */
         private Duration proposalTtl = Duration.ofDays(3);
 
+        /**
+         * How many tasks a user's main agents may start in 24 hours without the user being asked: by
+         * the user's standing authorisation, or because the application lets the role start unasked.
+         * Beyond that a task waits for the user's confirmation like any other that the main agent
+         * begins by itself. What the user asks for, and what the user confirms, does not count.
+         */
+        private int maxUnaskedPerDay = 10;
+
+        /**
+         * The longest turn of a worker on a task. Longer than a conversation's turn, because nobody
+         * waits for it; keep it below the Inbox's {@code inbox.lease.max-duration}. Work that takes
+         * longer goes on in a further turn, which the worker sets itself a follow-up for.
+         */
+        private Duration turnDeadline = Duration.ofMinutes(20);
+
         public String getLane() {
             return lane;
+        }
+
+        public int getMaxUnaskedPerDay() {
+            return maxUnaskedPerDay;
+        }
+
+        public void setMaxUnaskedPerDay(int maxUnaskedPerDay) {
+            this.maxUnaskedPerDay = maxUnaskedPerDay;
+        }
+
+        public Duration getTurnDeadline() {
+            return turnDeadline;
+        }
+
+        public void setTurnDeadline(Duration turnDeadline) {
+            this.turnDeadline = turnDeadline;
         }
 
         public void setLane(String lane) {

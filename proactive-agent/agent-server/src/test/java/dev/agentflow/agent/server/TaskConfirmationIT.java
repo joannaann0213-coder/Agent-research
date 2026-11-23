@@ -331,6 +331,34 @@ class TaskConfirmationIT extends AgentTestBase {
     }
 
     @Test
+    void withAStandingAuthorisationOnlySoMuchStartsByItselfInADay() {
+        alice.put(GRANT, null).as(GrantView.class);
+        for (int i = 1; i <= 10; i++) {
+            somethingHappens("{\"look_into\": \"order " + i + "\"}");
+            untilQuiet();
+        }
+        assertThat(tasks(acme, "all")).extracting(TaskView::authorizedBy).as("ten in a day start unasked")
+                .hasSize(10).containsOnly("grant");
+
+        somethingHappens("{\"look_into\": \"order 11\"}");
+        untilQuiet();
+
+        TaskView eleventh = tasks(acme, "proposed").getFirst();
+        assertThat(eleventh).extracting(TaskView::title, TaskView::status, TaskView::authorizedBy)
+                .as("the eleventh waits for the user, grant or not").containsExactly("order 11", "proposed", null);
+        assertThat(answers.getLast()).contains("You have started 10 tasks without asking the user in the last 24 hours");
+        assertThat(alice.post(TASKS + "/" + eleventh.taskId() + "/start", null).as(TaskView.class).authorizedBy())
+                .as("and starts when they confirm it").isEqualTo("user");
+        untilQuiet();
+
+        clock.advance(Duration.ofHours(24));
+        somethingHappens("{\"look_into\": \"order 12\"}");
+        untilQuiet();
+        assertThat(tasks(acme, "all").getFirst()).extracting(TaskView::title, TaskView::authorizedBy)
+                .as("a day later it starts by itself again").containsExactly("order 12", "grant");
+    }
+
+    @Test
     void anAuthorisationIsTheUsersOwn_andNamesARoleOfAMainAgent() {
         TestApi bob = user(acme, "u43");
 

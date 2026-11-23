@@ -200,6 +200,7 @@ worker 之后做的每一件事：需要审批的工具调用仍然要等审批�
 | 主 agent 委派得越来越多 | 排队或进行中的任务达到 4 个，或者开着的任务达到 20 个时，`delegate_task` 会被拒绝并说明原因 |
 | 待确认的任务没人确认 | 3 天之后清扫把它关掉，并记录 `task.updated`，展示它的应用由此得知；这时再去确认会被拒绝 |
 | 主 agent 提出得越来越多 | 等确认的任务达到 5 个时，`delegate_task` 会被拒绝 |
+| 可以不问就开工的主 agent 开工越来越多 | 一个用户 24 小时内这样开始了 10 个任务之后，再有的就等用户确认，有没有授权都一样 |
 
 `CoordinatorIT` 和 `TaskConfirmationIT` 里每一行都有一个测试。
 
@@ -223,6 +224,7 @@ worker 之后做的每一件事：需要审批的工具调用仍然要等审批�
 | 某个角色的任务何时可以开始 | `ask` | agent 的 `coordinator` 里该角色的 `start` |
 | 一个会话里等确认的任务 | 5 个 | `agent.tasks.max-proposed` |
 | 任务等确认等多久 | 3 天 | `agent.tasks.proposal-ttl` |
+| 不问用户就开始的任务（靠长期授权，或者 `always_allow`） | 每个用户 24 小时 10 个；再多就等确认 | `agent.tasks.max-unasked-per-day` |
 | 一个会话里排队或进行中的任务 | 4 个 | agent 的 `coordinator` 里的 `max_active_tasks`，1 到 20 |
 | 一个会话里开着的任务 | 20 个 | `agent.tasks.max-open` |
 | 闲置的任务保留多久 | 7 天 | `agent.tasks.idle-ttl` |
@@ -230,6 +232,7 @@ worker 之后做的每一件事：需要审批的工具调用仍然要等审批�
 | worker 的汇报 | 16,000 个字符，超出截断 | `agent.tasks.max-report` |
 | worker 运行所在的收件箱 lane | `batch` | `agent.tasks.lane`：`batch` 或 `background` |
 | 一个用户同时运行的 worker | 1 个 | 收件箱的 `inbox.lanes.batch.cap`；`docker-compose.yml` 设为 4 |
+| worker 的一轮最长多久 | 20 分钟；会话的一轮是 10 分钟 | `agent.tasks.turn-deadline`，要小于收件箱的 `inbox.lease.max-duration` |
 
 worker 有自己的 lane，这样 worker 的长回合永远不会挡住唤醒主 agent 的东西，主 agent 的回合也不用排在 worker 后面等空位。
 

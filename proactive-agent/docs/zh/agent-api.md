@@ -297,4 +297,5 @@ curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: B
 | 一个主 agent 会话里的任务：排队或进行中的，以及开着的 | 4 个和 20 个 | agent 的 `max_active_tasks`、`agent.tasks.max-open` |
 | 任务的指令，以及 worker 的汇报 | 8,000 和 16,000 个字符 | `agent.tasks.max-instructions`、`max-report` |
 | 一个主 agent 会话里等确认的任务数，以及等多久 | 5 个，等 3 天 | `agent.tasks.max-proposed`、`proposal-ttl` |
+| 一个用户不被询问就开始的任务数 | 24 小时 10 个 | `agent.tasks.max-unasked-per-day` |
 | 消息文本、事件数据 | 32,000 个字符、16 KB | 固定 |

@@ -452,6 +452,19 @@ class CoordinatorIT extends AgentTestBase {
     // ================================================================ when things go wrong
 
     @Test
+    void aWorkersTurnMayTakeLongerThanAConversations_becauseNobodyWaitsForIt() {
+        userSays(acme, USER, "research flights to Tokyo");
+        untilQuiet();
+
+        assertThat(jdbc.sql("""
+                SELECT split_part(merge_key, ':', 1) || ' ' || (extract(epoch FROM deadline_at - created_at) / 60)::int
+                  FROM turn ORDER BY created_at, run_id
+                """).query(String.class).list())
+                .as("minutes that each turn had: the conversation's, the worker's, and the main agent's for the report")
+                .containsExactly("conv 10", "work 20", "conv 10");
+    }
+
+    @Test
     void aWorkerThatEndsItsTurnWithoutAWord_isReportedInItsPlace_soThatTheMainAgentNeverWaitsForNothing() {
         workerScript = context -> context.step() == 0 ? ModelStep.of(custom("read_events", "{}")) : ModelStep.of();
         userSays(acme, USER, "research flights to Tokyo");
@@ -477,7 +490,7 @@ class CoordinatorIT extends AgentTestBase {
         assertThat(failure.path("from").asString()).isEqualTo("the service");
         assertThat(failure.path("kind").asString()).isEqualTo("failure");
         assertThat(failure.path("text").asString()).startsWith("The worker's turn failed, and what it was doing is not done: "
-                + "the turn took longer than PT10M.");
+                + "the turn took longer than PT20M.");
         assertThat(tasks(acme).getFirst().status()).as("the task stays open: the main agent decides what to do").isEqualTo("idle");
         Update failed = acme.get("/v1/users/u42/updates").as(UpdatePage.class).updates().stream()
                 .filter(update -> update.type().equals("run.failed")).findFirst().orElseThrow();

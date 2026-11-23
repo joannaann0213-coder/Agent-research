@@ -352,4 +352,5 @@ it is done; an event whose data has a text `task` makes the script propose that 
 | Tasks of one main agent's conversation: queued or worked on, and open | 4 and 20 | `max_active_tasks` of the agent, `agent.tasks.max-open` |
 | Instructions of a task, and a worker's report | 8,000 and 16,000 characters | `agent.tasks.max-instructions`, `max-report` |
 | Tasks of one main agent's conversation that wait for a confirmation, and for how long | 5, for 3 days | `agent.tasks.max-proposed`, `proposal-ttl` |
+| Tasks that start for one user without the user being asked | 10 in 24 hours | `agent.tasks.max-unasked-per-day` |
 | Message text, event data | 32,000 characters, 16 KB | fixed |

@@ -156,6 +156,7 @@ public class TurnRunner {
     private final TurnHooks hooks;
     private final AgentProperties.Turn config;
     private final AgentProperties.Notify notify;
+    private final Duration workerDeadline;
     private final Duration actionTtl;
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
@@ -183,6 +184,7 @@ public class TurnRunner {
         this.hooks = hooks;
         this.config = properties.getTurn();
         this.notify = properties.getNotify();
+        this.workerDeadline = properties.getTasks().getTurnDeadline();
         this.actionTtl = properties.getActions().getTtl();
     }
 
@@ -221,7 +223,7 @@ public class TurnRunner {
             // after it fell due. There is nothing to do.
             return new Settlement.Done();
         }
-        Turn turn = turns.open(run, config.getDeadline()).orElseThrow(() -> new StaleTurnException(run.runId(), run.epoch()));
+        Turn turn = turns.open(run, deadlineOf(run)).orElseThrow(() -> new StaleTurnException(run.runId(), run.epoch()));
         if (Turns.DONE.equals(turn.state())) {
             return new Settlement.Done();
         }
@@ -968,6 +970,11 @@ public class TurnRunner {
         }
     }
 
+    /** How long a turn of the run may take: a worker's turn on a task longer than any other, because nobody waits for it. */
+    private Duration deadlineOf(ClaimedRun run) {
+        return run.mergeKey() != null && run.mergeKey().startsWith(Threads.WORK_PREFIX) ? workerDeadline : config.getDeadline();
+    }
+
     /** Whether the line is a main agent's: there a question does not make the turn wait. */
     private boolean asksInPassing(Threads.Thread thread) {
         return thread.chat() && profiles.config(thread.appId(), thread.agentKey()).coordinator() != null;
@@ -1230,7 +1237,7 @@ public class TurnRunner {
         } catch (CmaException e) {
             log.warn("run {}: the session could not be interrupted at the deadline: {}", run.runId(), e.getMessage());
         }
-        String error = "the turn took longer than " + config.getDeadline();
+        String error = "the turn took longer than " + deadlineOf(run);
         tx.executeWithoutResult(status -> {
             users.lock(thread.appId(), thread.userId());
             turns.finish(turn, Turns.FAILED, null, error);

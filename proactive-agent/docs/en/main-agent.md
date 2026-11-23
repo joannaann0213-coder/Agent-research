@@ -254,6 +254,7 @@ update, `task.created` or `task.updated`.
 | The main agent delegates more and more | `delegate_task` is refused, with the reason, while 4 tasks are queued or worked on, or 20 are open |
 | Nobody confirms a proposed task | After 3 days the sweep closes it and records `task.updated`, so that the application that shows it knows; an attempt to confirm it then is refused |
 | The main agent proposes more and more | `delegate_task` is refused while 5 tasks wait for a confirmation |
+| A main agent that may start work unasked starts more and more | After 10 such tasks in 24 hours for one user, the next ones wait for the user's confirmation, authorisation or not |
 
 `CoordinatorIT` and `TaskConfirmationIT` have a test for each row.
 
@@ -286,6 +287,7 @@ update, `task.created` or `task.updated`.
 | When a task of a role may start | `ask` | `start` of the role in the agent's `coordinator` |
 | Tasks of one conversation that wait for a confirmation | 5 | `agent.tasks.max-proposed` |
 | How long a task waits for a confirmation | 3 days | `agent.tasks.proposal-ttl` |
+| Tasks that start without the user being asked, by a standing authorisation or by `always_allow` | 10 in 24 hours for one user; further ones wait for a confirmation | `agent.tasks.max-unasked-per-day` |
 | Tasks of one conversation that are queued or worked on | 4 | `max_active_tasks` of the agent's `coordinator`, 1 to 20 |
 | Tasks of one conversation that are open | 20 | `agent.tasks.max-open` |
 | How long an idle task is kept | 7 days | `agent.tasks.idle-ttl` |
@@ -293,6 +295,7 @@ update, `task.created` or `task.updated`.
 | A worker's report | 16,000 characters, then cut off | `agent.tasks.max-report` |
 | The Inbox lane on which workers run | `batch` | `agent.tasks.lane`: `batch` or `background` |
 | Workers of one user that run at the same time | 1 | The Inbox's `inbox.lanes.batch.cap`; `docker-compose.yml` sets 4 |
+| How long a turn of a worker may take | 20 minutes; a conversation's turn has 10 | `agent.tasks.turn-deadline`, below the Inbox's `inbox.lease.max-duration` |
 
 Workers have a lane of their own so that a worker's long turn never holds up what wakes the main
 agent, and the main agent's turns never wait for a free slot behind workers.
