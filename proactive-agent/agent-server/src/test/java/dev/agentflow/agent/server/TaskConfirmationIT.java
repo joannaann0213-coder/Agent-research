@@ -223,12 +223,34 @@ class TaskConfirmationIT extends AgentTestBase {
         assertThat(workerRead).hasSize(1);
         assertThat(workerRead.getFirst().path("messages").get(0).path("text").asString()).isEqualTo("Research the delayed order");
         assertThat(messagesOf(acme, USER)).extracting(MessageView::kind, MessageView::text).containsExactly(
+                tuple("proposal", "I can look into the delayed order for you."),
                 tuple("notification", "About the delayed order: Researched: Research the delayed order"));
         assertThat(jdbc.sql("SELECT merge_key || ' ' || outcome FROM turn ORDER BY created_at, run_id").query(String.class).list())
                 .containsExactly("conv:default silent", "work:" + lastTask + " reported", "conv:default notified");
         JsonNode confirmed = updates("task.updated").getFirst().data();
         assertThat(confirmed.path("status").asString()).isEqualTo("queued");
         assertThat(confirmed.path("authorized_by").asString()).isEqualTo("user");
+    }
+
+    @Test
+    void whatWaitsForTheUserShowsInTheConversation_soThatAChatAloneCanConfirmIt() {
+        somethingHappens("{\"look_into\": \"the delayed order\"}");
+        settle();
+
+        assertThat(messagesOf(alice, USER)).extracting(MessageView::role, MessageView::kind, MessageView::text, MessageView::taskId)
+                .as("the main agent's summary, as a message that names the task")
+                .containsExactly(tuple("agent", "proposal", "I can look into the delayed order for you.", lastTask));
+        assertThat(updates(Update.MESSAGE_CREATED)).extracting(update -> update.data().path("task_id").asString())
+                .containsExactly(lastTask);
+        assertThat(answers.getLast()).contains("put before them as a message in the conversation");
+
+        userSays(alice, USER, "go ahead");
+        untilQuiet();
+
+        assertThat(acme.get(TASKS + "/" + lastTask).as(TaskView.class)).extracting(TaskView::status, TaskView::authorizedBy)
+                .containsExactly("idle", "conversation");
+        assertThat(messagesOf(alice, USER)).extracting(MessageView::kind)
+                .containsExactly("proposal", "message", "reply", "notification");
     }
 
     @Test
@@ -351,7 +373,8 @@ class TaskConfirmationIT extends AgentTestBase {
         untilQuiet();
 
         assertThat(tasks(alice, "proposed")).extracting(TaskView::title).containsExactly("flights to Tokyo");
-        assertThat(repliesTo(acme, USER)).containsExactly("Waiting for you: " + lastTask);
+        assertThat(repliesTo(acme, USER)).as("what is proposed, and the main agent's answer to the user")
+                .containsExactly("I would look into flights to Tokyo for you.", "Waiting for you: " + lastTask);
         TestApi.Reply refused = alice.put(GRANT, null);
         assertThat(refused.status()).isEqualTo(400);
         assertThat(refused.code()).isEqualTo(ProblemCodes.INVALID_REQUEST);
@@ -515,13 +538,15 @@ class TaskConfirmationIT extends AgentTestBase {
 
         TaskView waiting = tasks(alice, "proposed").getFirst();
         assertThat(waiting.summary()).isEqualTo("[demo] I can do this for you: find a new delivery slot");
-        assertThat(repliesTo(acme, USER)).as("the task itself is what the user is shown").isEmpty();
+        assertThat(repliesTo(acme, USER)).as("the user is shown what is proposed, and nothing else")
+                .containsExactly("[demo] I can do this for you: find a new delivery slot");
 
         alice.post(TASKS + "/" + waiting.taskId() + "/start", null).as(TaskView.class);
         untilQuiet();
 
-        assertThat(repliesTo(acme, USER)).containsExactly("[demo] Your task \"find a new delivery slot\" is back from the "
-                + "researcher: [demo] Done. You asked for: find a new delivery slot");
+        assertThat(repliesTo(acme, USER)).containsExactly("[demo] I can do this for you: find a new delivery slot",
+                "[demo] Your task \"find a new delivery slot\" is back from the "
+                        + "researcher: [demo] Done. You asked for: find a new delivery slot");
     }
 
     // ================================================================ helpers

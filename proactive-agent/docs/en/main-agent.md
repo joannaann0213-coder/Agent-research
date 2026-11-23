@@ -139,7 +139,9 @@ user's word, in any other turn on its own initiative. The application sets the r
 
 A task that waits has the state `proposed`. It costs nothing on the platform: its worker gets a
 session only when the task starts. The application shows it to the user with the main agent's
-`summary` of it, what it wants to do and why, which comes with the update `task.created`. The user
+`summary` of it, what it wants to do and why, which comes with the update `task.created`. The
+summary is also put into the conversation, as a message with `kind: proposal` that names the task in
+`task_id`: an application that shows nothing but the conversation shows the proposal too. The user
 answers in one of three ways.
 
 1. In the application: `POST /v1/users/{user_id}/tasks/{task_id}/start` confirms the task, and
@@ -179,6 +181,7 @@ The requirement was checked against the design case by case. "New" marks what th
 | Several things happen close together | Yes | One turn gets them together, so one task can cover them |
 | Work under way needs a decision on one action | Yes | The worker's tool call waits for its approval, as for any agent |
 | The user stops work that started by itself | Yes | They close the task, or tell the main agent |
+| The product shows nothing but the conversation | Yes, new | The proposal is a message of the conversation, and the user's "go ahead" there starts the task |
 | The user wants to see a plan before confirming | No | The user confirms the main agent's summary; a worker does not plan first |
 | The user authorises more narrowly than a role | No | An authorisation names a role; the application can make its roles finer |
 

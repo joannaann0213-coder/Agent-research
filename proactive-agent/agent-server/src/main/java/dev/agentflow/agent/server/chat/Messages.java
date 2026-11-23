@@ -109,7 +109,7 @@ public class Messages {
                 Instant now = clock.now();
                 long seq = users.nextSeq(appId, userId);
                 insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now,
-                        question.get().mergeKey(), question.get().actionId());
+                        question.get().mergeKey(), question.get().actionId(), null);
                 actions.settle(question.get(), Actions.ANSWERED, text, null, Actions.BY_USER);
                 actions.ring(appId, userId, question.get().mergeKey(), question.get().runId());
                 return new MessageAccepted(messageId, conversationId, seq, now, false, question.get().actionId());
@@ -132,7 +132,7 @@ public class Messages {
             Instant now = clock.now();
             long seq = users.nextSeq(appId, userId);
             String line = Threads.chatKey(conversationId);
-            insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, null);
+            insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, null, null);
             actions.supersede(appId, userId, line, Actions.supersededNote(line));
 
             ObjectNode payload = InboxJson.mapper().createObjectNode();
@@ -165,8 +165,24 @@ public class Messages {
             return false;
         }
         insert(appId, userId, users.nextSeq(appId, userId), conversationId, messageId, "agent", kind, text, runId, clock.now(),
-                mergeKey, actionId);
+                mergeKey, actionId, null);
         return true;
+    }
+
+    /**
+     * Puts work that a main agent offers to do before the user, in the conversation: what the agent
+     * wrote about it for them, as a message that names the task. In the caller's transaction, under
+     * the user's lock. Storing it a second time changes nothing.
+     *
+     * @param mergeKey the main agent's line
+     */
+    public void storeProposal(String appId, String userId, String conversationId, String mergeKey, String taskId, String text,
+            String runId) {
+        String messageId = "proposal:" + taskId;
+        if (find(appId, userId, conversationId, messageId).isEmpty()) {
+            insert(appId, userId, users.nextSeq(appId, userId), conversationId, messageId, "agent", "proposal", text, runId,
+                    clock.now(), mergeKey, null, taskId);
+        }
     }
 
     /**
@@ -177,7 +193,7 @@ public class Messages {
             String mergeKey, String actionId) {
         if (find(appId, userId, conversationId, messageId).isEmpty()) {
             insert(appId, userId, users.nextSeq(appId, userId), conversationId, messageId, "user", "message", text, null,
-                    clock.now(), mergeKey, actionId);
+                    clock.now(), mergeKey, actionId, null);
         }
     }
 
@@ -273,28 +289,29 @@ public class Messages {
     }
 
     private void insert(String appId, String userId, long seq, String conversationId, String messageId, String role,
-            String kind, String text, String runId, Instant now, String mergeKey, String actionId) {
+            String kind, String text, String runId, Instant now, String mergeKey, String actionId, String taskId) {
         jdbc.sql("""
                 INSERT INTO message (app_id, user_id, seq, conversation_id, message_id, role, kind, text, run_id, created_at,
-                                     merge_key, action_id)
+                                     merge_key, action_id, task_id)
                 VALUES (:appId, :userId, :seq, :conversationId, :messageId, :role, :kind, :text, :runId, :now, :mergeKey,
-                        :actionId)
+                        :actionId, :taskId)
                 """)
                 .param("appId", appId).param("userId", userId).param("seq", seq).param("conversationId", conversationId)
                 .param("messageId", messageId).param("role", role).param("kind", kind).param("text", text)
                 .param("runId", runId).param("now", Db.ts(now)).param("mergeKey", mergeKey).param("actionId", actionId)
+                .param("taskId", taskId)
                 .update();
         outbound.record(appId, userId, Update.MESSAGE_CREATED,
-                new MessageView(seq, messageId, conversationId, role, kind, text, now, actionId));
+                new MessageView(seq, messageId, conversationId, role, kind, text, now, actionId, taskId));
     }
 
     private static final String SELECT = """
-            SELECT seq, message_id, conversation_id, role, kind, text, created_at, action_id FROM message
+            SELECT seq, message_id, conversation_id, role, kind, text, created_at, action_id, task_id FROM message
             """;
 
     private static MessageView view(ResultSet rs, int rowNumber) throws SQLException {
         return new MessageView(rs.getLong("seq"), rs.getString("message_id"), rs.getString("conversation_id"),
                 rs.getString("role"), rs.getString("kind"), rs.getString("text"), Db.instant(rs, "created_at"),
-                rs.getString("action_id"));
+                rs.getString("action_id"), rs.getString("task_id"));
     }
 }

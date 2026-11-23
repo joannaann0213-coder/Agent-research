@@ -8,6 +8,7 @@ import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.server.actions.Actions;
 import dev.agentflow.agent.server.api.AgentException;
 import dev.agentflow.agent.server.app.Users;
+import dev.agentflow.agent.server.chat.Messages;
 import dev.agentflow.agent.server.chat.Threads;
 import dev.agentflow.agent.server.config.AgentProperties;
 import dev.agentflow.agent.server.core.Db;
@@ -167,6 +168,7 @@ public class Tasks {
     private final TransactionTemplate tx;
     private final Users users;
     private final Threads threads;
+    private final Messages messages;
     private final Actions actions;
     private final Schedules schedules;
     private final Grants grants;
@@ -177,12 +179,14 @@ public class Tasks {
     private final AgentProperties.Tasks config;
     private final Lane lane;
 
-    public Tasks(JdbcClient jdbc, TransactionTemplate tx, Users users, Threads threads, Actions actions, Schedules schedules,
-            Grants grants, InboxRelay relay, Outbound outbound, AgentClock clock, Ids ids, AgentProperties properties) {
+    public Tasks(JdbcClient jdbc, TransactionTemplate tx, Users users, Threads threads, Messages messages, Actions actions,
+            Schedules schedules, Grants grants, InboxRelay relay, Outbound outbound, AgentClock clock, Ids ids,
+            AgentProperties properties) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
         this.threads = threads;
+        this.messages = messages;
         this.actions = actions;
         this.schedules = schedules;
         this.grants = grants;
@@ -278,6 +282,10 @@ public class Tasks {
             wakeWorker(task, assignment.note());
         }
         outbound.record(task.appId(), task.userId(), Update.TASK_CREATED, view(task, false, false));
+        if (!starts) {
+            // The user is asked where they are: in the conversation, whatever else the application shows.
+            messages.storeProposal(task.appId(), task.userId(), task.conversationId(), task.hubKey(), taskId, summary, runId);
+        }
         return new Delegated(task, true, null);
     }
 

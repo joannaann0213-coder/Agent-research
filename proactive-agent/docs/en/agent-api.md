@@ -316,7 +316,9 @@ your systems post events, as before. What changes is where those go.
 - What the user asks the main agent for starts at once. What the main agent begins on its own
   initiative is a task with the status `proposed`: show it to the user with its `summary`, and call
   `POST .../tasks/{task_id}/start` when they confirm it, or close it when they decline. It can be
-  confirmed for 3 days.
+  confirmed for 3 days. The summary is also a message of the conversation, with `kind: proposal` and
+  the task's `task_id`, so a client that shows only the conversation shows it as well; there the
+  user confirms by telling the agent to go ahead.
 - With a grant the user lets the main agent start the tasks of a role without asking:
   `PUT /v1/users/{user_id}/grants/{agent_key}/{role}` gives it, and `DELETE` on the same path takes it
   back. A role's `start` sets the rule: `ask`, which is the default and what was just described,

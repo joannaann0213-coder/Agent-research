@@ -112,9 +112,9 @@ public final class PlatformTools {
                         gives you its report. If the user is waiting for an answer, tell them what you \
                         have started. A task that the user asked you for starts at once. A task that you \
                         begin on your own initiative, in a turn that the user did not start, may have to \
-                        be confirmed by the user first: the result says so, the user is shown your \
-                        `summary` in the application, and the task starts when they confirm it. The \
-                        roles you can delegate to:""" + roles,
+                        be confirmed by the user first: the result says so, your `summary` is put before \
+                        the user as a message in the conversation, and the task starts when they confirm \
+                        it. The roles you can delegate to:""" + roles,
                         delegate),
                 new AgentSpec.CustomTool(START_TASK, """
                         Starts a task that waits for the user's confirmation, when the user has told you \

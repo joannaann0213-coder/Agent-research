@@ -269,7 +269,8 @@ curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: B
 - 只有主 agent 能建任务。`GET /v1/users/{user_id}/tasks` 列出开着的任务，加上 `status=all` 连已关闭的也列出；`POST .../tasks/{task_id}/close`
   叫停一个任务，主 agent 会被告知。
 - 用户向主 agent 要求的事直接开始。主 agent 自己起意的事是一个状态为 `proposed` 的任务：把它连同 `summary` 展示给用户，用户确认时调用
-  `POST .../tasks/{task_id}/start`，用户拒绝时关闭它。它可以在 3 天内被确认。
+  `POST .../tasks/{task_id}/start`，用户拒绝时关闭它。它可以在 3 天内被确认。这段 `summary` 同时是对话里的一条消息，`kind: proposal`，带着任务的
+  `task_id`，所以只展示对话的客户端也能展示它；在那里，用户让 agent“去做吧”就是确认。
 - 有了长期授权，用户就允许主 agent 不问自己而开始某个角色的任务：`PUT /v1/users/{user_id}/grants/{agent_key}/{role}` 给出授权，对同一路径调用
   `DELETE` 收回。角色的 `start` 决定规则：`ask` 是默认值，也就是上面说的做法；`always_ask` 要求这个角色的每个任务都确认；`always_allow` 一个都不用确认。
 - 用户自己的客户端可以列出和关闭任务。worker 汇报了什么、两个 agent 之间写了什么，只返回给 API key。
