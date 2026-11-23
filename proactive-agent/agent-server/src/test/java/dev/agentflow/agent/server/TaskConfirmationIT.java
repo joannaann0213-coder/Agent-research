@@ -25,12 +25,14 @@ import dev.agentflow.agent.cma.fake.ModelStep;
 import dev.agentflow.agent.cma.fake.ToolOutcome;
 import dev.agentflow.agent.server.support.AgentTestBase;
 import dev.agentflow.agent.server.support.TestApi;
+import dev.agentflow.agent.server.tasks.Tasks;
 import dev.agentflow.agent.server.tools.DemoAgent;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
@@ -56,6 +58,10 @@ class TaskConfirmationIT extends AgentTestBase {
     private final List<String> answers = new ArrayList<>();
     /** The task the main agent delegated last. */
     private String lastTask;
+
+    /** The service's own hand on the tasks, for what its sweep does. */
+    @Autowired
+    private Tasks taskDesk;
 
     @BeforeEach
     void aMainAgentWithAResearcher() {
@@ -410,6 +416,8 @@ class TaskConfirmationIT extends AgentTestBase {
         somethingHappens("{\"look_into\": \"the delayed order\"}");
         settle();
         clock.advance(Duration.ofDays(3));
+        // The user's token ran out long ago; their client has a new one by now.
+        alice = user(acme, USER);
 
         TestApi.Reply late = alice.post(TASKS + "/" + lastTask + "/start", null);
 
@@ -419,6 +427,48 @@ class TaskConfirmationIT extends AgentTestBase {
                 .extracting(TaskView::status, TaskView::closedBy, TaskView::closedReason)
                 .containsExactly("closed", "service", "it was not confirmed in time");
         assertThat(settle()).as("the main agent is not woken for it").isZero();
+    }
+
+    @Test
+    void theSweepClosesWhatNobodyConfirmedInTime_soThatWhoeverShowsItLearnsOfIt() {
+        somethingHappens("{\"look_into\": \"the delayed order\"}");
+        settle();
+        clock.advance(Duration.ofDays(3).minusSeconds(60));
+        assertThat(taskDesk.closeUnconfirmed(10)).as("it can still be confirmed").isZero();
+        clock.advance(Duration.ofSeconds(60));
+
+        assertThat(taskDesk.closeUnconfirmed(10)).isEqualTo(1);
+
+        assertThat(tasks(acme, "proposed")).isEmpty();
+        assertThat(acme.get(TASKS + "/" + lastTask).as(TaskView.class))
+                .extracting(TaskView::status, TaskView::closedBy, TaskView::closedReason)
+                .containsExactly("closed", "service", "it was not confirmed in time");
+        assertThat(updates(Update.TASK_UPDATED)).extracting(update -> update.data().path("status").asString())
+                .as("whoever shows the task learns that it is over").containsExactly("closed");
+        assertThat(settle()).as("the main agent is not woken for it").isZero();
+        assertThat(taskDesk.closeUnconfirmed(10)).as("it is closed once").isZero();
+    }
+
+    @Test
+    void theMainAgentHearsOfATaskThatTheServiceClosed_whenSomethingElseWakesIt() {
+        somethingHappens("{\"look_into\": \"the delayed order\"}");
+        settle();
+        clock.advance(Duration.ofDays(3));
+        taskDesk.closeUnconfirmed(10);
+
+        somethingHappens("{\"carrier\": \"a new one\"}");
+        settle();
+
+        JsonNode told = mainRead.getLast().path("reports");
+        assertThat(told.size()).isEqualTo(1);
+        assertThat(told.path(0).path("from").asString()).isEqualTo("the service");
+        assertThat(told.path(0).path("kind").asString()).isEqualTo("closed");
+        assertThat(told.path(0).path("title").asString()).isEqualTo("the delayed order");
+        assertThat(told.path(0).path("text").asString()).isEqualTo("The service closed this task: it was not confirmed in time");
+
+        somethingHappens("{\"carrier\": \"yet another\"}");
+        settle();
+        assertThat(mainRead.getLast().path("reports").size()).as("it is told once").isZero();
     }
 
     @Test

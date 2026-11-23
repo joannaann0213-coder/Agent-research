@@ -25,6 +25,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -365,6 +366,29 @@ public class Tasks {
                 .list();
     }
 
+    /**
+     * What this service wrote for the main agent of a line without waking it: that it closed a task
+     * itself, because nobody had touched it, or confirmed it, in time. Nothing wakes the main agent
+     * for that; a turn in the background that it has anyway is given these as well.
+     */
+    public List<Report> toldQuietly(String appId, String userId, String hubKey) {
+        return jdbc.sql("""
+                SELECT n.task_id, n.seq
+                  FROM task_note n JOIN delegated_task t USING (app_id, user_id, task_id)
+                 WHERE t.app_id = :appId AND t.user_id = :userId AND t.hub_key = :hubKey AND t.closed_by = 'service'
+                   AND n.direction = 'to_main' AND n.kind = 'closed' AND n.read_at IS NULL
+                 ORDER BY n.created_at, n.task_id
+                 LIMIT 20
+                """)
+                .param("appId", appId).param("userId", userId).param("hubKey", hubKey)
+                .query((rs, rowNumber) -> Map.entry(rs.getString("task_id"), rs.getInt("seq")))
+                .list().stream()
+                .map(named -> find(appId, userId, named.getKey()).flatMap(task -> note(appId, userId, task.taskId(), named.getValue())
+                        .map(note -> new Report(task, note))))
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
     /** Notes that a turn of the main agent ended having been given these reports. */
     public void read(List<Report> reports) {
         for (Report report : reports) {
@@ -523,6 +547,33 @@ public class Tasks {
         } catch (RuntimeException e) {
             log.warn("the follow-ups of task {} could not be cancelled: {}", task.taskId(), e.toString());
         }
+    }
+
+    /**
+     * Closes the tasks that have waited too long for a confirmation, whoever's they are, so that
+     * whoever shows them to the user learns that they can no longer be confirmed. One pass of the
+     * sweep; takes each user's lock itself.
+     *
+     * @return how many it closed
+     */
+    public int closeUnconfirmed(int limit) {
+        List<Task> due = jdbc.sql(SELECT + " WHERE status = 'proposed' AND expires_at <= :now ORDER BY expires_at, task_id LIMIT :limit")
+                .param("now", Db.ts(clock.now())).param("limit", limit)
+                .query(Tasks::task)
+                .list();
+        int closed = 0;
+        for (Task candidate : due) {
+            boolean done = Boolean.TRUE.equals(tx.execute(status -> {
+                users.lock(candidate.appId(), candidate.userId());
+                // It may have been confirmed, or closed, since it was found.
+                return find(candidate).filter(Task::proposed).filter(task -> !clock.now().isBefore(task.expiresAt()))
+                        .map(task -> closeIn(task, BY_SERVICE, NOT_CONFIRMED_IN_TIME)).orElse(false);
+            }));
+            if (done) {
+                closed++;
+            }
+        }
+        return closed;
     }
 
     /** Closes the tasks of a main agent's line that nobody has touched, or confirmed, for too long, to make room. */

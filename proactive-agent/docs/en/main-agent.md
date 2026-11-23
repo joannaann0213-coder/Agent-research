@@ -206,9 +206,11 @@ The requirement was checked against the design case by case. "New" marks what th
 | `closed` | Over. Nothing more comes from it |
 
 A task is closed by the main agent (`close_task`), by the user or the application
-(`POST /v1/users/{user_id}/tasks/{task_id}/close`), or by the service, when the main agent delegates
-again and the task has been idle for 7 days or has waited 3 days for a confirmation. When somebody
-other than the main agent closes a task, the main agent is told.
+(`POST /v1/users/{user_id}/tasks/{task_id}/close`), or by the service: its sweep closes a task that
+has waited 3 days for a confirmation, and when the main agent delegates again, a task that has been
+idle for 7 days is closed too. When the user or the application closes a task, the main agent is
+woken and told. When the service does, nothing wakes it: it is told the next time something else
+wakes it in the background.
 
 The tables are `delegated_task` and `task_note`. A task names the main agent's line, the role, the
 worker's agent and the call that made it; a note has a direction, a kind (`assignment`, `message`,
@@ -225,7 +227,7 @@ update, `task.created` or `task.updated`.
 | The task is closed while the worker works | The worker's session is interrupted, and no report is stored |
 | The main agent's session is replaced | The first turn of the new session is told what was said before and that tasks are open, also when that turn starts in the background |
 | The main agent delegates more and more | `delegate_task` is refused, with the reason, while 4 tasks are queued or worked on, or 20 are open |
-| Nobody confirms a proposed task | After 3 days it can no longer be started: an attempt is refused and closes it, and so does the main agent's next delegation |
+| Nobody confirms a proposed task | After 3 days the sweep closes it and records `task.updated`, so that the application that shows it knows; an attempt to confirm it then is refused |
 | The main agent proposes more and more | `delegate_task` is refused while 5 tasks wait for a confirmation |
 
 `CoordinatorIT` and `TaskConfirmationIT` have a test for each row.

@@ -166,8 +166,8 @@ worker 之后做的每一件事：需要审批的工具调用仍然要等审批�
 | `idle` | worker 已经汇报，或者没事可做；任务在等主 agent |
 | `closed` | 结束了，不会再有任何东西从它那里来 |
 
-关闭任务的可以是主 agent（`close_task`）、用户或应用（`POST /v1/users/{user_id}/tasks/{task_id}/close`），也可以是服务：主 agent
-再次委派时，已经闲置 7 天、或者等确认等了 3 天的任务会被关掉。不是主 agent 自己关的，主 agent 会被告知。
+关闭任务的可以是主 agent（`close_task`）、用户或应用（`POST /v1/users/{user_id}/tasks/{task_id}/close`），也可以是服务：它的清扫会关掉等确认等了
+3 天的任务；主 agent 再次委派时，已经闲置 7 天的任务也会被关掉。用户或应用关闭任务时，主 agent 会被唤醒并告知。服务关闭任务时不会专门唤醒它：下一次有别的事在后台唤醒它时，它一并得知。
 
 对应的表是 `delegated_task` 和 `task_note`。任务记着主 agent 的工作线、角色、worker 的 agent，以及创建它的那次调用；每条记录有方向、种类（`assignment`、`message`、`report`、`failure`
 或 `closed`）和正文。任务状态的每次变化都记录为一条更新：`task.created` 或 `task.updated`。
@@ -182,7 +182,7 @@ worker 之后做的每一件事：需要审批的工具调用仍然要等审批�
 | worker 干活时任务被关闭 | worker 的 session 被中断，不保存任何汇报 |
 | 主 agent 的 session 被替换 | 新 session 的第一轮会被告知之前说过什么、还有任务开着，即使这一轮是在后台开始的 |
 | 主 agent 委派得越来越多 | 排队或进行中的任务达到 4 个，或者开着的任务达到 20 个时，`delegate_task` 会被拒绝并说明原因 |
-| 待确认的任务没人确认 | 3 天之后它不能再开始：再去确认会被拒绝并把它关掉，主 agent 下一次委派时也会把它关掉 |
+| 待确认的任务没人确认 | 3 天之后清扫把它关掉，并记录 `task.updated`，展示它的应用由此得知；这时再去确认会被拒绝 |
 | 主 agent 提出得越来越多 | 等确认的任务达到 5 个时，`delegate_task` 会被拒绝 |
 
 `CoordinatorIT` 和 `TaskConfirmationIT` 里每一行都有一个测试。

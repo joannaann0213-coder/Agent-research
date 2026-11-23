@@ -564,7 +564,12 @@ public class TurnRunner {
             return new Work.Chat(said.stream().filter(message -> message.seq() > stoppedThrough)
                     .sorted(Comparator.comparingLong(MessageView::seq)).toList());
         }
-        return happened.isEmpty() && due.isEmpty() && reported.isEmpty() ? null : new Work.Task(happened, due, reported);
+        if (happened.isEmpty() && due.isEmpty() && reported.isEmpty()) {
+            return null;
+        }
+        // A main agent's turn that happens anyway also hears what the service did to its tasks without waking it.
+        reported.addAll(tasks.toldQuietly(run.tenantId(), run.inboxId(), run.mergeKey()));
+        return new Work.Task(happened, due, reported);
     }
 
     private static Instant parseInstant(String text, Instant otherwise) {
