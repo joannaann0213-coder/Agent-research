@@ -56,7 +56,7 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 | 什么唤醒 worker | 一个收件箱事件：去重、一次一个 run、有租约、可重放、可审计 | 协调者在自己回合里的一次调用，本服务只能在流里看到 |
 | worker 和主 agent 共用什么 | 任务记录，别无其他 | 那个 session 的沙箱、文件、vault 和记忆 |
 | 谁能给 worker 写东西 | 主 agent，随时可以，用 `message_worker` | 只有协调者：客户端不能往 thread 里发消息 |
-| 用户要排在什么后面 | 什么都不用等：主 agent 委派完，它的回合就结束了 | 只要有一个 thread 在忙，session 就在忙，所以这一轮和工作一样长 |
+| 用户要等什么 | 不用等这件工作：主 agent 委派完，它的回合就结束了 | 要等这件工作：只要有一个 thread 在忙，session 就在忙，所以这一轮和工作一样长 |
 | 主 agent 换了新 session 时 | 任务继续，新 session 会被告知还有任务开着 | thread 随 session 一起没了 |
 | 代价 | 每个任务一个 session，有启动时间，也没有共用的工作目录 | 没有额外代价：thread 在已经运行的 session 里启动 |
 
@@ -80,7 +80,7 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 这四种都是同一条线 `conv:<conversation_id>` 上的 run，所以都进同一个 session，一次一个。相隔很近到达的会一起交给它，主 agent
 因此可以先把几件事放在一起权衡，再开口。
 
-服务会在主 agent 的指令后面加几句话：关于这个用户的一切都会来到这个 session；每一次是行动、告诉用户还是保持安静，由它自己判断，而用户的注意力是它手里最稀缺的东西；只有明显是用户想要、又容易撤回的事才不问自取地开始做，否则先提出建议。
+服务会在主 agent 的指令后面加几句话：关于这个用户的一切都会来到这个 session；每一次是行动、告诉用户还是保持安静，由它自己判断，而用户的注意力是它手里最稀缺的东西；只有明显是用户想要、又容易撤回的事，才不等用户开口就动手，否则先提出建议。
 
 一个应用可以在主 agent 之外还有普通 agent。发给普通 agent 的事件照旧去它那个主题的线；只有发给主 agent 的才去它的会话。
 
@@ -122,7 +122,7 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 再次委派时，已经闲置 7 天的任务会被关掉。不是主 agent 自己关的，主 agent 会被告知。
 
 对应的表是 `delegated_task` 和 `task_note`。任务记着主 agent 的工作线、角色、worker 的 agent，以及创建它的那次调用；每条记录有方向、种类（`assignment`、`message`、`report`、`failure`
-或 `closed`）和正文。任务的每次变化都记录为一条更新：`task.created` 或 `task.updated`。
+或 `closed`）和正文。任务状态的每次变化都记录为一条更新：`task.created` 或 `task.updated`。
 
 ## 出了问题时
 
@@ -141,7 +141,7 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 
 - 主 agent 写给 worker 的话不是用户说的话。worker 是作为 `read_events` 的结果拿到它的，并被告知只在自己的指令允许的范围内去做。
 - worker 的汇报对主 agent 来说是信息，从不是指令。主 agent 的指令里写明了这一点。
-- worker 够不着用户。worker 的工具调用如果需要审批，仍然交给该审批的人，和任何 agent 一样。
+- worker 接触不到用户。worker 的工具调用如果需要审批，仍然交给该审批的人，和任何 agent 一样。
 - 用户自己的客户端能看到任务的标题、角色和状态，也能关闭它。worker 汇报了什么、两个 agent 之间写了什么，只有 API key 能看。
 - 委派只有一层：worker 永远不是主 agent，已经在某份 worker 名单上的 agent 也不能变成主 agent。
 - worker 的 session 对它那个 agent 的记忆只读，和所有后台 session 一样。主 agent 的 session 是例外：它既读事件和汇报，又能写记忆。把两者分开的只有它的指令，所以如果这对你的应用来说不够，就不要给主

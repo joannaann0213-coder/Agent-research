@@ -66,7 +66,7 @@ carries the tasks here.
 | What wakes a worker | An Inbox event: deduplicated, one run at a time, leased, replayable, audited | The coordinator's call inside its turn, which this service only sees in the stream |
 | What a worker shares with the main agent | The notes of the task, and nothing else | The session's sandbox, files, vaults and memory |
 | Who can write to a worker | The main agent, at any time, with `message_worker` | Only the coordinator: a client cannot post into a thread |
-| What the user waits behind | Nothing: the main agent's turn ends as soon as it has delegated | The session is busy while any of its threads is, so the turn lasts as long as the work |
+| What the user waits for | Not for the work: the main agent's turn ends as soon as it has delegated | For the work: the session is busy while any of its threads is, so the turn lasts as long as the work |
 | When the main agent gets a new session | The tasks go on, and the new session is told that they are open | The threads go with the session |
 | What it costs | A session per task, with the time it takes to start, and no shared working directory | Nothing on top: a thread starts inside the running session |
 
@@ -150,8 +150,8 @@ the main agent is told.
 
 The tables are `delegated_task` and `task_note`. A task names the main agent's line, the role, the
 worker's agent and the call that made it; a note has a direction, a kind (`assignment`, `message`,
-`report`, `failure` or `closed`) and its text. Every change of a task is recorded as an update,
-`task.created` or `task.updated`.
+`report`, `failure` or `closed`) and its text. Every change of a task's state is recorded as an
+update, `task.created` or `task.updated`.
 
 ## When something breaks
 

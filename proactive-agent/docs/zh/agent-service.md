@@ -53,7 +53,7 @@ flowchart LR
 里运行。双方从不直接调用对方。一方要给另一方的东西存成任务的一条记录，并在同一个事务里给对方的工作线排一个事件，于是收件箱像对待任何输入一样把它变成一个 run。
 
 worker 跑在收件箱的 `batch` lane 上，这样 worker 的长回合不会挡住唤醒主 agent 的东西；这条 lane 的上限就是一个用户同时运行多少个
-worker。worker 够不着用户：它在一轮里最后写的文字就是汇报，汇报会唤醒主 agent；它的回合失败时，由服务替它写一条记录。设计、工具和理由见[主 agent 与 worker](main-agent.md)。
+worker。worker 接触不到用户：它在一轮里最后写的文字就是汇报，汇报会唤醒主 agent；它的回合失败时，由服务替它写一条记录。设计、工具和理由见[主 agent 与 worker](main-agent.md)。
 
 ## 出了问题时
 
