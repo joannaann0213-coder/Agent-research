@@ -4,6 +4,7 @@ import dev.agentflow.agent.api.CoordinatorConfig;
 import dev.agentflow.agent.api.MessageView;
 import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.cma.CmaEvent;
+import dev.agentflow.agent.server.actions.Actions;
 import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.bridge.Turns.Turn;
 import dev.agentflow.agent.server.chat.Messages;
@@ -44,7 +45,7 @@ class TurnTools {
 
     static final int MAX_NOTIFICATIONS_READ = 20;
 
-    private static final Duration QUOTA_WINDOW = Duration.ofHours(24);
+    static final Duration QUOTA_WINDOW = Duration.ofHours(24);
 
     /**
      * @param error whether the agent is told that the call failed
@@ -72,9 +73,10 @@ class TurnTools {
     private final AgentProperties.Tasks taskLimits;
     private final Schedules schedules;
     private final Tasks tasks;
+    private final Actions actions;
     private final AgentProfiles profiles;
 
-    TurnTools(Messages messages, Threads threads, Users users, Turns turns, Schedules schedules, Tasks tasks,
+    TurnTools(Messages messages, Threads threads, Users users, Turns turns, Schedules schedules, Tasks tasks, Actions actions,
             AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, AgentProperties properties) {
         this.messages = messages;
         this.threads = threads;
@@ -87,6 +89,7 @@ class TurnTools {
         this.taskLimits = properties.getTasks();
         this.schedules = schedules;
         this.tasks = tasks;
+        this.actions = actions;
         this.profiles = profiles;
     }
 
@@ -557,7 +560,10 @@ class TurnTools {
             if (messages.find(line.appId(), line.userId(), conversationId, messageId).isPresent()) {
                 return Answer.ok("Sent.");
             }
-            long recent = messages.notificationsSince(line.appId(), line.userId(), clock.now().minus(QUOTA_WINDOW));
+            // What a main agent asked the user unasked counts as well: it reaches them the same way.
+            Instant since = clock.now().minus(QUOTA_WINDOW);
+            long recent = messages.notificationsSince(line.appId(), line.userId(), since)
+                    + actions.unaskedSince(line.appId(), line.userId(), since);
             if (recent >= limits.getPerUserPerDay()) {
                 return Answer.failed("Not sent: this user has been sent " + recent + " notifications in the last 24 hours, "
                         + "which is the limit. Do not try again in this turn.");

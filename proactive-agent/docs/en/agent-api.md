@@ -165,6 +165,9 @@ it does not see the rest.
 - An action that nobody decides within 24 hours expires, and the agent is told so.
 - New input on the action's line (a message in the conversation, a new event for the subject)
   withdraws what waits; the agent finishes its turn, and the new input comes in the next one.
+- A question of a [main agent](#a-main-agent-and-its-tasks) is not withdrawn by events or by its
+  workers' reports: it waits for the user's next message in the conversation, or for an answer with
+  `resolve`, and the agent replies to that as to any message.
 - Built-in sandbox tools that would need an approval are not put before anybody: they are denied.
 
 ## Schedules and follow-ups

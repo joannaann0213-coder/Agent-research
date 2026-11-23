@@ -75,7 +75,9 @@ public class Messages {
      * <p>When the agent waits for the user to answer a question in the conversation, the message is
      * that answer: the turn that asked goes on with it, and it does not start a turn of its own.
      * Otherwise it is new input for the conversation, and whatever the conversation waits for people
-     * to decide is withdrawn: the waiting turn finishes, and the message comes in the next one.
+     * to decide is withdrawn: the waiting turn finishes, and the message comes in the next one. A
+     * question that a main agent asked in passing is answered by the message too, but no turn waits
+     * for it: the message is input like any other, and the agent reads its answer there.
      */
     public MessageAccepted post(String appId, String userId, PostMessageRequest request) {
         String conversationId = request.conversationId() == null ? DEFAULT_CONVERSATION
@@ -105,7 +107,7 @@ public class Messages {
             }
 
             Optional<Actions.Action> question = actions.latestPendingQuestion(appId, userId, conversationId);
-            if (question.isPresent()) {
+            if (question.isPresent() && !question.get().inPassing()) {
                 Instant now = clock.now();
                 long seq = users.nextSeq(appId, userId);
                 insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now,
@@ -132,22 +134,47 @@ public class Messages {
             Instant now = clock.now();
             long seq = users.nextSeq(appId, userId);
             String line = Threads.chatKey(conversationId);
-            insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, null, null);
+            // What a main agent asked in passing is answered by this message, which is a turn of its own all the same.
+            String answered = question.map(Actions.Action::actionId).orElse(null);
+            insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, answered, null);
+            question.ifPresent(asked -> actions.settle(asked, Actions.ANSWERED, text, null, Actions.BY_USER));
             actions.supersede(appId, userId, line, Actions.supersededNote(line));
-
-            ObjectNode payload = InboxJson.mapper().createObjectNode();
-            payload.put("conversation_id", conversationId).put("message_id", messageId);
-            relay.enqueue(appId, userId, WriteEventRequest.builder(EventSource.CONVERSATION, EVENT_TYPE)
-                    .sourceEventId("msg:" + conversationId + ":" + messageId)
-                    .mergeKey(Threads.chatKey(conversationId))
-                    .lane(Lane.INTERACTIVE)
-                    // Stopping a turn is asked for explicitly; the Inbox's guess from the words is not wanted.
-                    .interrupt(false)
-                    .occurredAt(now)
-                    .payload(payload)
-                    .build());
-            return new MessageAccepted(messageId, conversationId, seq, now, false, null);
+            announce(appId, userId, conversationId, messageId, now);
+            return new MessageAccepted(messageId, conversationId, seq, now, false, answered);
         });
+    }
+
+    /**
+     * Stores the user's answer to a question that a main agent asked in passing, given in the
+     * application instead of by writing to the conversation, and has it answered like any message of
+     * the user: no turn waited for it. In the caller's transaction, under the user's lock.
+     */
+    public void answerInPassing(String appId, String userId, String conversationId, String messageId, String text,
+            String actionId) {
+        if (find(appId, userId, conversationId, messageId).isPresent()) {
+            return;
+        }
+        Instant now = clock.now();
+        String line = Threads.chatKey(conversationId);
+        insert(appId, userId, users.nextSeq(appId, userId), conversationId, messageId, "user", "message", text, null, now, line,
+                actionId, null);
+        actions.supersede(appId, userId, line, Actions.supersededNote(line));
+        announce(appId, userId, conversationId, messageId, now);
+    }
+
+    /** Queues the Inbox event that gets a user's message answered. */
+    private void announce(String appId, String userId, String conversationId, String messageId, Instant now) {
+        ObjectNode payload = InboxJson.mapper().createObjectNode();
+        payload.put("conversation_id", conversationId).put("message_id", messageId);
+        relay.enqueue(appId, userId, WriteEventRequest.builder(EventSource.CONVERSATION, EVENT_TYPE)
+                .sourceEventId("msg:" + conversationId + ":" + messageId)
+                .mergeKey(Threads.chatKey(conversationId))
+                .lane(Lane.INTERACTIVE)
+                // Stopping a turn is asked for explicitly; the Inbox's guess from the words is not wanted.
+                .interrupt(false)
+                .occurredAt(now)
+                .payload(payload)
+                .build());
     }
 
     /**

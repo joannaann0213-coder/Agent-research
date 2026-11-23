@@ -37,6 +37,12 @@ import tools.jackson.databind.node.ObjectNode;
  * that key, which wakes the run. The event says nothing itself; the turn reads the rows. A ring that
  * comes after the turn has ended is an ordinary event of the line, and the turn that gets it ignores
  * it.
+ *
+ * <p>A main agent's question is different: it is asked <em>in passing</em>. Everything that concerns
+ * the user comes in on the main agent's line, so a turn that waited there would be ended by the next
+ * event or report, and the question with it. Such a question is on record like any other, but no turn
+ * waits for it and nothing but the user's own word ends it early: the answer comes as the user's next
+ * message, which is a turn of its own.
  */
 @Service
 public class Actions {
@@ -60,10 +66,11 @@ public class Actions {
 
     static final String EXPIRED_NOTE = "nobody decided in time";
 
+    /** @param inPassing whether it is a question that no turn waits for: a main agent's */
     public record Action(String appId, String userId, String actionId, String kind, String status, String approver,
             String mergeKey, String runId, String conversationId, String sessionId, String toolUseId, String toolServer,
             String toolName, JsonNode toolInput, String question, List<String> options, String answer, String note,
-            String resolvedBy, Instant createdAt, Instant expiresAt, Instant resolvedAt) {
+            String resolvedBy, Instant createdAt, Instant expiresAt, Instant resolvedAt, boolean inPassing) {
 
         public boolean pending() {
             return PENDING.equals(status);
@@ -117,6 +124,15 @@ public class Actions {
      * the caller's transaction, under the user's lock.
      */
     public Ensured ensure(String appId, String userId, String mergeKey, String runId, Call call, Duration ttl) {
+        return ensure(appId, userId, mergeKey, runId, call, ttl, false, false);
+    }
+
+    /**
+     * @param inPassing whether no turn waits for it: a main agent's question
+     * @param unasked whether it is asked in a turn that the user did not begin
+     */
+    public Ensured ensure(String appId, String userId, String mergeKey, String runId, Call call, Duration ttl,
+            boolean inPassing, boolean unasked) {
         Optional<Action> existing = ofCall(runId, call.toolUseId());
         if (existing.isPresent()) {
             return new Ensured(existing.get(), false);
@@ -126,11 +142,12 @@ public class Actions {
         jdbc.sql("""
                 INSERT INTO action (app_id, user_id, action_id, kind, status, approver, merge_key, run_id, conversation_id,
                                     cma_session_id, tool_use_id, tool_server, tool_name, tool_input, question, options,
-                                    created_at, expires_at)
+                                    created_at, expires_at, in_passing, unasked)
                 VALUES (:appId, :userId, :actionId, :kind, 'pending', :approver, :mergeKey, :runId, :conversationId,
                         :sessionId, :toolUseId, :toolServer, :toolName, CAST(:toolInput AS jsonb), :question,
-                        CAST(:options AS jsonb), :now, :expiresAt)
+                        CAST(:options AS jsonb), :now, :expiresAt, :inPassing, :unasked)
                 """)
+                .param("inPassing", inPassing).param("unasked", unasked)
                 .param("appId", appId).param("userId", userId).param("actionId", actionId).param("kind", call.kind())
                 .param("approver", call.approver()).param("mergeKey", mergeKey).param("runId", runId)
                 .param("conversationId", call.conversationId()).param("sessionId", call.sessionId())
@@ -157,9 +174,9 @@ public class Actions {
         return endPending(runId, EXPIRED, EXPIRED_NOTE, true);
     }
 
-    /** When the first of the run's pending actions expires, if it has any. */
+    /** When the first of the pending actions that the run waits for expires, if it has any. */
     public Optional<Instant> earliestExpiry(String runId) {
-        return jdbc.sql("SELECT min(expires_at) AS earliest FROM action WHERE run_id = :runId AND status = 'pending'")
+        return jdbc.sql("SELECT min(expires_at) AS earliest FROM action WHERE run_id = :runId AND status = 'pending' AND NOT in_passing")
                 .param("runId", runId)
                 .query((rs, row) -> Db.instant(rs, "earliest"))
                 .optional();
@@ -171,11 +188,12 @@ public class Actions {
     }
 
     /**
-     * Ends the run's pending actions, in a transaction of its own or the caller's. The user's row is
-     * locked first, as everywhere that records updates for the user.
+     * Ends the pending actions that the run waits for, in a transaction of its own or the caller's.
+     * A question asked in passing is not among them: no turn waits for it. The user's row is locked
+     * first, as everywhere that records updates for the user.
      */
     private int endPending(String runId, String status, String note, boolean onlyDue) {
-        String due = onlyDue ? " AND expires_at <= :now" : "";
+        String due = " AND NOT in_passing" + (onlyDue ? " AND expires_at <= :now" : "");
         Integer ended = tx.execute(transaction -> {
             Instant now = clock.now();
             Optional<String[]> owner = jdbc.sql("SELECT app_id, user_id FROM action WHERE run_id = :runId AND status = 'pending'"
@@ -295,6 +313,7 @@ public class Actions {
         List<String> runs = jdbc.sql("""
                 SELECT DISTINCT run_id FROM action
                  WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey AND status = 'pending'
+                   AND NOT in_passing
                 """)
                 .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
                 .query(String.class)
@@ -307,6 +326,39 @@ public class Actions {
             woken.add(runId);
         }
         return woken;
+    }
+
+    /**
+     * Withdraws the questions that were asked in passing on a line and still wait, because the agent
+     * has asked a newer one: one question at a time is put before the user. In the caller's
+     * transaction, under the user's lock.
+     */
+    public int withdrawInPassing(String appId, String userId, String mergeKey, String note) {
+        List<Action> changed = jdbc.sql("""
+                UPDATE action SET status = 'withdrawn', note = :note, resolved_by = 'service', resolved_at = :now
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey AND status = 'pending' AND in_passing
+                """ + " RETURNING " + COLUMNS)
+                .param("note", note).param("now", Db.ts(clock.now())).param("appId", appId).param("userId", userId)
+                .param("mergeKey", mergeKey)
+                .query(Actions::row)
+                .list();
+        changed.forEach(action -> outbound.record(action.appId(), action.userId(), Update.ACTION_RESOLVED, action.view()));
+        return changed.size();
+    }
+
+    /** The questions asked in passing whose time is up, oldest first. Nothing wakes for them: the sweep ends them. */
+    public List<Action> inPassingDue(int limit) {
+        return jdbc.sql(SELECT + " WHERE status = 'pending' AND in_passing AND expires_at <= :now ORDER BY expires_at, action_id LIMIT :limit")
+                .param("now", Db.ts(clock.now())).param("limit", limit)
+                .query(Actions::row)
+                .list();
+    }
+
+    /** How many questions the user was asked since {@code since} in turns that they did not begin. */
+    public long unaskedSince(String appId, String userId, Instant since) {
+        return jdbc.sql("SELECT count(*) FROM action WHERE app_id = :appId AND user_id = :userId AND unasked AND created_at > :since")
+                .param("appId", appId).param("userId", userId).param("since", Db.ts(since))
+                .query(Long.class).single();
     }
 
     /** Tells the run's turn that new input arrived on its line: it finishes without waiting for anybody again. */
@@ -328,7 +380,7 @@ public class Actions {
     private static final String COLUMNS = """
             app_id, user_id, action_id, kind, status, approver, merge_key, run_id, conversation_id, cma_session_id,
                    tool_use_id, tool_server, tool_name, tool_input::text AS tool_input, question, options::text AS options,
-                   answer, note, resolved_by, created_at, expires_at, resolved_at
+                   answer, note, resolved_by, created_at, expires_at, resolved_at, in_passing
             """;
 
     private static final String SELECT = "SELECT " + COLUMNS + " FROM action\n";
@@ -349,6 +401,6 @@ public class Actions {
                 rs.getString("tool_server"), rs.getString("tool_name"), input == null ? null : Json.STORED.readTree(input),
                 rs.getString("question"), optionList, rs.getString("answer"), rs.getString("note"),
                 rs.getString("resolved_by"), Db.instant(rs, "created_at"), Db.instant(rs, "expires_at"),
-                Db.instant(rs, "resolved_at"));
+                Db.instant(rs, "resolved_at"), rs.getBoolean("in_passing"));
     }
 }

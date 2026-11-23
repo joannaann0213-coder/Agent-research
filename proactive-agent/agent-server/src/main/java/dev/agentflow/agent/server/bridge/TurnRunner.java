@@ -155,6 +155,7 @@ public class TurnRunner {
     private final Patience patience;
     private final TurnHooks hooks;
     private final AgentProperties.Turn config;
+    private final AgentProperties.Notify notify;
     private final Duration actionTtl;
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
@@ -181,6 +182,7 @@ public class TurnRunner {
         this.patience = patience;
         this.hooks = hooks;
         this.config = properties.getTurn();
+        this.notify = properties.getNotify();
         this.actionTtl = properties.getActions().getTtl();
     }
 
@@ -918,6 +920,7 @@ public class TurnRunner {
                         // A worker has one counterpart, the main agent, which is also who knows what the user already said.
                         ? new Outgoing.CustomToolResult(id, "Not asked: in a task you ask the main agent, not the user. Put "
                                 + "your question into your report and end the turn; the answer comes as a further message.", true)
+                        : asksInPassing(thread) ? askedInPassing(run, turn, thread, work, custom, reading.ordinal(custom))
                         : fromPerson(run, turn, thread, work, custom);
             } else if (call instanceof CmaEvent.CustomToolUse custom) {
                 TurnTools.Answer result = tools.call(run, turn, thread, work, custom, reading.ordinal(custom));
@@ -963,6 +966,65 @@ public class TurnRunner {
                 patience.pause(delay(attempt, e));
             }
         }
+    }
+
+    /** Whether the line is a main agent's: there a question does not make the turn wait. */
+    private boolean asksInPassing(Threads.Thread thread) {
+        return thread.chat() && profiles.config(thread.appId(), thread.agentKey()).coordinator() != null;
+    }
+
+    /**
+     * Puts a main agent's question before the user without waiting for the answer. Everything that
+     * concerns the user comes in on the main agent's line, so a turn that waited there would be ended
+     * by the next event or report, and the question with it. The question is put on record and into
+     * the conversation, and the call is answered at once: the user's answer is their next message,
+     * which is a turn of its own. One question waits at a time, and in the background a question
+     * counts against what the user is sent in a day, as a notification does.
+     */
+    private Outgoing askedInPassing(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, CmaEvent.CustomToolUse call,
+            int ordinal) {
+        Actions.Call parsed;
+        try {
+            parsed = callOf(thread, work, call);
+        } catch (IllegalArgumentException wrong) {
+            return new Outgoing.CustomToolResult(call.id(), wrong.getMessage(), true);
+        }
+        // A main agent asks in the conversation it serves, whatever the turn is about.
+        Actions.Call spec = new Actions.Call(parsed.kind(), parsed.approver(), thread.conversationId(), parsed.sessionId(),
+                parsed.toolUseId(), null, null, null, parsed.question(), parsed.options());
+        boolean unasked = !(work instanceof Work.Chat);
+        String refusal = tx.execute(status -> {
+            users.lock(thread.appId(), thread.userId());
+            turns.stillHeld(turn);
+            if (actions.ofCall(run.runId(), call.id()).isPresent()) {
+                // An earlier delivery of the run asked it already.
+                return null;
+            }
+            if (ordinal > 1) {
+                return "Not asked: you have already asked the user a question in this turn. Put what you need to know "
+                        + "into one question.";
+            }
+            if (unasked) {
+                Instant since = clock.now().minus(TurnTools.QUOTA_WINDOW);
+                long sent = messages.notificationsSince(thread.appId(), thread.userId(), since)
+                        + actions.unaskedSince(thread.appId(), thread.userId(), since);
+                if (sent >= notify.getPerUserPerDay()) {
+                    return "Not asked: this user has been sent " + sent + " notifications and questions in the last 24 "
+                            + "hours, which is the limit. Do not try again in this turn.";
+                }
+            }
+            actions.withdrawInPassing(thread.appId(), thread.userId(), thread.mergeKey(), "the agent asked a newer question");
+            Actions.Action asked = actions.ensure(thread.appId(), thread.userId(), thread.mergeKey(), run.runId(), spec, actionTtl,
+                    true, unasked).action();
+            messages.storeFromAgent(thread.appId(), thread.userId(), spec.conversationId(), thread.mergeKey(),
+                    "ask:" + asked.actionId(), "question", spec.question(), run.runId(), asked.actionId());
+            return null;
+        });
+        return refusal != null ? new Outgoing.CustomToolResult(call.id(), refusal, true)
+                : new Outgoing.CustomToolResult(call.id(), "Asked. The user sees your question in the conversation. Their "
+                        + "answer does not come back to this call: it comes as their next message, in a turn of its own, "
+                        + "and you are told if they decline or do not answer in time. Do not wait and do not ask again: "
+                        + "end this turn when you have nothing else to do.", false);
     }
 
     /**

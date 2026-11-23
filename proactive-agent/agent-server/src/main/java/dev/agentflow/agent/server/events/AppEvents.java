@@ -170,6 +170,40 @@ public class AppEvents {
         });
     }
 
+    /**
+     * Something that this service itself has to tell the agent of a line, as an event like the
+     * application's: it wakes the agent in the background, which reads it with read_events. Stored
+     * once per {@code eventId}. In the caller's transaction, under the user's lock.
+     *
+     * @param type a type of the service's own, which begins with {@link #RESERVED_PREFIX}
+     */
+    public void fromService(String appId, String userId, String mergeKey, String conversationId, String eventId, String type,
+            String subject, ObjectNode data) {
+        if (stored(appId, userId, eventId).isPresent()) {
+            return;
+        }
+        Instant now = clock.now();
+        String dataJson = Json.STORED.writeValueAsString(data);
+        jdbc.sql("""
+                INSERT INTO app_event (app_id, user_id, event_id, type, subject, conversation_id, data, fingerprint, created_at)
+                VALUES (:appId, :userId, :eventId, :type, :subject, :conversationId, CAST(:data AS jsonb), :fingerprint, :now)
+                """)
+                .param("appId", appId).param("userId", userId).param("eventId", eventId).param("type", type)
+                .param("subject", subject).param("conversationId", conversationId).param("data", dataJson)
+                .param("fingerprint", Hashing.sha256Hex(dataJson.getBytes(StandardCharsets.UTF_8))).param("now", Db.ts(now))
+                .update();
+        ObjectNode payload = InboxJson.mapper().createObjectNode();
+        payload.put("event_id", eventId);
+        relay.enqueue(appId, userId, WriteEventRequest.builder(EventSource.AGENT_SELF, EVENT_TYPE)
+                .sourceEventId("evt:" + eventId)
+                .mergeKey(mergeKey)
+                .lane(Lane.BACKGROUND)
+                .interrupt(false)
+                .occurredAt(now)
+                .payload(payload)
+                .build());
+    }
+
     public Optional<AppEvent> find(String appId, String userId, String eventId) {
         return stored(appId, userId, eventId).map(Stored::event);
     }

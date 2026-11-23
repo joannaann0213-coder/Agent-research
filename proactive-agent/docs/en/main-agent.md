@@ -163,6 +163,27 @@ Every task records in `authorized_by` why it was allowed to start: `conversation
 task, not for everything the worker then does: a tool call that needs an approval still waits for
 one.
 
+## Asking the user
+
+For any other agent, a question holds its turn: the run waits in the Inbox until the user answers,
+and new input on the line withdraws the question. On a main agent's line that would undo every
+question, because everything that concerns the user comes in there: the next event or report, which
+has nothing to do with the question, would end the wait. So a main agent asks in passing.
+
+1. `ask_user` puts the question on record, as an action, and into the conversation, as a message
+   with `kind: question`. The call returns at once and the turn ends as usual.
+2. Events, schedules and reports that come in afterwards are handled as always. The question stays.
+3. The user's next message in the conversation is the answer, and a turn of its own that the user
+   began. An answer given in the application, with `POST .../actions/{action_id}/resolve`, is stored
+   as that message and handled the same way.
+4. When the user declines, or nobody answers within 24 hours, the main agent is told by an event of
+   the service's own, `agent.question_unanswered`, which it reads in the background.
+
+One question waits at a time: a newer question takes the place of one that still waits, and a turn
+asks one. In the background a question counts against what the user may be sent in a day, as a
+notification does. What the user answers is the user's word, so a task that the main agent delegates
+in that turn starts without a confirmation, like anything else the user asks for.
+
 ## Use cases
 
 The requirement was checked against the design case by case. "New" marks what the check added.
@@ -182,6 +203,7 @@ The requirement was checked against the design case by case. "New" marks what th
 | Work under way needs a decision on one action | Yes | The worker's tool call waits for its approval, as for any agent |
 | The user stops work that started by itself | Yes | They close the task, or tell the main agent |
 | The product shows nothing but the conversation | Yes, new | The proposal is a message of the conversation, and the user's "go ahead" there starts the task |
+| The main agent asks the user something, and other things happen before the answer | Yes, new | The question is asked in passing: nothing but the user's word ends it, and the answer is the user's next message |
 | The user wants to see a plan before confirming | No | The user confirms the main agent's summary; a worker does not plan first |
 | The user authorises more narrowly than a role | No | An authorisation names a role; the application can make its roles finer |
 
@@ -195,7 +217,7 @@ The requirement was checked against the design case by case. "New" marks what th
 | `list_tasks` | The open tasks, their state and the latest word from each | Not there |
 | `close_task` | Ends a task. A turn of the worker that is under way stops, and what it waits for is withdrawn | Not there |
 | `read_events` | Events, due follow-ups and what workers have for it | What the main agent sent, and its own due follow-ups |
-| `notify_user`, `ask_user` | As for every agent | Refused: a worker reports to the main agent, which decides what the user hears |
+| `notify_user`, `ask_user` | `notify_user` as for every agent; `ask_user` asks without waiting, see [Asking the user](#asking-the-user) | Refused: a worker reports to the main agent, which decides what the user hears |
 | `schedule_followup` | As for every agent | Wakes the worker later, on the same task |
 
 ## Tasks
@@ -317,6 +339,6 @@ What to measure once the service runs with a model:
 - A plan to confirm. The user confirms the main agent's summary of a task; the worker does not draft
   a plan for them first.
 - Authorisations narrower than a role, for example by kind of event or up to an amount.
-- A task that the main agent delegates in the background right after the user answered a question of
-  that turn still counts as its own initiative.
+- A tool of the main agent's own that needs an approval still holds its turn, and whatever comes in
+  next ends that wait. Work that needs approvals belongs with a worker.
 - Nothing here ran against a model or the platform: the tests use the scripted stand-in.

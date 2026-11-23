@@ -46,13 +46,30 @@ public final class PlatformTools {
      * @param coordinator what makes the agent a main agent, or {@code null} for an ordinary one
      */
     public static List<AgentSpec.CustomTool> definitions(CoordinatorConfig coordinator) {
-        if (!delegates(coordinator)) {
+        if (coordinator == null) {
             return definitions();
         }
-        List<AgentSpec.CustomTool> tools = new ArrayList<>(definitions());
-        tools.addAll(delegation(coordinator.workers()));
+        List<AgentSpec.CustomTool> tools = new ArrayList<>();
+        for (AgentSpec.CustomTool tool : definitions()) {
+            // A main agent asks in passing: its turn does not wait for the user, and the tool has to say so.
+            tools.add(ASK_USER.equals(tool.name()) ? new AgentSpec.CustomTool(ASK_USER, ASK_IN_PASSING, tool.inputSchema()) : tool);
+        }
+        if (delegates(coordinator)) {
+            tools.addAll(delegation(coordinator.workers()));
+        }
         return List.copyOf(tools);
     }
+
+    /** What ask_user is for a main agent, whose turn does not wait for the user's answer. */
+    private static final String ASK_IN_PASSING = """
+            Asks the user a question. The question is shown to the user in the conversation, and this \
+            call returns at once: you do not wait for the answer. It comes as the user's next message, \
+            in a turn of its own, however long that takes, and nothing else that comes in for you \
+            meanwhile takes the question away. Use it when you cannot go on without the user's \
+            decision or information. Ask one question at a time: a newer question replaces one that \
+            still waits. In the background a question counts against what the user may be sent in a \
+            day, as a notification does. In a conversation, when you can simply ask in your reply and \
+            end your turn, do that instead.""";
 
     /** Whether an agent with this configuration has workers to hand work to, and so the tools for it. */
     public static boolean delegates(CoordinatorConfig coordinator) {

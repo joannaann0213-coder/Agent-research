@@ -133,6 +133,11 @@ the line waits for it rather than touching the session. A message to a conversat
 question waiting is taken as the answer to the latest one. An action that nobody decides expires
 after 24 hours, when the Inbox wakes the run. The turn's own deadline does not count the waiting.
 
+A main agent's question is the exception, because everything about its user comes in on its line:
+it is asked in passing. No run is suspended for it, the user's answer is their next message and a
+turn of its own, and a sweep ends it when nobody answers in time. [Main agent and workers](main-agent.md#asking-the-user)
+explains why.
+
 ## Delivery
 
 Everything that happens for a user is recorded as an update in the transaction that makes it

@@ -8,11 +8,14 @@ import dev.agentflow.agent.server.api.AgentException;
 import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.auth.Caller;
 import dev.agentflow.agent.server.chat.Messages;
+import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.core.Names;
+import dev.agentflow.agent.server.events.AppEvents;
 import dev.agentflow.agent.server.time.AgentClock;
 import java.util.Objects;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * Where people see what the agent waits for, and decide. The application's back end may decide
@@ -24,15 +27,21 @@ public class ActionDesk {
     public static final int MAX_ANSWER = 4000;
     public static final int MAX_MESSAGE = 1000;
 
+    /** The type of the event that tells a main agent that a question it asked in passing ended without an answer. */
+    public static final String UNANSWERED = AppEvents.RESERVED_PREFIX + "question_unanswered";
+
     private final Actions actions;
     private final Messages messages;
+    private final AppEvents appEvents;
     private final Users users;
     private final TransactionTemplate tx;
     private final AgentClock clock;
 
-    public ActionDesk(Actions actions, Messages messages, Users users, TransactionTemplate tx, AgentClock clock) {
+    public ActionDesk(Actions actions, Messages messages, AppEvents appEvents, Users users, TransactionTemplate tx,
+            AgentClock clock) {
         this.actions = actions;
         this.messages = messages;
+        this.appEvents = appEvents;
         this.users = users;
         this.tx = tx;
         this.clock = clock;
@@ -56,11 +65,59 @@ public class ActionDesk {
             Action due = action;
             tx.executeWithoutResult(status -> {
                 users.lock(appId, userId);
-                actions.settle(due, Actions.EXPIRED, null, Actions.EXPIRED_NOTE, Actions.BY_SERVICE);
+                expire(due);
             });
             action = actions.find(appId, userId, actionId).orElseThrow();
         }
         return action.view();
+    }
+
+    /**
+     * Ends the questions that were asked in passing and that nobody answered in time. No turn waits
+     * for such a question, so nothing else would end it. One pass of the sweep; takes each user's
+     * lock itself.
+     *
+     * @return how many it ended
+     */
+    public int expireUnanswered(int limit) {
+        int ended = 0;
+        for (Action candidate : actions.inPassingDue(limit)) {
+            boolean done = Boolean.TRUE.equals(tx.execute(status -> {
+                users.lock(candidate.appId(), candidate.userId());
+                // It may have been answered since it was found.
+                return actions.find(candidate.appId(), candidate.userId(), candidate.actionId())
+                        .filter(action -> action.pending() && !action.expiresAt().isAfter(clock.now()))
+                        .map(this::expire).orElse(false);
+            }));
+            if (done) {
+                ended++;
+            }
+        }
+        return ended;
+    }
+
+    /**
+     * Ends an action whose time is up. A turn that waits for it learns of that when the Inbox wakes
+     * it; for a question asked in passing no turn waits, so the agent that asked is told. In the
+     * caller's transaction, under the user's lock.
+     */
+    private boolean expire(Action action) {
+        boolean ended = actions.settle(action, Actions.EXPIRED, null, Actions.EXPIRED_NOTE, Actions.BY_SERVICE);
+        if (ended && action.inPassing()) {
+            unanswered(action, "expired", null);
+        }
+        return ended;
+    }
+
+    /** Tells the main agent that a question it asked in passing got no answer: an event of its line, which it reads in the background. */
+    private void unanswered(Action action, String outcome, String reason) {
+        ObjectNode data = Json.STORED.createObjectNode();
+        data.put("from", "the service that runs you").put("question", action.question()).put("outcome", outcome);
+        if (reason != null) {
+            data.put("reason", reason);
+        }
+        appEvents.fromService(action.appId(), action.userId(), action.mergeKey(), action.conversationId(),
+                "unanswered:" + action.actionId(), UNANSWERED, "question", data);
     }
 
     /**
@@ -82,17 +139,27 @@ public class ActionDesk {
             Action action = visible(caller, appId, userId, actionId);
             Decision decision = decisionFor(action, request);
             if (action.pending() && !action.expiresAt().isAfter(clock.now())) {
-                actions.settle(action, Actions.EXPIRED, null, Actions.EXPIRED_NOTE, Actions.BY_SERVICE);
+                expire(action);
                 action = actions.find(appId, userId, actionId).orElseThrow();
             }
             if (action.pending()) {
                 actions.settle(action, decision.status(), decision.answer(), decision.note(), by);
-                if (Actions.ANSWERED.equals(decision.status())) {
-                    // The answer is part of the conversation, whichever way it was given.
-                    messages.storeAnswer(appId, userId, action.conversationId(), "answer:" + actionId, decision.answer(),
-                            action.mergeKey(), actionId);
+                if (action.inPassing()) {
+                    // No turn waits for it. The answer is the user's next message; a refusal is told to the agent.
+                    if (Actions.ANSWERED.equals(decision.status())) {
+                        messages.answerInPassing(appId, userId, action.conversationId(), "answer:" + actionId, decision.answer(),
+                                actionId);
+                    } else {
+                        unanswered(action, "declined", decision.note());
+                    }
+                } else {
+                    if (Actions.ANSWERED.equals(decision.status())) {
+                        // The answer is part of the conversation, whichever way it was given.
+                        messages.storeAnswer(appId, userId, action.conversationId(), "answer:" + actionId, decision.answer(),
+                                action.mergeKey(), actionId);
+                    }
+                    actions.ring(appId, userId, action.mergeKey(), action.runId());
                 }
-                actions.ring(appId, userId, action.mergeKey(), action.runId());
                 return new Resolution(actions.find(appId, userId, actionId).orElseThrow().view(), null);
             }
             if (action.status().equals(decision.status()) && Objects.equals(action.answer(), decision.answer())) {
