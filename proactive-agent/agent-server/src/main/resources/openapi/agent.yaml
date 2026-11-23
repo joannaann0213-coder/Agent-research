@@ -39,10 +39,16 @@ tags:
     description: What the agent waits for people to decide. Approvals of tool calls, and questions to the user.
   - name: Schedules
     description: What the agent is to do at a given time, once or again and again.
+  - name: Tasks
+    description: |
+      The work a user's main agent has handed to workers. A main agent is an agent with a
+      `coordinator` block: everything about a user reaches its one session, and it delegates what
+      takes long to other agents, each working in a session of its own and reporting back to it.
   - name: Updates
     description: |
-      What happened for a user: a message, an action that waits or was decided, a run that failed.
-      As a page to poll, as a live stream, or delivered to the application's webhook.
+      What happened for a user: a message, an action that waits or was decided, a task that a main
+      agent delegated or that moved on, a run that failed. As a page to poll, as a live stream, or
+      delivered to the application's webhook.
   - name: Users
     description: The end users of an application, and the tokens their clients use.
   - name: Admin
@@ -125,21 +131,39 @@ paths:
 
         Conversations that are under way pick up a new configuration at their next turn. Only an API
         key may call this.
+
+        With a `coordinator` block the agent is a main agent. The agents it names as workers have to
+        exist already and cannot be main agents themselves; an agent that is some main agent's
+        worker cannot become a main agent.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/AgentProfileRequest'
-            example:
-              name: Acme Support Assistant
-              instructions: You help Acme's customers with their orders. Be brief and concrete.
-              effort: medium
-              mcp_servers:
-                - name: orders
-                  url: https://mcp.acme.example/orders
-                  approval: always_ask
-                  approver: user
+            examples:
+              agent:
+                summary: An agent
+                value:
+                  name: Acme Support Assistant
+                  instructions: You help Acme's customers with their orders. Be brief and concrete.
+                  effort: medium
+                  mcp_servers:
+                    - name: orders
+                      url: https://mcp.acme.example/orders
+                      approval: always_ask
+                      approver: user
+              main_agent:
+                summary: A main agent with one worker
+                value:
+                  name: Acme Assistant
+                  instructions: You look after Acme's customers. Hand research that takes long to your researcher.
+                  coordinator:
+                    workers:
+                      - role: researcher
+                        agent: research
+                        description: Looks things up in the order system and the carriers' sites, and reports what it found.
+                    max_active_tasks: 4
       responses:
         '200':
           description: The agent existed; this is its configuration now.
@@ -505,6 +529,11 @@ paths:
         earlier ones; events that arrive close together are handled together. Events with different
         subjects do not wait for each other, and none of them makes a conversation wait.
 
+        An event for a main agent (an agent with a `coordinator` block) is the exception: it goes to
+        the session of the conversation `conversation_id`, which that agent serves, whatever its
+        subject. The main agent then knows of everything that happens for the user, and decides
+        itself what to hand to a worker.
+
         The agent reads `data` as information from another system, not as instructions: text in it
         that tells the agent what to do is not obeyed. Say what the agent should do with a kind of
         event in the agent's `instructions`.
@@ -550,8 +579,9 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           description: |
-            `conflict`: the `event_id` was already used for another event of the user, or the subject
-            is handled by another agent than the one named.
+            `conflict`: the `event_id` was already used for another event of the user, the subject is
+            handled by another agent than the one named, or the event is for a main agent and the
+            conversation is served by another agent.
           content:
             application/problem+json:
               schema:
@@ -618,8 +648,10 @@ paths:
         it finds that it should.
 
         Schedules of the same `subject` are handled by an agent that remembers the earlier runs, and
-        share it with events of that subject. A schedule runs at most once a minute. After an outage,
-        a repeating schedule runs once for what it missed, and the agent is told that it comes late.
+        share it with events of that subject. A schedule of a main agent runs in the session of the
+        conversation `conversation_id` instead, like its events. A schedule runs at most once a minute.
+        After an outage, a repeating schedule runs once for what it missed, and the agent is told that
+        it comes late.
 
         The call is idempotent on `schedule_id`: the same id with the same content returns the
         schedule with 200; with other content it is a 409.
@@ -660,8 +692,9 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '409':
           description: |
-            `conflict`: the `schedule_id` was already used for another schedule of the user, or the
-            subject is handled by another agent than the one named.
+            `conflict`: the `schedule_id` was already used for another schedule of the user, the
+            subject is handled by another agent than the one named, or the schedule is for a main
+            agent and the conversation is served by another agent.
           content:
             application/problem+json:
               schema:
@@ -713,6 +746,122 @@ paths:
       responses:
         '204':
           description: Cancelled.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/tasks:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Tasks]
+      operationId: listTasks
+      summary: What the main agent has handed to workers
+      description: |
+        Returns the user's tasks, newest first, at most 200: the pieces of work that a main agent
+        delegated to workers. A task is `queued` while its worker has not taken up what the main
+        agent last sent, `working` while a turn of the worker is under way, `idle` when the worker
+        has reported and waits, and `closed` when it is over.
+
+        Nobody but a main agent starts a task: it does when it finds, in a conversation or because
+        of something that happened, that a piece of work is better done by a worker. An API key or
+        the user's own token may call this; only an API key gets `report`, the beginning of what
+        each task's worker last reported.
+      parameters:
+        - name: conversation_id
+          in: query
+          description: Only the tasks that the main agent of this conversation delegated.
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: '`open` (the default) leaves the closed tasks out; `all` returns them too.'
+          schema:
+            type: string
+            enum: [open, all]
+      responses:
+        '200':
+          description: The tasks, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskPage'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/tasks/{task_id}:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/TaskId'
+    get:
+      tags: [Tasks]
+      operationId: getTask
+      summary: Look at one task
+      description: |
+        Returns the task, whatever its status. With an API key the answer also has `report` and
+        `notes`: everything the main agent and the worker told each other, oldest first. A user
+        token gets the task without them, because a worker may have read what only the application
+        is to see; what the user is told of a task is what the main agent tells them.
+      responses:
+        '200':
+          description: The task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/users/{user_id}/tasks/{task_id}/close:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+      - $ref: '#/components/parameters/TaskId'
+    post:
+      tags: [Tasks]
+      operationId: closeTask
+      summary: Close a task
+      description: |
+        Ends a task. A worker that is working on it stops a moment later, and nothing more comes
+        from it; what it waits for people to decide is withdrawn, and the follow-ups it set for
+        itself are cancelled. The main agent is told that the task was closed, and by whom. Closing
+        a task that is closed already changes nothing.
+
+        An API key or the user's own token may call this, so that users can stop what the agent does
+        for them.
+      responses:
+        '200':
+          description: The task, closed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TaskView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
@@ -1365,6 +1514,13 @@ components:
       description: The action, as the service named it.
       schema:
         type: string
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      description: The task, as the service named it.
+      schema:
+        type: string
 
   responses:
     InvalidRequest:
@@ -1526,6 +1682,51 @@ components:
             Who approves. `app` (the default) is the application's back end; `user` is the end user,
             in the application's client.
 
+    WorkerConfig:
+      type: object
+      additionalProperties: false
+      description: An agent that a main agent may hand work to, under the name of what it does there.
+      required: [role, agent, description]
+      properties:
+        role:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,31}$'
+          description: The name the main agent delegates under, unique within the main agent, for example `researcher`.
+        agent:
+          type: string
+          pattern: '^[a-z0-9][a-z0-9_-]{0,63}$'
+          description: |
+            The key of the agent that does the work: another agent of the application, which exists
+            already and is not a main agent itself.
+        description:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: What this worker is good for. The main agent reads it when it decides whom to give a task.
+
+    CoordinatorConfig:
+      type: object
+      additionalProperties: false
+      description: |
+        Makes the agent a main agent. In a conversation it serves, the application's events and
+        schedules for it are handled in the conversation's own session rather than in a session per
+        subject, so that it knows of everything that happens for the user. It hands work to its
+        workers, which run in sessions of their own and report back to it.
+      properties:
+        workers:
+          type: array
+          maxItems: 10
+          items:
+            $ref: '#/components/schemas/WorkerConfig'
+          description: The agents it may delegate to. None when absent; the main agent then does everything itself.
+        max_active_tasks:
+          type: integer
+          minimum: 1
+          maximum: 20
+          description: |
+            How many tasks of one conversation may be queued or being worked on at a time. 4 when
+            absent.
+
     AgentProfileRequest:
       type: object
       additionalProperties: false
@@ -1571,6 +1772,8 @@ components:
           maxItems: 20
           items:
             $ref: '#/components/schemas/McpServerConfig'
+        coordinator:
+          $ref: '#/components/schemas/CoordinatorConfig'
 
     AgentProfileView:
       type: object
@@ -1608,6 +1811,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/McpServerConfig'
+        coordinator:
+          $ref: '#/components/schemas/CoordinatorConfig'
         revision:
           type: integer
           description: Counts the changes of the configuration, from 1.
@@ -1795,7 +2000,7 @@ components:
           type: string
         type:
           type: string
-          enum: [message.created, action.created, action.resolved, run.failed]
+          enum: [message.created, action.created, action.resolved, run.failed, task.created, task.updated]
         created_at:
           type: string
           format: date-time
@@ -1804,8 +2009,9 @@ components:
           additionalProperties: true
           description: |
             For `message.created`, the message (a MessageView). For `action.created` and
-            `action.resolved`, the action (an ActionView). For `run.failed`: `run_id`,
-            `conversation_id` or `subject`, and `error`.
+            `action.resolved`, the action (an ActionView). For `task.created` and `task.updated`,
+            the task (a TaskView, without its notes). For `run.failed`: `run_id`, then
+            `conversation_id`, `subject` or `task_id`, and `error`.
 
     UpdatePage:
       type: object
@@ -1843,7 +2049,7 @@ components:
           type: array
           items:
             type: string
-            enum: [message.created, action.created, action.resolved, run.failed]
+            enum: [message.created, action.created, action.resolved, run.failed, task.created, task.updated]
           description: The types to deliver. All when absent.
         enabled:
           type: boolean
@@ -1962,7 +2168,9 @@ components:
           type: string
         subject:
           type: string
-          description: The subject it runs on. Absent for a follow-up in a conversation.
+          description: |
+            The subject it runs on. Absent for what runs on another line: a follow-up in a
+            conversation, a schedule of a main agent, a follow-up of a worker.
         agent:
           type: string
         conversation_id:
@@ -1985,6 +2193,91 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ScheduleView'
+
+    TaskNoteView:
+      type: object
+      description: Something a main agent and a worker told each other about a task.
+      required: [seq, from, kind, text, created_at]
+      properties:
+        seq:
+          type: integer
+          description: The position within the task, from 1.
+        from:
+          type: string
+          enum: [main, worker, service]
+          description: |
+            `main` for the main agent, `worker` for the worker, `service` for what the service itself
+            notes: a turn of the worker that failed, a task closed from outside.
+        kind:
+          type: string
+          enum: [assignment, message, report, failure, closed]
+          description: |
+            `assignment` starts the task and `message` is a later word of the main agent; `report` is
+            what the worker says at the end of a turn.
+        text:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    TaskView:
+      type: object
+      description: A piece of work that a main agent handed to a worker.
+      required: [task_id, conversation_id, role, agent, title, status, created_at, updated_at]
+      properties:
+        task_id:
+          type: string
+        conversation_id:
+          type: string
+          description: The conversation whose main agent delegated the task.
+        role:
+          type: string
+          description: The role the task was delegated to.
+        agent:
+          type: string
+          description: The key of the agent that works on it.
+        title:
+          type: string
+          description: A short name, as the main agent gave it.
+        status:
+          type: string
+          enum: [queued, working, idle, closed]
+        closed_by:
+          type: string
+          enum: [agent, user, app, service]
+          description: |
+            For a closed task. `agent` is the main agent; `service` closes a task that nobody had
+            touched for too long.
+        closed_reason:
+          type: string
+        report:
+          type: string
+          description: |
+            The beginning of what the worker last reported; the notes have all of it. Only for an
+            API key, and not in updates.
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        closed_at:
+          type: string
+          format: date-time
+        notes:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskNoteView'
+          description: Everything the two told each other, oldest first. Only when one task is read with an API key.
+
+    TaskPage:
+      type: object
+      required: [tasks]
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/TaskView'
 
     OAuthTokens:
       type: object

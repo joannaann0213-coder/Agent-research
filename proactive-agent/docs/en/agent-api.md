@@ -29,10 +29,12 @@ curl -s http://localhost:8090/openapi.yaml -o agent-api.yaml
 | Application | One of your products, with its own agents, users and keys. An operator of the service creates it |
 | User | One of the application's end users, under the application's own id (`user_id`). A user exists from the first time the application mentions them |
 | Agent | What the agent is for and what it may use: instructions, model, MCP servers, a sandbox. An application can have several, by key; `default` unless named |
+| Main agent | An agent that has workers. Everything that concerns a user comes to it, in the conversation it serves, and it hands longer work to its workers |
 | Conversation | What a user and the agent say to each other, by `conversation_id`; `default` unless named |
 | Event | Something that happened in the application's systems that concerns a user. Events of one `subject` are handled by an agent that remembers the earlier ones |
 | Action | What the agent waits for a person to decide: an approval of a tool call, or a question to the user |
 | Schedule | What the agent is to do at a given time: set up by the application, or a follow-up the agent set itself |
+| Task | A piece of work that a main agent handed to a worker: another agent of the application, in a session of its own |
 | Update | What happened for a user that the application may want to know: a message, an action, a failure. Read by polling, by a stream, or at a webhook |
 | Credential | What an MCP server needs to let the agent in. Kept in vaults on the agent platform, never by this service |
 
@@ -44,7 +46,7 @@ Every `/v1` request carries a credential as `Authorization: Bearer <credential>`
 | --- | --- | --- | --- |
 | Administration key | 32 characters or more, from the configuration | The operators of the service | `/v1/admin` and nothing else: applications and their API keys |
 | API key | `afk.<key_id>.<secret>` | The application's back end | Everything of the application, for every user |
-| User token | `aft.<payload>.<signature>` | One user's client, which gets it from the application's back end | That user's messages, actions, updates, schedules and credentials; not events, not the agents |
+| User token | `aft.<payload>.<signature>` | One user's client, which gets it from the application's back end | That user's messages, actions, updates, schedules, tasks and credentials; not events, not the agents |
 
 An API key is shown once, when it is made, and stored as a hash. A user token lasts 15 minutes by
 default and at most an hour; the back end gets one with `POST /v1/users/{user_id}/tokens` and revokes
@@ -139,6 +141,8 @@ needs to hear about it. If so, it sends a message with `kind: notification` to t
   start with `agent.` are the service's own.
 - A conversation learns what work in the background exchanged with the user in it, before it answers
   the user's next message.
+- An event for a [main agent](#a-main-agent-and-its-tasks) is not handled on a line of its `subject`:
+  it goes to the conversation that `conversation_id` names, where the main agent hears of everything.
 
 ## Actions
 
@@ -186,8 +190,9 @@ user's client may do both, so that users can stop what the agent does for them.
 ## Updates
 
 Everything that happens for a user is recorded as an update: `message.created`, `action.created`,
-`action.resolved`, `run.failed`. Each has a `seq` that only grows, so a reader that resumes after the
-last one it got misses nothing. There are three ways to read them.
+`action.resolved`, `run.failed`, and for the tasks of a main agent `task.created` and `task.updated`.
+Each has a `seq` that only grows, so a reader that resumes after the last one it got misses nothing.
+There are three ways to read them.
 
 | Way | Endpoint | For |
 | --- | --- | --- |
@@ -258,10 +263,57 @@ from the next call on. With a refresh token, the platform renews the access toke
 | `sandbox` | A container with built-in tools (shell, files, web search and fetch) and its network: `none`, `limited` to `allowed_hosts`, or `unrestricted` |
 | `session_budget_usd` | What one session may spend at most; a conversation whose session has spent it goes on in a new one |
 | `memory` | `per_user`: the agent keeps notes about each user across sessions, in files of its sandbox, which must be enabled. It writes them in conversations and only reads them in the background |
+| `coordinator` | Makes the agent a main agent. `workers` lists who it may hand work to: each with a `role`, the key of the `agent` that plays it, and a `description` that tells the main agent what the role is for |
 
 The service gives every agent four tools of its own: `read_events`, `notify_user`, `ask_user` and
-`schedule_followup`. A conversation that is under way takes a changed configuration on at its next
-turn, in a new session that is told what was said before.
+`schedule_followup`; a main agent gets four more to hand work on, `delegate_task`, `message_worker`,
+`list_tasks` and `close_task`. A conversation that is under way takes a changed configuration on at
+its next turn, in a new session that is told what was said before.
+
+## A main agent and its tasks
+
+An agent with a `coordinator` is a main agent: the one agent that hears of everything about a user
+and decides what to do about it. It answers the user, your events and schedules wake it in the same
+session, and it hands work that takes long to workers, which report back to it.
+[Main agent and workers](main-agent.md) explains how that works and why it is built this way.
+
+```bash
+# A worker is an ordinary agent, with instructions and tools of its own.
+curl -s -X PUT $API/v1/agents/researcher -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Researcher", "instructions": "You look things up in the order system and report what you found."}'
+
+# The main agent names the workers it may hand work to, and what each is for.
+curl -s -X PUT $API/v1/agents/default -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "Assistant", "instructions": "You look after Acme customers.",
+       "coordinator": {"workers": [{"role": "research", "agent": "researcher",
+                                    "description": "Looks things up in the order system and reports what it found."}]}}'
+
+# What the main agent has handed on for a user, and how to stop one of those tasks.
+curl -s $API/v1/users/u42/tasks -H "Authorization: Bearer $KEY"
+curl -s -X POST $API/v1/users/u42/tasks/task_01EXAMPLE/close -H "Authorization: Bearer $KEY"
+```
+
+Nothing else changes in how you call the API: users write to `POST /v1/users/{user_id}/messages` and
+your systems post events, as before. What changes is where those go.
+
+- Events and schedules for a main agent are handled in the conversation that `conversation_id` names
+  (`default` unless named), by the session that talks to the user there. If another agent serves
+  that conversation, the request is a 409.
+- Only the main agent starts a task. `GET /v1/users/{user_id}/tasks` lists the open ones, with
+  `status=all` the closed ones too, and `POST .../tasks/{task_id}/close` stops one; the main agent is
+  told.
+- A user's own client may list and close tasks. What a worker reported, and what the two agents
+  wrote to each other, is returned to an API key only.
+- The user hears of a task from the main agent. A worker cannot notify or ask the user, but its tool
+  calls that need an approval appear among the [actions](#actions) as usual.
+- A worker is any agent of the application that is not a main agent. Of the user and the
+  conversation it knows only what the main agent writes into the task.
+- The workers of one user run one at a time, unless the Inbox allows more (`inbox.lanes.batch.cap`).
+
+In demo mode the script hands on whatever the user writes after `task:`, and the worker answers that
+it is done; `examples/agent-api/main-agent.sh` walks through it.
 
 ## Limits
 
@@ -274,4 +326,6 @@ turn, in a new session that is told what was said before.
 | Follow-ups in a row, and waiting on one line | 5 and 5 | `agent.followups.max-chain`, `max-pending` |
 | How long an action waits | 24 hours | `agent.actions.ttl` |
 | How long a turn may work | 10 minutes | `agent.turn.deadline` |
+| Tasks of one main agent's conversation: queued or worked on, and open | 4 and 20 | `max_active_tasks` of the agent, `agent.tasks.max-open` |
+| Instructions of a task, and a worker's report | 8,000 and 16,000 characters | `agent.tasks.max-instructions`, `max-report` |
 | Message text, event data | 32,000 characters, 16 KB | fixed |

@@ -6,6 +6,7 @@ import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.delivery.Outbound;
 import dev.agentflow.agent.server.bridge.Turns.Turn;
 import dev.agentflow.agent.server.config.AgentProperties;
+import dev.agentflow.agent.server.tasks.Tasks;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.inbox.api.RunStatus;
 import dev.agentflow.inbox.api.RunView;
@@ -36,17 +37,19 @@ public class TurnSweeper {
     private final Actions actions;
     private final Users users;
     private final Outbound outbound;
+    private final Tasks tasks;
     private final TransactionTemplate tx;
     private final InboxClient inbox;
     private final AgentClock clock;
     private final AgentProperties.Sweep config;
 
-    public TurnSweeper(Turns turns, Actions actions, Users users, Outbound outbound, TransactionTemplate tx, InboxClient inbox,
-            AgentClock clock, AgentProperties properties) {
+    public TurnSweeper(Turns turns, Actions actions, Users users, Outbound outbound, Tasks tasks, TransactionTemplate tx,
+            InboxClient inbox, AgentClock clock, AgentProperties properties) {
         this.turns = turns;
         this.actions = actions;
         this.users = users;
         this.outbound = outbound;
+        this.tasks = tasks;
         this.tx = tx;
         this.inbox = inbox;
         this.clock = clock;
@@ -74,6 +77,8 @@ public class TurnSweeper {
                 }
                 actions.withdrawOfRun(turn.runId(), "the turn that waited for this ended");
                 outbound.record(turn.appId(), turn.userId(), Update.RUN_FAILED, Outbound.failure(turn.runId(), turn.mergeKey(), ended));
+                // A worker's turn that ended like this reports nothing: its main agent is told instead.
+                tasks.turnFailed(turn.appId(), turn.userId(), turn.mergeKey(), turn.runId(), ended);
                 return true;
             }))) {
                 log.warn("turn of run {} closed: {}", turn.runId(), ended);

@@ -28,11 +28,13 @@ import dev.agentflow.agent.server.credentials.Credentials;
 import dev.agentflow.agent.server.memory.Memories;
 import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.schedules.Schedules;
+import dev.agentflow.agent.server.tasks.Tasks;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.agent.server.tools.PlatformTools;
 import dev.agentflow.inbox.api.AckRequest;
 import dev.agentflow.inbox.api.ClaimedEvent;
 import dev.agentflow.inbox.api.ClaimedRun;
+import dev.agentflow.inbox.api.Lane;
 import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.api.RunOutcome;
 import dev.agentflow.inbox.api.RunStatus;
@@ -64,7 +66,8 @@ import tools.jackson.databind.node.ObjectNode;
  * Turns one run of the Event Inbox into one turn of a session on the agent platform, and what the
  * agent does in it into what the user gets: its answer, when the user said something; a
  * notification or nothing at all, when the turn is about something that happened in the
- * application's systems.
+ * application's systems. A worker's turn on a task that a main agent delegated gives the user
+ * nothing: what the worker writes goes to the main agent, as input of its line.
  *
  * <p>The run is the unit of work and of retry. Whatever a turn has done is on record, in its
  * {@code turn} row and in the session itself, so a run that is delivered again continues where it
@@ -144,6 +147,7 @@ public class TurnRunner {
     private final Outbound outbound;
     private final Credentials credentials;
     private final Memories memories;
+    private final Tasks tasks;
     private final TurnTools tools;
     private final AgentProfiles profiles;
     private final TransactionTemplate tx;
@@ -155,8 +159,8 @@ public class TurnRunner {
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
             Schedules schedules, Actions actions, Users users, Outbound outbound, Credentials credentials, Memories memories,
-            TurnTools tools, AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, Patience patience, TurnHooks hooks,
-            AgentProperties properties) {
+            Tasks tasks, TurnTools tools, AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, Patience patience,
+            TurnHooks hooks, AgentProperties properties) {
         this.cma = cma;
         this.inbox = inbox;
         this.turns = turns;
@@ -169,6 +173,7 @@ public class TurnRunner {
         this.outbound = outbound;
         this.credentials = credentials;
         this.memories = memories;
+        this.tasks = tasks;
         this.tools = tools;
         this.profiles = profiles;
         this.tx = tx;
@@ -233,6 +238,12 @@ public class TurnRunner {
             turns.finish(turn, Turns.DONE, "stopped", null);
             return new Settlement.Done();
         }
+        if (work instanceof Work.Job job && !turn.boundarySet()
+                && tasks.closed(run.tenantId(), run.inboxId(), job.task().taskId())) {
+            // The task was closed before the worker got to this. Its session is not touched, or not even made.
+            turns.finish(turn, Turns.DONE, "closed", null);
+            return new Settlement.Done();
+        }
         if (turn.work() == null) {
             turn = turns.work(turn, stored(work));
         }
@@ -288,12 +299,18 @@ public class TurnRunner {
                     if (turns.abandon(earlier.runId(), "a later turn of the line found that " + why)) {
                         outbound.record(run.tenantId(), run.inboxId(), Update.RUN_FAILED,
                                 Outbound.failure(earlier.runId(), run.mergeKey(), "the run ended without finishing its turn: " + why));
+                        tasks.turnFailed(run.tenantId(), run.inboxId(), run.mergeKey(), earlier.runId(),
+                                "the run ended without finishing its turn: " + why);
                     }
                 });
                 continue;
             }
             if (status == RunStatus.SUSPENDED) {
-                String note = Actions.supersededNote(run.mergeKey());
+                // On a conversation's line it is not always the user who is next: for a main agent it is often
+                // an event or a worker's report, and the agent is told which.
+                String note = run.mergeKey().startsWith(Threads.CHAT_PREFIX) && run.lane() != Lane.INTERACTIVE
+                        ? "something new came in for you before this was decided; it comes in the next turn"
+                        : Actions.supersededNote(run.mergeKey());
                 tx.executeWithoutResult(transaction -> {
                     users.lock(run.tenantId(), run.inboxId());
                     actions.withdrawOfRun(earlier.runId(), note);
@@ -327,7 +344,7 @@ public class TurnRunner {
                 after(tail.stored(), turn.boundaryEventId(), turn.boundaryAt()).forEach(event -> see(thread, reading, event));
                 if (!reading.inputSeen) {
                     if (stopped(thread, work)) {
-                        turns.finish(turn, Turns.DONE, "stopped", null);
+                        turns.finish(turn, Turns.DONE, work instanceof Work.Job ? "closed" : "stopped", null);
                         return new Settlement.Done();
                     }
                     String inputId = sendInput(turn, thread, input(thread, work));
@@ -336,6 +353,9 @@ public class TurnRunner {
                     reading.inputId = inputId;
                 }
                 hooks.at(Point.INPUT_RECORDED, run);
+                if (work instanceof Work.Job job) {
+                    tasks.working(job.task());
+                }
                 while (reading.end == null) {
                     if (lease.lost()) {
                         throw new StaleTurnException(run.runId(), run.epoch());
@@ -496,6 +516,8 @@ public class TurnRunner {
         List<MessageView> said = new ArrayList<>();
         List<AppEvent> happened = new ArrayList<>();
         List<Work.Due> due = new ArrayList<>();
+        List<Tasks.Report> reported = new ArrayList<>();
+        List<Tasks.Note> told = new ArrayList<>();
         for (ClaimedEvent event : run.events()) {
             if (Messages.EVENT_TYPE.equals(event.type())) {
                 String conversationId = event.payload().path("conversation_id").asString(null);
@@ -518,7 +540,23 @@ public class TurnRunner {
                             .filter(schedule -> Schedules.ACTIVE.equals(schedule.state()))
                             .ifPresent(schedule -> due.add(new Work.Due(schedule, dueAt, late)));
                 }
+            } else if (Tasks.REPORT_EVENT.equals(event.type()) || Tasks.MESSAGE_EVENT.equals(event.type())) {
+                // A note of a delegated task: for the main agent on its line, for the worker on the task's.
+                String taskId = event.payload().path("task_id").asString(null);
+                int seq = event.payload().path("seq").asInt(0);
+                Optional<Tasks.Task> task = taskId == null ? Optional.empty() : tasks.find(run.tenantId(), run.inboxId(), taskId);
+                Optional<Tasks.Note> note = task.flatMap(found -> tasks.note(run.tenantId(), run.inboxId(), taskId, seq));
+                if (note.isPresent() && Tasks.REPORT_EVENT.equals(event.type())) {
+                    reported.add(new Tasks.Report(task.get(), note.get()));
+                } else if (note.isPresent()) {
+                    told.add(note.get());
+                }
             }
+        }
+        Optional<Tasks.Task> delegated = tasks.ofLine(run.tenantId(), run.inboxId(), run.mergeKey());
+        if (delegated.isPresent()) {
+            // The line of a task: a worker's turn, on what the main agent sent or on its own follow-up.
+            return told.isEmpty() && due.isEmpty() ? null : new Work.Job(delegated.get(), told, due);
         }
         if (!said.isEmpty()) {
             // Messages the user stopped before this turn began are not answered.
@@ -526,7 +564,7 @@ public class TurnRunner {
             return new Work.Chat(said.stream().filter(message -> message.seq() > stoppedThrough)
                     .sorted(Comparator.comparingLong(MessageView::seq)).toList());
         }
-        return happened.isEmpty() && due.isEmpty() ? null : new Work.Task(happened, due);
+        return happened.isEmpty() && due.isEmpty() && reported.isEmpty() ? null : new Work.Task(happened, due, reported);
     }
 
     private static Instant parseInstant(String text, Instant otherwise) {
@@ -537,15 +575,21 @@ public class TurnRunner {
         }
     }
 
-    /** Whether the user stopped the reply that this turn is for. Only a conversation's reply can be stopped. */
+    /**
+     * Whether what this turn works for is no longer wanted: the user stopped the reply that a
+     * conversation's turn is for, or the task that a worker's turn is on was closed.
+     */
     private boolean stopped(Threads.Thread thread, Work work) {
+        if (work instanceof Work.Job job) {
+            return tasks.closed(thread.appId(), thread.userId(), job.task().taskId());
+        }
         return work instanceof Work.Chat chat && !chat.messages().isEmpty()
                 && threads.stoppedThrough(thread.appId(), thread.userId(), thread.mergeKey()) >= chat.messages().getLast().seq();
     }
 
     /** Interrupts the session for a stop. When that fails, the turn reads on to its end all the same, and its reply is dropped. */
     private void stop(ClaimedRun run, Threads.Thread thread) {
-        log.info("run {}: the user stopped the reply", run.runId());
+        log.info("run {}: {}", run.runId(), thread.work() ? "the task was closed" : "the user stopped the reply");
         try {
             platform(() -> cma.send(thread.sessionId(), List.of(new Outgoing.Interrupt())));
         } catch (CmaException e) {
@@ -563,7 +607,25 @@ public class TurnRunner {
                 + "sees nothing of what you write in this turn.]\n");
         int events = task.events().size();
         int followups = task.followups().size();
-        if (events > 0 && followups == 0) {
+        int reports = task.reports().size();
+        if (reports > 0) {
+            // A main agent's turn: what its workers have for it, next to whatever else is waiting.
+            List<String> waiting = new ArrayList<>();
+            if (events > 0) {
+                waiting.add(events == 1 ? "an event from the application's systems is waiting for you"
+                        : events + " events from the application's systems are waiting for you");
+            }
+            if (followups > 0) {
+                waiting.add(followups == 1 ? "a follow-up you set for yourself is due"
+                        : followups + " follow-ups you set for yourself are due");
+            }
+            waiting.add(reports == 1 ? "a worker has something for you on a task you delegated"
+                    : "workers have " + reports + " things for you on tasks you delegated");
+            String all = String.join(", and ", waiting);
+            text.append(Character.toUpperCase(all.charAt(0))).append(all, 1, all.length())
+                    .append(". Call read_events to get ").append(waiting.size() == 1 && reports == 1 ? "it" : "them")
+                    .append(", then decide what to do.");
+        } else if (events > 0 && followups == 0) {
             text.append(events == 1 ? "An event from the application's systems is" : events + " events from the application's systems are")
                     .append(" waiting for you. Call read_events to get ").append(events == 1 ? "it" : "them")
                     .append(", then decide what to do.");
@@ -602,12 +664,25 @@ public class TurnRunner {
                 stored.put("kind", "task");
                 ArrayNode list = stored.putArray("events");
                 task.events().forEach(event -> list.add(event.eventId()));
-                ArrayNode due = stored.putArray("due");
-                task.due().forEach(item -> due.addObject().put("schedule_id", item.schedule().scheduleId())
-                        .put("due_at", item.dueAt().toString()).put("late", item.late()));
+                storeDue(stored, task.due());
+                ArrayNode reports = stored.putArray("reports");
+                task.reports().forEach(report -> reports.addObject().put("task_id", report.task().taskId())
+                        .put("seq", report.note().seq()));
+            }
+            case Work.Job job -> {
+                stored.put("kind", "job").put("task_id", job.task().taskId());
+                ArrayNode notes = stored.putArray("notes");
+                job.notes().forEach(note -> notes.add(note.seq()));
+                storeDue(stored, job.due());
             }
         }
         return stored;
+    }
+
+    private static void storeDue(ObjectNode stored, List<Work.Due> items) {
+        ArrayNode due = stored.putArray("due");
+        items.forEach(item -> due.addObject().put("schedule_id", item.schedule().scheduleId())
+                .put("due_at", item.dueAt().toString()).put("late", item.late()));
     }
 
     /** @return {@code null} when what the turn worked on is no longer there */
@@ -620,16 +695,34 @@ public class TurnRunner {
             }
             return said.isEmpty() ? null : new Work.Chat(said);
         }
-        List<AppEvent> happened = new ArrayList<>();
-        for (JsonNode eventId : stored.path("events")) {
-            appEvents.find(run.tenantId(), run.inboxId(), eventId.asString()).ifPresent(happened::add);
-        }
         List<Work.Due> due = new ArrayList<>();
         for (JsonNode item : stored.path("due")) {
             schedules.find(run.tenantId(), run.inboxId(), item.path("schedule_id").asString()).ifPresent(schedule ->
                     due.add(new Work.Due(schedule, Instant.parse(item.path("due_at").asString()), item.path("late").asBoolean())));
         }
-        return happened.isEmpty() && due.isEmpty() ? null : new Work.Task(happened, due);
+        if ("job".equals(stored.path("kind").asString())) {
+            Optional<Tasks.Task> task = tasks.find(run.tenantId(), run.inboxId(), stored.path("task_id").asString());
+            if (task.isEmpty()) {
+                return null;
+            }
+            List<Tasks.Note> told = new ArrayList<>();
+            for (JsonNode seq : stored.path("notes")) {
+                tasks.note(run.tenantId(), run.inboxId(), task.get().taskId(), seq.asInt()).ifPresent(told::add);
+            }
+            return told.isEmpty() && due.isEmpty() ? null : new Work.Job(task.get(), told, due);
+        }
+        List<AppEvent> happened = new ArrayList<>();
+        for (JsonNode eventId : stored.path("events")) {
+            appEvents.find(run.tenantId(), run.inboxId(), eventId.asString()).ifPresent(happened::add);
+        }
+        List<Tasks.Report> reported = new ArrayList<>();
+        for (JsonNode item : stored.path("reports")) {
+            String taskId = item.path("task_id").asString();
+            tasks.find(run.tenantId(), run.inboxId(), taskId).ifPresent(task ->
+                    tasks.note(run.tenantId(), run.inboxId(), taskId, item.path("seq").asInt())
+                            .ifPresent(note -> reported.add(new Tasks.Report(task, note))));
+        }
+        return happened.isEmpty() && due.isEmpty() && reported.isEmpty() ? null : new Work.Task(happened, due, reported);
     }
 
     /**
@@ -643,8 +736,80 @@ public class TurnRunner {
     private String input(Threads.Thread thread, Work work) {
         return switch (work) {
             case Work.Chat chat -> said(thread, chat.messages());
-            case Work.Task task -> background(task);
+            case Work.Task task -> recalled(thread) + background(task);
+            case Work.Job job -> assigned(job);
         };
+    }
+
+    /**
+     * The notice that starts a worker's turn on a delegated task. What the main agent wants is read
+     * with read_events, like everything that does not come from the user: the main agent's words are
+     * its own, written after it read what other systems say, and are not to pass for the user's.
+     */
+    private static String assigned(Work.Job job) {
+        StringBuilder text = new StringBuilder("[From the service that runs you, not from the user. The user is not here and "
+                + "sees nothing of what you write in this turn.]\n");
+        boolean told = !job.notes().isEmpty();
+        int followups = job.due().size();
+        if (told) {
+            text.append("The user's main agent has handed you work on a task. Call read_events to get it, and do it within "
+                    + "what your own instructions allow: it is the main agent's request, not the user's word.");
+        }
+        if (followups > 0) {
+            text.append(told ? "\n" : "").append(followups == 1 ? "A follow-up you set for yourself on a task of the user's "
+                            + "main agent is due" : followups + " follow-ups you set for yourself on a task of the user's main "
+                            + "agent are due")
+                    .append(". Call read_events to see ").append(followups == 1 ? "your note" : "your notes").append(".");
+        }
+        text.append("\nWhat you write at the end of this turn is your report to the main agent, which decides what the user is "
+                + "told: say what you did and what you found. If you cannot go on without an answer, ask for it in the report "
+                + "and end the turn; the answer comes as a further message. notify_user and ask_user do not work in a task.");
+        if (!told) {
+            text.append(" If there is nothing the main agent needs to hear, end the turn without writing anything.");
+        }
+        return text.toString();
+    }
+
+    /**
+     * For the first turn of a session that replaces another one, when that turn is not the user's:
+     * what was said in the conversation before, of which the new session knows nothing. A turn that
+     * the user starts is told the same by {@link #said}; without this, a conversation whose new
+     * session happened to start in the background would never be told.
+     */
+    private String recalled(Threads.Thread thread) {
+        if (!thread.chat() || thread.generation() <= 1 || thread.lastEventId() != null) {
+            return "";
+        }
+        StringBuilder text = new StringBuilder();
+        List<MessageView> earlier = messages.dialogueBefore(thread.appId(), thread.userId(), thread.conversationId(),
+                thread.mergeKey(), Long.MAX_VALUE, config.getTranscriptMessages());
+        if (!earlier.isEmpty()) {
+            text.append("[From the service that runs you, not from the user: this conversation continues in a new "
+                    + "session. This is what was said before, for your reference.]\n");
+            transcript(text, earlier);
+            text.append("[End of the earlier conversation.]\n\n");
+            threads.unsyncedAfter(thread, earlier.getFirst().seq() - 1);
+        }
+        return text.append(delegatedBefore(thread)).toString();
+    }
+
+    private static void transcript(StringBuilder text, List<MessageView> earlier) {
+        for (MessageView message : earlier) {
+            String words = message.text().length() <= TRANSCRIPT_CHARS_PER_MESSAGE ? message.text()
+                    : message.text().substring(0, TRANSCRIPT_CHARS_PER_MESSAGE) + "…";
+            text.append(message.role().equals("user") ? "User: " : "You: ").append(words).append('\n');
+        }
+    }
+
+    /** For a main agent's new session: that tasks it delegated in an earlier session are still open. */
+    private String delegatedBefore(Threads.Thread thread) {
+        int open = thread.chat() ? tasks.open(thread).size() : 0;
+        if (open == 0 || !PlatformTools.delegates(profiles.config(thread.appId(), thread.agentKey()).coordinator())) {
+            return "";
+        }
+        return "[From the service that runs you, not from the user: this session is new and knows nothing of the tasks you "
+                + "delegated before. " + (open == 1 ? "One of them is" : open + " of them are")
+                + " still open. Call list_tasks to see " + (open == 1 ? "it" : "them") + ".]\n\n";
     }
 
     /**
@@ -662,16 +827,13 @@ public class TurnRunner {
             if (!earlier.isEmpty()) {
                 text.append("[From the service that runs you, not from the user: this conversation continues in a new "
                         + "session. This is what was said before, for your reference.]\n");
-                for (MessageView message : earlier) {
-                    String words = message.text().length() <= TRANSCRIPT_CHARS_PER_MESSAGE ? message.text()
-                            : message.text().substring(0, TRANSCRIPT_CHARS_PER_MESSAGE) + "…";
-                    text.append(message.role().equals("user") ? "User: " : "You: ").append(words).append('\n');
-                }
+                transcript(text, earlier);
                 text.append("[End of the earlier conversation. The user's new message follows.]\n\n");
                 // The new session has read nothing from the background. What came since the earliest thing it was told is offered to it.
                 synced = Math.min(synced, earlier.getFirst().seq() - 1);
                 threads.unsyncedAfter(thread, synced);
             }
+            text.append(delegatedBefore(thread));
         }
         int unread = messages.outsideAfter(thread.appId(), thread.userId(), thread.conversationId(), thread.mergeKey(), synced,
                 TurnTools.MAX_NOTIFICATIONS_READ).size();
@@ -747,7 +909,11 @@ public class TurnRunner {
             CmaEvent call = reading.calls.get(id);
             Outgoing answer;
             if (call instanceof CmaEvent.CustomToolUse custom && PlatformTools.ASK_USER.equals(custom.name())) {
-                answer = fromPerson(run, turn, thread, work, custom);
+                answer = work instanceof Work.Job
+                        // A worker has one counterpart, the main agent, which is also who knows what the user already said.
+                        ? new Outgoing.CustomToolResult(id, "Not asked: in a task you ask the main agent, not the user. Put "
+                                + "your question into your report and end the turn; the answer comes as a further message.", true)
+                        : fromPerson(run, turn, thread, work, custom);
             } else if (call instanceof CmaEvent.CustomToolUse custom) {
                 TurnTools.Answer result = tools.call(run, turn, thread, work, custom, reading.ordinal(custom));
                 if (result.syncedTo() != null) {
@@ -959,6 +1125,22 @@ public class TurnRunner {
                     note = !wrote ? null : last.length() <= NOTE_CHARS ? last : last.substring(0, NOTE_CHARS) + "…";
                     schedules.fired(thread.appId(), thread.userId(),
                             task.due().stream().map(item -> item.schedule().scheduleId()).toList());
+                    tasks.read(task.reports());
+                }
+                case Work.Job job -> {
+                    // What the worker wrote last is its report to the main agent, whose line it wakes. A turn that
+                    // the main agent started always reports, so that the main agent never waits for nothing; one
+                    // that the worker's own follow-up started may have nothing to say. A closed task gets no report.
+                    boolean asked = !job.notes().isEmpty();
+                    String report = reading.stopping ? null
+                            : wrote ? last
+                            : refused ? "The worker declined to go on with the task."
+                            : asked ? "The worker ended its turn without a report."
+                            : null;
+                    tasks.turnEnded(job.task(), run.runId(), job.notes().stream().map(Tasks.Note::seq).toList(), report);
+                    outcome = reading.stopping ? "closed" : report != null ? "reported" : "silent";
+                    schedules.fired(thread.appId(), thread.userId(),
+                            job.due().stream().map(item -> item.schedule().scheduleId()).toList());
                 }
             }
             if (reading.lastEventId != null) {
@@ -986,6 +1168,7 @@ public class TurnRunner {
             users.lock(thread.appId(), thread.userId());
             turns.finish(turn, Turns.FAILED, null, error);
             outbound.record(thread.appId(), thread.userId(), Update.RUN_FAILED, Outbound.failure(run.runId(), run.mergeKey(), error));
+            tasks.turnFailed(thread.appId(), thread.userId(), run.mergeKey(), run.runId(), error);
         });
         actions.withdrawOfRun(run.runId(), "the turn that waited for this ran out of time");
         log.warn("run {} failed: {}", run.runId(), error);
@@ -1000,6 +1183,7 @@ public class TurnRunner {
                 turns.find(run.runId()).filter(turn -> turn.epoch() == run.epoch() && Turns.OPEN.equals(turn.state()))
                         .ifPresent(turn -> turns.finish(turn, Turns.FAILED, null, error));
                 outbound.record(run.tenantId(), run.inboxId(), Update.RUN_FAILED, Outbound.failure(run.runId(), run.mergeKey(), error));
+                tasks.turnFailed(run.tenantId(), run.inboxId(), run.mergeKey(), run.runId(), error);
             });
         } catch (RuntimeException e) {
             log.warn("run {}: its failure could not be recorded: {}", run.runId(), e.toString());

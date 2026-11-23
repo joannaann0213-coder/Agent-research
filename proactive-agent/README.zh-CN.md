@@ -6,8 +6,9 @@
 API 追加到每个用户自己的收件箱里；运行时从中取走工作的方式只有一种：把一批就绪事件领取为一个 run。
 
 本仓库实现了收件箱路线图的 **M0 和 M1** 两个阶段，形态是一个基于 PostgreSQL 的 Spring Boot 服务；在它之上是 **Agent
-服务**，通过 [Agent API](docs/zh/agent-api.md) 把主动式 agent 开放给应用，并让它跑在 Claude Managed Agents 上。多 agent
-层和长期记忆在[架构文档](docs/zh/architecture.md)中有描述，但不在这里实现。单独使用收件箱时，用一个脚本化的 worker 代替 agent，使收件箱的契约可以端到端地跑通。
+服务**，通过 [Agent API](docs/zh/agent-api.md) 把主动式 agent 开放给应用，并让它跑在 Claude Managed Agents 上。一个 agent
+可以是用户的[主 agent](docs/zh/main-agent.md)：关于这个用户的一切都来到它这里，耗时的工作由它交给 worker agent。多 agent
+层的第三层和长期记忆在[架构文档](docs/zh/architecture.md)中有描述，但不在这里实现。单独使用收件箱时，用一个脚本化的 worker 代替 agent，使收件箱的契约可以端到端地跑通。
 
 ## 它保证什么
 
@@ -119,7 +120,7 @@ examples/agent-api/quickstart.sh
 | `openapi-testkit` | 测试支持：用服务的 OpenAPI 文档核对测试中的 HTTP 流量 |
 | `agent-cma` | 通往 Claude Managed Agents 的端口：agent 服务使用的接口、基于官方 Java SDK 的适配器，以及一个可脚本化的进程内替身 |
 | `agent-api` | Agent API 的传输类型，agent 服务与它的客户端共用 |
-| `agent-server` | Agent 服务：Agent API、在 Claude Managed Agents 上运行的回合、动作、定时计划、更新、webhook 和凭据 |
+| `agent-server` | Agent 服务：Agent API、在 Claude Managed Agents 上运行的回合、主 agent 和它的 worker 的任务、动作、定时计划、更新、webhook 和凭据 |
 
 ## 文档
 
@@ -132,6 +133,7 @@ examples/agent-api/quickstart.sh
 | [测试](docs/zh/testing.md) | 怎么运行测试，以及每一项验收由哪个测试证明 |
 | [Agent 服务](docs/zh/agent-service.md) | Agent 服务如何工作、出了问题怎么办、怎样运行 |
 | [Agent API](docs/zh/agent-api.md) | 写给应用的指南：概念、鉴权、会话、事件、动作、定时计划、更新、凭据 |
+| [主 agent 与 worker](docs/zh/main-agent.md) | 得知用户一切并把工作交给 worker agent 的那个 agent：回顾、决策及其理由、它如何工作 |
 | [教程](docs/zh/tutorial.md) | 用 Docker 运行服务，一步步接入应用：后端、用户端、业务事件、审批、真实模式、上线 |
 
 ## 配置

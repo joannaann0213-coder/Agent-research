@@ -4,13 +4,14 @@ import dev.agentflow.agent.api.CreateScheduleRequest;
 import dev.agentflow.agent.api.ScheduleView;
 import dev.agentflow.agent.server.api.AgentException;
 import dev.agentflow.agent.server.app.Users;
+import dev.agentflow.agent.server.chat.Lines;
 import dev.agentflow.agent.server.chat.Messages;
 import dev.agentflow.agent.server.chat.Threads;
+import dev.agentflow.agent.server.config.AgentProperties;
 import dev.agentflow.agent.server.core.Db;
 import dev.agentflow.agent.server.core.Ids;
 import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.core.Names;
-import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.inbox.api.CanonicalJson;
 import dev.agentflow.inbox.api.CreateTimerRequest;
@@ -89,22 +90,23 @@ public class Schedules {
     private final JdbcClient jdbc;
     private final TransactionTemplate tx;
     private final Users users;
-    private final Threads threads;
-    private final AgentProfiles profiles;
+    private final Lines lines;
     private final InboxClient inbox;
     private final AgentClock clock;
     private final Ids ids;
+    /** The Inbox lane of the follow-ups that workers set themselves. */
+    private final Lane workLane;
 
-    public Schedules(JdbcClient jdbc, TransactionTemplate tx, Users users, Threads threads, AgentProfiles profiles,
-            InboxClient inbox, AgentClock clock, Ids ids) {
+    public Schedules(JdbcClient jdbc, TransactionTemplate tx, Users users, Lines lines, InboxClient inbox, AgentClock clock,
+            Ids ids, AgentProperties properties) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
-        this.threads = threads;
-        this.profiles = profiles;
+        this.lines = lines;
         this.inbox = inbox;
         this.clock = clock;
         this.ids = ids;
+        this.workLane = Lane.fromWire(properties.getTasks().getLane());
     }
 
     // ================================================================ the application's schedules
@@ -153,7 +155,6 @@ public class Schedules {
                 .put("conversation_id", conversationId).put("at", once ? request.at().toString() : null)
                 .put("cron", request.cron()).put("time_zone", zone);
         String fingerprint = Hashing.sha256Hex(CanonicalJson.of(asked).getBytes(StandardCharsets.UTF_8));
-        String mergeKey = Threads.taskKey(subject);
         String zoneId = zone;
 
         Optional<Schedule> earlier = tx.execute(status -> {
@@ -166,20 +167,11 @@ public class Schedules {
                 }
                 return existing;
             }
-            Optional<Threads.Thread> line = threads.find(appId, userId, mergeKey);
-            if (line.isPresent() && agentKey != null && !line.get().agentKey().equals(agentKey)) {
-                throw AgentException.conflict("subject " + subject + " is handled by agent " + line.get().agentKey()
-                        + "; a subject keeps the agent it started with");
-            }
-            String agent = line.map(Threads.Thread::agentKey).orElse(agentKey == null ? Messages.DEFAULT_AGENT : agentKey);
-            if (line.isEmpty()) {
-                if (!profiles.exists(appId, agent)) {
-                    throw AgentException.invalid("this application has no agent " + agent + "; create it with PUT /v1/agents/" + agent);
-                }
-                threads.ensureTask(appId, userId, subject, agent);
-            }
+            // The subject's own line, or, for a main agent, the line of the conversation it serves.
+            Threads.Thread line = lines.background(appId, userId, subject, agentKey, conversationId,
+                    "; a subject keeps the agent it started with");
             insert(appId, userId, scheduleId, BY_APP, once ? CreateTimerRequest.ONCE : CreateTimerRequest.CRON, name,
-                    instructions, null, 0, mergeKey, agent, conversationId, once ? request.at() : null,
+                    instructions, null, 0, line.mergeKey(), line.agentKey(), conversationId, once ? request.at() : null,
                     once ? null : request.cron().trim(), zoneId, fingerprint);
             return Optional.empty();
         });
@@ -228,6 +220,23 @@ public class Schedules {
         }
     }
 
+    /**
+     * Cancels every schedule that waits on a line: the follow-ups an agent set itself there. Used
+     * when the line is over, as when a delegated task is closed.
+     */
+    public void cancelLine(String appId, String userId, String mergeKey) {
+        List<String> waiting = jdbc.sql("""
+                SELECT schedule_id FROM schedule
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey AND state = 'active'
+                """)
+                .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
+                .query(String.class)
+                .list();
+        for (String scheduleId : waiting) {
+            cancel(appId, userId, scheduleId);
+        }
+    }
+
     // ================================================================ the agent's follow-ups
 
     /** How many follow-ups wait on a line. */
@@ -266,8 +275,10 @@ public class Schedules {
         }
         ObjectNode payload = InboxJson.mapper().createObjectNode();
         payload.put("schedule_id", schedule.scheduleId());
+        // A worker's follow-up runs where the worker runs; everything else in the background.
+        Lane lane = schedule.mergeKey().startsWith(Threads.WORK_PREFIX) ? workLane : Lane.BACKGROUND;
         CreateTimerRequest request = new CreateTimerRequest(schedule.kind(), schedule.fireAt(), schedule.cron(),
-                schedule.timeZone(), schedule.scheduleId(), schedule.mergeKey(), Lane.BACKGROUND, payload);
+                schedule.timeZone(), schedule.scheduleId(), schedule.mergeKey(), lane, payload);
         ApiResult<TimerView> created;
         try {
             created = inbox.createTimer(schedule.appId(), schedule.userId(), request);

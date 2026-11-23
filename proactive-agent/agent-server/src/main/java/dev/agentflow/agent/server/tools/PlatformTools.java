@@ -1,15 +1,21 @@
 package dev.agentflow.agent.server.tools;
 
+import dev.agentflow.agent.api.CoordinatorConfig;
+import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.cma.AgentSpec;
 import dev.agentflow.agent.server.core.Json;
+import java.util.ArrayList;
 import java.util.List;
+import tools.jackson.databind.node.ArrayNode;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
- * The tools this service gives every agent, next to the ones its application configured. The
- * platform does not run them: it hands each call to this service, which answers it in the turn.
+ * The tools this service gives every agent, next to the ones its application configured, and the
+ * ones it gives a main agent to hand work to its workers. The platform does not run them: it hands
+ * each call to this service, which answers it in the turn.
  *
- * <p>What is written here is read by the model. Changing a word changes every agent, at its next
- * use.
+ * <p>What is written here is read by the model. Changing a word changes every agent that has the
+ * tool, at its next use.
  */
 public final class PlatformTools {
 
@@ -18,6 +24,11 @@ public final class PlatformTools {
     public static final String ASK_USER = "ask_user";
     public static final String SCHEDULE_FOLLOWUP = "schedule_followup";
 
+    public static final String DELEGATE_TASK = "delegate_task";
+    public static final String MESSAGE_WORKER = "message_worker";
+    public static final String LIST_TASKS = "list_tasks";
+    public static final String CLOSE_TASK = "close_task";
+
     public static final int MAX_NOTE = 1000;
 
     public static final int MAX_QUESTION = 2000;
@@ -25,6 +36,119 @@ public final class PlatformTools {
     public static final int MAX_OPTION = 200;
 
     private PlatformTools() {
+    }
+
+    /**
+     * The tools of an agent with this configuration: the ones every agent has, and, for a main agent
+     * that has workers, the ones it delegates with.
+     *
+     * @param coordinator what makes the agent a main agent, or {@code null} for an ordinary one
+     */
+    public static List<AgentSpec.CustomTool> definitions(CoordinatorConfig coordinator) {
+        if (!delegates(coordinator)) {
+            return definitions();
+        }
+        List<AgentSpec.CustomTool> tools = new ArrayList<>(definitions());
+        tools.addAll(delegation(coordinator.workers()));
+        return List.copyOf(tools);
+    }
+
+    /** Whether an agent with this configuration has workers to hand work to, and so the tools for it. */
+    public static boolean delegates(CoordinatorConfig coordinator) {
+        return coordinator != null && coordinator.workers() != null && !coordinator.workers().isEmpty();
+    }
+
+    /** The tools a main agent hands work to its workers with. The roles it may name are part of the first one. */
+    private static List<AgentSpec.CustomTool> delegation(List<WorkerConfig> workers) {
+        StringBuilder roles = new StringBuilder();
+        for (WorkerConfig worker : workers) {
+            roles.append("\n- ").append(worker.role()).append(": ").append(worker.description());
+        }
+        ObjectNode delegate = (ObjectNode) Json.STORED.readTree("""
+                {
+                  "type": "object",
+                  "properties": {
+                    "role": {
+                      "type": "string",
+                      "description": "Which worker gets the task: one of the roles named in this tool's description."
+                    },
+                    "title": {
+                      "type": "string",
+                      "description": "A short name for the task, as it shows in lists. At most 200 characters."
+                    },
+                    "instructions": {
+                      "type": "string",
+                      "description": "What the worker is to do, everything it needs to know to do it, and what you want back. At most 8000 characters."
+                    }
+                  },
+                  "required": ["role", "title", "instructions"],
+                  "additionalProperties": false
+                }""");
+        ArrayNode allowed = ((ObjectNode) delegate.path("properties").path("role")).putArray("enum");
+        workers.forEach(worker -> allowed.add(worker.role()));
+        return List.of(
+                new AgentSpec.CustomTool(DELEGATE_TASK, """
+                        Hands a piece of work to a worker: another agent, with a session of its own, that \
+                        works on it in the background while you stay free for the user. Use it for work \
+                        that takes many steps or tools, or that can go on next to other work; do small \
+                        things yourself. The worker knows nothing of this conversation: put everything it \
+                        needs into `instructions`. You do not wait for the worker. End your turn as usual; \
+                        when the worker has something for you, the service wakes you and read_events \
+                        gives you its report. If the user is waiting for an answer, tell them what you \
+                        have started. The roles you can delegate to:""" + roles,
+                        delegate),
+                new AgentSpec.CustomTool(MESSAGE_WORKER, """
+                        Sends the worker of a task you delegated a further message: the answer to a \
+                        question it asked in its report, a correction, or more work on the same task. The \
+                        worker remembers the task so far. Its next report wakes you as the first one did. \
+                        For work that has nothing to do with that task, delegate a new task instead.""",
+                        Json.STORED.readTree("""
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "task_id": {
+                                      "type": "string",
+                                      "description": "The task, as delegate_task or list_tasks named it."
+                                    },
+                                    "text": {
+                                      "type": "string",
+                                      "description": "What you have to say to the worker. At most 8000 characters."
+                                    }
+                                  },
+                                  "required": ["task_id", "text"],
+                                  "additionalProperties": false
+                                }""")),
+                new AgentSpec.CustomTool(LIST_TASKS, """
+                        Returns the tasks you have delegated that are not closed, each with its state and \
+                        the beginning of the worker's latest report. Use it when you are not sure what is \
+                        under way, for example in a new session, or before you tell the user how things \
+                        stand.""",
+                        Json.STORED.readTree("""
+                                {
+                                  "type": "object",
+                                  "properties": {},
+                                  "additionalProperties": false
+                                }""")),
+                new AgentSpec.CustomTool(CLOSE_TASK, """
+                        Closes a task: its work is done, or no longer wanted. A worker that is still \
+                        working on it is stopped, and nothing more comes from it. Close a task once you \
+                        have what you wanted from it; only so many can be open at a time.""",
+                        Json.STORED.readTree("""
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "task_id": {
+                                      "type": "string",
+                                      "description": "The task, as delegate_task or list_tasks named it."
+                                    },
+                                    "reason": {
+                                      "type": "string",
+                                      "description": "Why, in a few words, for whoever looks at the task later. At most 500 characters."
+                                    }
+                                  },
+                                  "required": ["task_id"],
+                                  "additionalProperties": false
+                                }""")));
     }
 
     public static List<AgentSpec.CustomTool> definitions() {

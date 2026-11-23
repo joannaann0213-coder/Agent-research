@@ -20,6 +20,7 @@ public class AgentProperties {
     private final Notify notify = new Notify();
     private final Actions actions = new Actions();
     private final Followups followups = new Followups();
+    private final Tasks tasks = new Tasks();
     private final Webhooks webhooks = new Webhooks();
     private final Stream stream = new Stream();
     private final Limits limits = new Limits();
@@ -68,6 +69,10 @@ public class AgentProperties {
 
     public Followups getFollowups() {
         return followups;
+    }
+
+    public Tasks getTasks() {
+        return tasks;
     }
 
     public Webhooks getWebhooks() {
@@ -722,6 +727,71 @@ public class AgentProperties {
 
         public void setMaxDelay(Duration maxDelay) {
             this.maxDelay = maxDelay;
+        }
+    }
+
+    /** The tasks a main agent hands to workers. */
+    public static class Tasks {
+
+        /**
+         * The lane of the Event Inbox on which workers run: {@code batch} or {@code background}. On
+         * {@code batch} a worker never holds up what wakes the main agent, and the Inbox's cap of that
+         * lane ({@code inbox.lanes.batch.cap}) is how many workers of one user run at a time. On
+         * {@code background} workers share the lane, and its cap, with everything else that happens
+         * in the background.
+         */
+        private String lane = "batch";
+
+        /** How many tasks of one main agent's conversation may be open, working or not, at a time. */
+        private int maxOpen = 20;
+
+        /** A task that nobody has touched for this long is closed when room is needed for a new one. */
+        private Duration idleTtl = Duration.ofDays(7);
+
+        /** The longest instructions of a task, and the longest later message to its worker, in characters. */
+        private int maxInstructions = 8000;
+
+        /** How much of a worker's report is kept and passed on, in characters. */
+        private int maxReport = 16000;
+
+        public String getLane() {
+            return lane;
+        }
+
+        public void setLane(String lane) {
+            this.lane = lane;
+        }
+
+        public int getMaxOpen() {
+            return maxOpen;
+        }
+
+        public void setMaxOpen(int maxOpen) {
+            this.maxOpen = maxOpen;
+        }
+
+        public Duration getIdleTtl() {
+            return idleTtl;
+        }
+
+        public void setIdleTtl(Duration idleTtl) {
+            this.idleTtl = idleTtl;
+        }
+
+        public int getMaxInstructions() {
+            return maxInstructions;
+        }
+
+        public void setMaxInstructions(int maxInstructions) {
+            this.maxInstructions = maxInstructions;
+        }
+
+        public int getMaxReport() {
+            return maxReport;
+        }
+
+        public void setMaxReport(int maxReport) {
+            this.maxReport = maxReport;
         }
     }
 

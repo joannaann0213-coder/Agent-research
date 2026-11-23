@@ -18,6 +18,11 @@ import org.springframework.transaction.support.TransactionTemplate;
  * user and agent. A conversation's session has it to read and write. A session in the background has
  * it to read only: there the agent works on what other systems say, and that must not end up in what
  * it remembers about the user.
+ *
+ * <p>A main agent is the exception that its design brings with it: the session of its conversation
+ * is also where it reads events and its workers' reports, so that one session knows of everything,
+ * and that session can write the memory. Nothing but the agent's instructions keeps the two apart
+ * there. An application for which that is not enough leaves memory off for its main agent.
  */
 @Service
 public class Memories {

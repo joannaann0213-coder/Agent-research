@@ -5,13 +5,13 @@ import dev.agentflow.agent.api.PostEventRequest;
 import dev.agentflow.agent.server.actions.Actions;
 import dev.agentflow.agent.server.api.AgentException;
 import dev.agentflow.agent.server.app.Users;
+import dev.agentflow.agent.server.chat.Lines;
 import dev.agentflow.agent.server.chat.Messages;
 import dev.agentflow.agent.server.chat.Threads;
 import dev.agentflow.agent.server.core.Db;
 import dev.agentflow.agent.server.core.Ids;
 import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.core.Names;
-import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.relay.InboxRelay;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.inbox.api.CanonicalJson;
@@ -36,7 +36,8 @@ import tools.jackson.databind.node.ObjectNode;
 /**
  * What applications tell the agent about their users from their own systems. An event is stored
  * here and announced to the Event Inbox in the same transaction; the Inbox turns it into a run, in
- * which the agent reads the event and decides whether the user needs to hear about it.
+ * which the agent reads the event and decides whether the user needs to hear about it. The run is
+ * one of the subject's line, or, when the agent is a main agent, of the conversation it serves.
  */
 @Service
 public class AppEvents {
@@ -60,20 +61,18 @@ public class AppEvents {
     private final JdbcClient jdbc;
     private final TransactionTemplate tx;
     private final Users users;
-    private final Threads threads;
-    private final AgentProfiles profiles;
+    private final Lines lines;
     private final InboxRelay relay;
     private final Actions actions;
     private final AgentClock clock;
     private final Ids ids;
 
-    public AppEvents(JdbcClient jdbc, TransactionTemplate tx, Users users, Threads threads, AgentProfiles profiles,
-            InboxRelay relay, Actions actions, AgentClock clock, Ids ids) {
+    public AppEvents(JdbcClient jdbc, TransactionTemplate tx, Users users, Lines lines, InboxRelay relay, Actions actions,
+            AgentClock clock, Ids ids) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
-        this.threads = threads;
-        this.profiles = profiles;
+        this.lines = lines;
         this.relay = relay;
         this.actions = actions;
         this.clock = clock;
@@ -131,20 +130,10 @@ public class AppEvents {
                         event.deliverAt(), true);
             }
 
-            String mergeKey = Threads.taskKey(subject);
-            Optional<Threads.Thread> existing = threads.find(appId, userId, mergeKey);
-            if (existing.isPresent() && agentKey != null && !existing.get().agentKey().equals(agentKey)) {
-                throw AgentException.conflict("subject " + subject + " is handled by agent " + existing.get().agentKey()
-                        + "; a subject keeps the agent of its first event");
-            }
-            if (existing.isEmpty()) {
-                String startWith = agentKey == null ? Messages.DEFAULT_AGENT : agentKey;
-                if (!profiles.exists(appId, startWith)) {
-                    throw AgentException.invalid("this application has no agent " + startWith
-                            + "; create it with PUT /v1/agents/" + startWith);
-                }
-                threads.ensureTask(appId, userId, subject, startWith);
-            }
+            // The subject's own line, or, for a main agent, the line of the conversation it serves.
+            Threads.Thread line = lines.background(appId, userId, subject, agentKey, conversationId,
+                    "; a subject keeps the agent of its first event");
+            String mergeKey = line.mergeKey();
 
             jdbc.sql("""
                     INSERT INTO app_event (app_id, user_id, event_id, type, subject, conversation_id, data, fingerprint,
@@ -160,7 +149,9 @@ public class AppEvents {
             // Something new happened to the subject: whatever its line waits for people to decide no longer applies.
             // An event that is held back counts from when it is due, so it does not withdraw anything now.
             if (deliverAt == null) {
-                actions.supersede(appId, userId, mergeKey, Actions.supersededNote(mergeKey));
+                actions.supersede(appId, userId, mergeKey, line.chat()
+                        ? "something new came in for you before this was decided; it comes in the next turn"
+                        : Actions.supersededNote(mergeKey));
             }
 
             ObjectNode payload = InboxJson.mapper().createObjectNode();

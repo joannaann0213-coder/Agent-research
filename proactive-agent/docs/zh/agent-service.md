@@ -39,10 +39,21 @@ flowchart LR
 | --- | --- | --- | --- |
 | 会话 | `conv:<conversation_id>` | 用户的消息 | agent 最后写的文字，作为回复 |
 | 主题 | `task:<subject>` | 应用的事件和定时计划 | 只有 agent 用 `notify_user` 发出的内容 |
+| 主 agent 的会话 | `conv:<conversation_id>` | 用户的消息；应用发给主 agent 的事件和定时计划；它的 worker 的汇报 | 对消息的回复；在后台，只有 agent 用 `notify_user` 发出的内容 |
+| 任务 | `work:<task_id>` | 主 agent 发给 worker 的内容，以及 worker 自己的跟进 | 什么都没有：worker 最后写的文字是给主 agent 的汇报 |
 
 跟进在设置它的那条线上运行。因此会话所在的线也可以在后台工作，比如一小时后提醒用户某件事。
 
 一条线的 session 无法再用时会被替换；agent 重新配置过或者用户的 vault 变了，会在两轮之间换新。每个 session 是这条线的新一代；会话的新 session 的第一个输入，会以用户和 agent 之前说过的话开头。
+
+## 主 agent 与 worker
+
+配置里带有 `coordinator` 的 agent 是主 agent。应用发给它的事件和定时计划，不在每个主题各自的线上处理，而是在它所服务的会话那条线上处理，这样关于用户的一切都由同一个 session
+得知。主 agent 用 `delegate_task` 开一个任务：一条独立的工作线 `work:<task_id>`，worker 的 agent 在这条线上、在自己的 session
+里运行。双方从不直接调用对方。一方要给另一方的东西存成任务的一条记录，并在同一个事务里给对方的工作线排一个事件，于是收件箱像对待任何输入一样把它变成一个 run。
+
+worker 跑在收件箱的 `batch` lane 上，这样 worker 的长回合不会挡住唤醒主 agent 的东西；这条 lane 的上限就是一个用户同时运行多少个
+worker。worker 够不着用户：它在一轮里最后写的文字就是汇报，汇报会唤醒主 agent；它的回合失败时，由服务替它写一条记录。设计、工具和理由见[主 agent 与 worker](main-agent.md)。
 
 ## 出了问题时
 
@@ -56,8 +67,9 @@ flowchart LR
 | 一轮超过了时限（10 分钟） | 中断 session，这一轮失败，并记录一条 `run.failed` 更新 |
 | 一个 run 死了（尝试次数用完） | 清扫把它的回合关掉并记录 `run.failed`；这条线的下一轮会先让 session 停下来 |
 | 流断了 | 跟随器重新打开它，并读取中间已保存的内容 |
+| worker 在任务上的一轮失败了 | 除了 `run.failed`，还会写一条记录告诉这个任务的主 agent 工作没做完，并唤醒它 |
 
-测试可以在一轮中的若干点让 worker 死掉（`TurnHooks`），以此证明上面每一条；见 `TurnRecoveryIT`、`ProactiveTurnIT` 和 `ActionsIT` 里的崩溃测试。
+测试可以在一轮中的若干点让 worker 死掉（`TurnHooks`），以此证明上面每一条；见 `TurnRecoveryIT`、`ProactiveTurnIT`、`ActionsIT` 和 `CoordinatorIT` 里的崩溃测试。
 
 ## 后台工作
 
@@ -91,7 +103,8 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 ## 记忆
 
 配置了 `memory: per_user` 的 agent 会把关于每个用户的笔记保存在 CMA 的记忆库里，每个用户、每个 agent 一个，session 在 `/mnt/memory/`
-下以文件形式看到它。会话的 session 可读可写。后台的 session 只读：在那里 agent 处理的是其他系统给出的内容，这些内容不能混进它对用户的记忆。记忆库在用户的 session 第一次需要时创建；打开或关闭记忆，会在每条线的下一轮、在新的 session 里生效。
+下以文件形式看到它。会话的 session 可读可写。后台的 session 只读：在那里 agent 处理的是其他系统给出的内容，这些内容不能混进它对用户的记忆。记忆库在用户的 session 第一次需要时创建；打开或关闭记忆，会在每条线的下一轮、在新的 session 里生效。主 agent 的 session 属于会话，所以它能写记忆，尽管它也在这个 session
+里读事件和汇报；由此带来的后果见[主 agent 与 worker](main-agent.md#信任边界)。
 
 ## 安全
 
@@ -120,14 +133,18 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 | `agent.turn.deadline` | `10m` | 一轮的最长时间；要小于收件箱的 `inbox.lease.max-duration` |
 | `agent.cma.creations-per-minute`, `requests-per-minute` | `300`、`600` | CMA 的限流；多个实例时按份分给每个实例 |
 | `agent.worker.claim-wait` | `5s` | 一次领取在收件箱里等待工作的最长时间 |
+| `agent.tasks.lane` | `batch` | 主 agent 的 worker 运行所在的收件箱 lane：`batch` 或 `background` |
+| `agent.tasks.max-open`, `idle-ttl` | `20`、`7d` | 每个主 agent 会话里开着的任务数，以及闲置的任务保留多久之后会被关闭以腾出位置 |
 | `AGENT_CORS_ALLOWEDORIGINS` | 无 | 可以从浏览器调用 API 的网页的源，用逗号分隔 |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`、`false` | 允许 webhook 投递到内网地址、使用明文 http；只用于在一台机器上试用 |
 
-收件箱需要为本服务配置一个 client，角色为 `RUNTIME` 和 `PRODUCER`，不属于任何租户；为了扛住较长的故障，应把最大尝试次数调得比默认值高（`inbox.retry.max-attempts`）。
+收件箱需要为本服务配置一个 client，角色为 `RUNTIME` 和 `PRODUCER`，不属于任何租户；为了扛住较长的故障，应把最大尝试次数调得比默认值高（`inbox.retry.max-attempts`）。要让主 agent 的 worker 并行运行，把 `batch` lane
+的上限调高（`inbox.lanes.batch.cap`，默认是 1；`docker-compose.yml` 里设为 4）。
 
 ### 演示模式与真实模式
 
-演示模式下由脚本扮演所有 agent：它重复用户说的话、读取事件并逐条通知，这样不用 key 也能试用整个服务。真实模式需要一个开通了 Managed Agents 的 Anthropic API
+演示模式下由脚本扮演所有 agent：它重复用户说的话、读取事件并逐条通知；作为主 agent，它把用户写在 `task:` 后面的内容交给 worker；作为
+worker，它汇报说做完了。这样不用 key 也能试用整个服务。真实模式需要一个开通了 Managed Agents 的 Anthropic API
 key。上线前先运行 `scripts/cma-live-check.sh`：它检查本服务所依赖、而文档没有说清的那些 CMA 行为。然后运行 `scripts/agent-live-smoke.sh`：它用 CMA 启动两个服务，端到端检查一段会话、一条通知，以及一个由用户回答的提问；加上 `--api` 和 `--admin-key` 时，它检查一个已经在运行的服务，比如 `docker-compose.yml` 启动的那个。
 
 演示模式的平台在服务的内存里。重启之后，它会认领数据库里仍然记着的东西（agent 按其配置恢复），但它创建的东西别处都没有：真实模式要从新的应用开始。
@@ -154,3 +171,5 @@ key。上线前先运行 `scripts/cma-live-check.sh`：它检查本服务所依�
 - 记忆按用户和 agent 区分，并且只适用于开启了沙箱的 agent。会话的新 session 同时也会被告知最近的对话。
 - 限流和流的唤醒都按实例计算。
 - 通知不会发到其他渠道（推送、邮件）；应用根据更新自行处理。
+- 主 agent 一次只处理一件事：它在处理事件或汇报时，用户的消息要等。一个任务之下的多个 agent、用户直接给 worker
+  写消息，都没有实现；见[主 agent 与 worker](main-agent.md#没有实现什么)。

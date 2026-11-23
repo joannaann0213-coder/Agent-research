@@ -35,7 +35,8 @@ record ProfileSpec(AgentSpec agent, EnvironmentSpec environment) {
                 .map(server -> new AgentSpec.McpServer(server.name(), server.url(), policy(server)))
                 .toList();
         AgentSpec agent = new AgentSpec(appId + "/" + agentKey, config.name(), config.model(), config.effort(),
-                PlatformPrompt.compose(config.instructions()), tools, servers, PlatformTools.definitions(), tags);
+                PlatformPrompt.compose(config.instructions(), config.coordinator()), tools, servers,
+                PlatformTools.definitions(config.coordinator()), tags);
 
         // A container exists even for an agent without container tools, so its network is closed
         // unless the profile opens it.

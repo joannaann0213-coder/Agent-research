@@ -11,18 +11,20 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 
 /**
- * The lines of work with a user: one per conversation, and one per subject of the application's
- * events. A line's key is the merge key of its events in the Event Inbox, which is what makes the
- * Inbox run them one at a time.
+ * The lines of work with a user: one per conversation, one per subject of the application's
+ * events, and one per task that a main agent delegated to a worker. A line's key is the merge key
+ * of its events in the Event Inbox, which is what makes the Inbox run them one at a time.
  */
 @Service
 public class Threads {
 
     public static final String CHAT_PREFIX = "conv:";
     public static final String TASK_PREFIX = "task:";
+    public static final String WORK_PREFIX = "work:";
 
     public static final String CHAT = "chat";
     public static final String TASK = "task";
+    public static final String WORK = "work";
 
     /**
      * @param generation which session of the line this is; 0 while there is none
@@ -41,6 +43,11 @@ public class Threads {
         public boolean chat() {
             return CHAT.equals(kind);
         }
+
+        /** Whether this is the line of a task that a main agent delegated to a worker. */
+        public boolean work() {
+            return WORK.equals(kind);
+        }
     }
 
     private final JdbcClient jdbc;
@@ -57,6 +64,11 @@ public class Threads {
 
     public static String taskKey(String subject) {
         return TASK_PREFIX + subject;
+    }
+
+    /** The line of a delegated task. */
+    public static String workKey(String taskId) {
+        return WORK_PREFIX + taskId;
     }
 
     /** The conversation's line, started with {@code agentKey} if this is its first message. */
@@ -85,6 +97,24 @@ public class Threads {
                 .param("agentKey", agentKey).param("now", Db.ts(now))
                 .update();
         return find(appId, userId, taskKey(subject)).orElseThrow();
+    }
+
+    /**
+     * The line of a delegated task, on which the worker's agent {@code agentKey} runs.
+     *
+     * @param conversationId the conversation of the main agent that delegated the task
+     */
+    public Thread ensureWork(String appId, String userId, String taskId, String conversationId, String agentKey) {
+        Instant now = clock.now();
+        jdbc.sql("""
+                INSERT INTO thread (app_id, user_id, merge_key, kind, conversation_id, agent_key, created_at, updated_at)
+                VALUES (:appId, :userId, :mergeKey, 'work', :conversationId, :agentKey, :now, :now)
+                ON CONFLICT (app_id, user_id, merge_key) DO NOTHING
+                """)
+                .param("appId", appId).param("userId", userId).param("mergeKey", workKey(taskId))
+                .param("conversationId", conversationId).param("agentKey", agentKey).param("now", Db.ts(now))
+                .update();
+        return find(appId, userId, workKey(taskId)).orElseThrow();
     }
 
     public Optional<Thread> find(String appId, String userId, String mergeKey) {

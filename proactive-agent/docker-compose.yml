@@ -2,6 +2,7 @@
 #
 #   docker compose up -d --build --wait   # the first build downloads dependencies: a few minutes
 #   examples/agent-api/quickstart.sh      # try it
+#   examples/agent-api/main-agent.sh      # try a main agent that hands work to a worker
 #
 # Without a .env file it runs in demo mode, where a script plays the agent, with the example secrets
 # of the documentation, and the API listens on 127.0.0.1:8090 only. Copy .env.example to .env and
@@ -42,6 +43,8 @@ services:
       INBOX_AUTH_CLIENTS_0_ROLES: RUNTIME,PRODUCER
       # More attempts than the default, so that runs outlast an outage of the agent platform.
       INBOX_RETRY_MAXATTEMPTS: "20"
+      # The workers of a main agent run on the batch lane: this many of one user's at a time.
+      INBOX_LANES_BATCH_CAP: ${INBOX_LANES_BATCH_CAP:-4}
     depends_on:
       postgres:
         condition: service_healthy

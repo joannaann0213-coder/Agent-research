@@ -1,6 +1,8 @@
 package dev.agentflow.agent.server.bridge;
 
+import dev.agentflow.agent.api.CoordinatorConfig;
 import dev.agentflow.agent.api.MessageView;
+import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.cma.CmaEvent;
 import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.bridge.Turns.Turn;
@@ -10,14 +12,18 @@ import dev.agentflow.agent.server.config.AgentProperties;
 import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.api.AgentException;
 import dev.agentflow.agent.server.events.AppEvents.AppEvent;
+import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.schedules.Schedules;
+import dev.agentflow.agent.server.tasks.Tasks;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.agent.server.tools.PlatformTools;
 import dev.agentflow.inbox.api.ClaimedRun;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 import tools.jackson.databind.JsonNode;
@@ -25,9 +31,10 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
- * Answers the agent's calls of the tools that this service gives it. A call can come twice, when a
- * run is delivered again or its session is replaced; what a tool does to the outside is therefore
- * keyed by the run and the call's place in it, and happens once.
+ * Answers the agent's calls of the tools that this service gives it: the ones every agent has, and
+ * the ones a main agent hands work to its workers with. A call can come twice, when a run is
+ * delivered again or its session is replaced; what a tool does to the outside is therefore keyed by
+ * the run and the call's place in it, and happens once.
  */
 @Component
 class TurnTools {
@@ -62,10 +69,13 @@ class TurnTools {
     private final AgentClock clock;
     private final AgentProperties.Notify limits;
     private final AgentProperties.Followups followupLimits;
+    private final AgentProperties.Tasks taskLimits;
     private final Schedules schedules;
+    private final Tasks tasks;
+    private final AgentProfiles profiles;
 
-    TurnTools(Messages messages, Threads threads, Users users, Turns turns, Schedules schedules, TransactionTemplate tx,
-            AgentClock clock, AgentProperties properties) {
+    TurnTools(Messages messages, Threads threads, Users users, Turns turns, Schedules schedules, Tasks tasks,
+            AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, AgentProperties properties) {
         this.messages = messages;
         this.threads = threads;
         this.users = users;
@@ -74,7 +84,10 @@ class TurnTools {
         this.clock = clock;
         this.limits = properties.getNotify();
         this.followupLimits = properties.getFollowups();
+        this.taskLimits = properties.getTasks();
         this.schedules = schedules;
+        this.tasks = tasks;
+        this.profiles = profiles;
     }
 
     /** @param ordinal the call's place among the turn's calls of the same tool, from 1 */
@@ -83,6 +96,10 @@ class TurnTools {
             case PlatformTools.READ_EVENTS -> readEvents(line, work, call.input());
             case PlatformTools.NOTIFY_USER -> notifyUser(run, turn, line, work, call.input(), ordinal);
             case PlatformTools.SCHEDULE_FOLLOWUP -> scheduleFollowup(run, turn, line, work, call.input(), ordinal);
+            case PlatformTools.DELEGATE_TASK -> delegateTask(run, turn, line, call.input(), ordinal);
+            case PlatformTools.MESSAGE_WORKER -> messageWorker(run, turn, line, call.input(), ordinal);
+            case PlatformTools.LIST_TASKS -> listTasks(line);
+            case PlatformTools.CLOSE_TASK -> closeTask(turn, line, call.input());
             default -> Answer.failed("This tool is not available.");
         };
     }
@@ -93,12 +110,18 @@ class TurnTools {
         return switch (work) {
             case Work.Task task -> waitingEvents(task, input);
             case Work.Chat chat -> unreadNotifications(line);
+            case Work.Job job -> handedOver(line, job);
         };
     }
 
-    /** The events of the run, as many as fit, from where the previous answer stopped. */
+    /**
+     * The events of the run and, for a main agent, what its workers have for it, as many as fit, from
+     * where the previous answer stopped: the events first, then the workers' reports.
+     */
     private static Answer waitingEvents(Work.Task task, JsonNode input) {
         List<AppEvent> all = task.events();
+        List<Tasks.Report> reports = task.reports();
+        int total = all.size() + reports.size();
         int from = 0;
         String after = input == null ? null : input.path("after").asString(null);
         if (after != null) {
@@ -107,28 +130,41 @@ class TurnTools {
             } catch (NumberFormatException e) {
                 from = -1;
             }
-            if (from < 0 || from > all.size()) {
+            if (from < 0 || from > total) {
                 return Answer.failed("after must be the value of next in the previous result.");
             }
         }
         ObjectNode result = Json.STORED.createObjectNode();
         ArrayNode events = result.putArray("events");
+        ArrayNode reported = reports.isEmpty() ? null : result.putArray("reports");
         int size = 0;
         int next = from;
-        for (; next < all.size(); next++) {
-            AppEvent event = all.get(next);
+        for (; next < total; next++) {
             ObjectNode one = Json.STORED.createObjectNode();
-            one.put("event_id", event.eventId()).put("type", event.type()).put("subject", event.subject())
-                    .put("received_at", event.createdAt().toString());
-            one.set("data", event.data());
+            if (next < all.size()) {
+                AppEvent event = all.get(next);
+                one.put("event_id", event.eventId()).put("type", event.type()).put("subject", event.subject())
+                        .put("received_at", event.createdAt().toString());
+                one.set("data", event.data());
+            } else {
+                Tasks.Report report = reports.get(next - all.size());
+                one.put("task_id", report.task().taskId()).put("role", report.task().role())
+                        .put("title", report.task().title()).put("from", fromWhom(report.note()))
+                        .put("kind", report.note().kind()).put("text", report.note().text())
+                        .put("sent_at", report.note().createdAt().toString());
+            }
             int length = one.toString().length();
             if (next > from && size + length > RESULT_BUDGET) {
                 break;
             }
-            events.add(one);
+            if (next < all.size()) {
+                events.add(one);
+            } else {
+                reported.add(one);
+            }
             size += length;
         }
-        if (next < all.size()) {
+        if (next < total) {
             result.put("next", Integer.toString(next));
         }
         if (from == 0 && !task.followups().isEmpty()) {
@@ -159,6 +195,193 @@ class TurnTools {
                     .put("text", message.text());
         }
         return new Answer(result.toString(), false, unread.isEmpty() ? null : unread.getLast().seq());
+    }
+
+    /**
+     * What a worker's turn is given: what the main agent sent, and the worker's own notes for the
+     * follow-ups that are due. A session that replaces another one knows nothing of the task so far,
+     * so it is also given what was said about the task before, the latest of it when it is long.
+     */
+    private Answer handedOver(Threads.Thread line, Work.Job job) {
+        ObjectNode result = Json.STORED.createObjectNode();
+        result.putObject("task").put("task_id", job.task().taskId()).put("title", job.task().title())
+                .put("role", job.task().role());
+        if (line.generation() > 1 && line.lastEventId() == null) {
+            int first = job.notes().isEmpty() ? Integer.MAX_VALUE : job.notes().getFirst().seq();
+            List<Tasks.Note> before = tasks.notes(job.task()).stream().filter(note -> note.seq() < first).toList();
+            List<Tasks.Note> kept = new ArrayList<>();
+            int size = 0;
+            for (int i = before.size() - 1; i >= 0 && size + before.get(i).text().length() <= RESULT_BUDGET / 2; i--) {
+                kept.addFirst(before.get(i));
+                size += before.get(i).text().length();
+            }
+            if (!before.isEmpty() && (kept.isEmpty() || kept.getFirst().seq() != before.getFirst().seq())) {
+                // What the task is, in the main agent's first words, is kept whatever else had to go.
+                Tasks.Note assignment = before.getFirst();
+                kept.addFirst(new Tasks.Note(assignment.taskId(), assignment.seq(), assignment.direction(), assignment.kind(),
+                        Tasks.excerpt(assignment.text()), assignment.runId(), assignment.createdAt(), assignment.readAt()));
+            }
+            ArrayNode earlier = result.putArray("earlier");
+            kept.forEach(note -> said(earlier.addObject(), note));
+        }
+        ArrayNode handed = result.putArray("messages");
+        job.notes().forEach(note -> said(handed.addObject(), note));
+        if (!job.due().isEmpty()) {
+            ArrayNode followups = result.putArray("followups");
+            for (Work.Due item : job.due()) {
+                followups.addObject().put("note", item.schedule().note()).put("set_at", item.schedule().createdAt().toString())
+                        .put("due_at", item.dueAt().toString());
+            }
+        }
+        return Answer.ok(result.toString());
+    }
+
+    private static void said(ObjectNode one, Tasks.Note note) {
+        one.put("from", fromWhom(note)).put("kind", note.kind()).put("text", note.text())
+                .put("sent_at", note.createdAt().toString());
+    }
+
+    /** Who a note of a task is from, in words for an agent. */
+    private static String fromWhom(Tasks.Note note) {
+        return switch (note.from()) {
+            case "main" -> "the main agent";
+            case "worker" -> "the worker";
+            default -> "the service";
+        };
+    }
+
+    // ================================================================ a main agent's tasks
+
+    /** The main agent's line, if {@code line} is one: a conversation whose agent has workers. Otherwise why the tools do not work here. */
+    private String notAMainAgent(Threads.Thread line) {
+        if (!line.chat()) {
+            return "you can only hand work to workers from the conversation you serve as the user's main agent.";
+        }
+        return workersOf(line).isEmpty() ? "this agent has no workers." : null;
+    }
+
+    private List<WorkerConfig> workersOf(Threads.Thread line) {
+        CoordinatorConfig coordinator = profiles.config(line.appId(), line.agentKey()).coordinator();
+        return PlatformTools.delegates(coordinator) ? coordinator.workers() : List.of();
+    }
+
+    private Answer delegateTask(ClaimedRun run, Turn turn, Threads.Thread line, JsonNode input, int ordinal) {
+        String refusal = notAMainAgent(line);
+        if (refusal != null) {
+            return Answer.failed("Not delegated: " + refusal);
+        }
+        CoordinatorConfig coordinator = profiles.config(line.appId(), line.agentKey()).coordinator();
+        String role = input == null ? null : input.path("role").asString(null);
+        Optional<WorkerConfig> worker = coordinator.workers().stream().filter(candidate -> candidate.role().equals(role)).findFirst();
+        if (worker.isEmpty()) {
+            return Answer.failed("Not delegated: role is required, one of "
+                    + coordinator.workers().stream().map(WorkerConfig::role).toList() + ".");
+        }
+        String title = input.path("title").asString(null);
+        if (title == null || title.isBlank() || title.length() > Tasks.MAX_TITLE) {
+            return Answer.failed("Not delegated: title is required, at most " + Tasks.MAX_TITLE + " characters: a short name for the task.");
+        }
+        String instructions = input.path("instructions").asString(null);
+        if (instructions == null || instructions.isBlank() || instructions.length() > taskLimits.getMaxInstructions()) {
+            return Answer.failed("Not delegated: instructions are required, at most " + taskLimits.getMaxInstructions()
+                    + " characters: what the worker is to do, and everything it needs to know to do it.");
+        }
+        if (profiles.configIfThere(line.appId(), worker.get().agent()).filter(config -> config.coordinator() == null).isEmpty()) {
+            return Answer.failed("Not delegated: the agent behind the role " + role + " is not available as a worker any more.");
+        }
+        int maxActive = coordinator.maxActiveTasks() == null ? Tasks.DEFAULT_MAX_ACTIVE : coordinator.maxActiveTasks();
+        // The same call of the same run always names the same task, in whatever session and at whatever attempt it is made.
+        Tasks.Delegated done = tx.execute(status -> {
+            users.lock(line.appId(), line.userId());
+            turns.stillHeld(turn);
+            return tasks.delegate(line, run.runId(), ordinal, worker.get(), title.strip(), instructions, maxActive);
+        });
+        if (done.refused() != null) {
+            return Answer.failed(done.refused());
+        }
+        ObjectNode result = Json.STORED.createObjectNode();
+        result.put("task_id", done.task().taskId()).put("role", done.task().role()).put("status", done.task().status());
+        result.put("next", "The worker's report wakes you. Until then there is nothing to wait for in this turn.");
+        return Answer.ok(result.toString());
+    }
+
+    private Answer messageWorker(ClaimedRun run, Turn turn, Threads.Thread line, JsonNode input, int ordinal) {
+        String refusal = notAMainAgent(line);
+        if (refusal != null) {
+            return Answer.failed("Not sent: " + refusal);
+        }
+        String taskId = input == null ? null : input.path("task_id").asString(null);
+        String text = input == null ? null : input.path("text").asString(null);
+        if (taskId == null || taskId.isBlank()) {
+            return Answer.failed("Not sent: task_id is required, as delegate_task or list_tasks named the task.");
+        }
+        if (text == null || text.isBlank() || text.length() > taskLimits.getMaxInstructions()) {
+            return Answer.failed("Not sent: text is required, at most " + taskLimits.getMaxInstructions() + " characters.");
+        }
+        return tx.execute(status -> {
+            users.lock(line.appId(), line.userId());
+            turns.stillHeld(turn);
+            Optional<Tasks.Task> task = ownTask(line, taskId);
+            if (task.isEmpty()) {
+                return Answer.failed("Not sent: you have no task " + taskId + ". list_tasks shows the open ones.");
+            }
+            if (task.get().closed()) {
+                return Answer.failed("Not sent: the task is closed. Delegate a new task for what is left to do.");
+            }
+            tasks.message(task.get(), run.runId(), ordinal, text);
+            return Answer.ok("Sent. The worker's next report wakes you.");
+        });
+    }
+
+    private Answer listTasks(Threads.Thread line) {
+        String refusal = notAMainAgent(line);
+        if (refusal != null) {
+            return Answer.failed("Not listed: " + refusal);
+        }
+        ObjectNode result = Json.STORED.createObjectNode();
+        ArrayNode open = result.putArray("tasks");
+        for (Tasks.Task task : tasks.open(line)) {
+            ObjectNode one = open.addObject();
+            one.put("task_id", task.taskId()).put("role", task.role()).put("title", task.title()).put("status", task.status())
+                    .put("delegated_at", task.createdAt().toString());
+            tasks.lastForMain(task).ifPresent(note -> one.putObject("latest").put("from", fromWhom(note))
+                    .put("kind", note.kind()).put("text", Tasks.excerpt(note.text())).put("sent_at", note.createdAt().toString()));
+        }
+        return Answer.ok(result.toString());
+    }
+
+    private Answer closeTask(Turn turn, Threads.Thread line, JsonNode input) {
+        String refusal = notAMainAgent(line);
+        if (refusal != null) {
+            return Answer.failed("Not closed: " + refusal);
+        }
+        String taskId = input == null ? null : input.path("task_id").asString(null);
+        String reason = input == null ? null : input.path("reason").asString(null);
+        if (taskId == null || taskId.isBlank()) {
+            return Answer.failed("Not closed: task_id is required, as delegate_task or list_tasks named the task.");
+        }
+        if (reason != null && (reason.isBlank() || reason.length() > Tasks.MAX_REASON)) {
+            return Answer.failed("Not closed: reason has at most " + Tasks.MAX_REASON + " characters.");
+        }
+        Optional<Tasks.Task> closed = tx.execute(status -> {
+            users.lock(line.appId(), line.userId());
+            turns.stillHeld(turn);
+            Optional<Tasks.Task> task = ownTask(line, taskId);
+            if (task.isPresent()) {
+                tasks.closeIn(task.get(), Tasks.BY_AGENT, reason);
+            }
+            return task;
+        });
+        if (closed.isEmpty()) {
+            return Answer.failed("Not closed: you have no task " + taskId + ". list_tasks shows the open ones.");
+        }
+        tasks.afterClose(closed.get());
+        return Answer.ok("Closed.");
+    }
+
+    /** The task {@code taskId}, if this main agent's line delegated it. */
+    private Optional<Tasks.Task> ownTask(Threads.Thread line, String taskId) {
+        return tasks.find(line.appId(), line.userId(), taskId).filter(task -> task.hubKey().equals(line.mergeKey()));
     }
 
     // ================================================================ schedule_followup
@@ -197,7 +420,11 @@ class TurnTools {
             return Answer.failed("Not scheduled: a follow-up is at most " + followupLimits.getMaxDelay().toDays()
                     + " days ahead.");
         }
-        int chain = (work instanceof Work.Task task ? task.chain() : 0) + 1;
+        int chain = switch (work) {
+            case Work.Task task -> task.chain();
+            case Work.Job job -> job.chain();
+            case Work.Chat chat -> 0;
+        } + 1;
         if (chain > followupLimits.getMaxChain()) {
             return Answer.failed("Not scheduled: this would be follow-up number " + chain + " in a row, and "
                     + followupLimits.getMaxChain() + " is the limit. Tell the user what there is to tell, or end the turn.");
@@ -232,6 +459,10 @@ class TurnTools {
     // ================================================================ notify_user
 
     private Answer notifyUser(ClaimedRun run, Turn turn, Threads.Thread line, Work work, JsonNode input, int ordinal) {
+        if (work instanceof Work.Job) {
+            return Answer.failed("Not sent: in a task you report to the main agent, which decides what the user is told. "
+                    + "Write what the user should know into your report at the end of this turn.");
+        }
         if (!(work instanceof Work.Task task)) {
             return Answer.failed("You are in a conversation with the user: what you write at the end of this turn is your "
                     + "answer to them. notify_user is for work in the background.");

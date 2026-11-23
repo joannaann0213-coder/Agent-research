@@ -31,7 +31,7 @@ import tools.jackson.databind.JsonNode;
 public class Webhooks {
 
     public static final List<String> TYPES = List.of(Update.MESSAGE_CREATED, Update.ACTION_CREATED, Update.ACTION_RESOLVED,
-            Update.RUN_FAILED);
+            Update.RUN_FAILED, Update.TASK_CREATED, Update.TASK_UPDATED);
 
     public static final String ACTIVE = "active";
     public static final String DISABLED = "disabled";

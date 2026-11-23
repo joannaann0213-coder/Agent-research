@@ -8,10 +8,11 @@ runtime gets exactly one way to take work out of it: claim a batch of ready even
 
 This repository holds roadmap stages **M0 and M1** of the inbox as a Spring Boot service on PostgreSQL,
 and on top of it the **agent service**, which opens the proactive agent to applications through the
-[Agent API](docs/en/agent-api.md) and runs it on Claude Managed Agents. The multi-agent layer and
-long-term memory are described in [the architecture](docs/en/architecture.md) but not built here. For
-the Inbox on its own, a scripted worker stands in for the agent, so that its contract can be
-exercised end to end.
+[Agent API](docs/en/agent-api.md) and runs it on Claude Managed Agents. An agent can be a user's
+[main agent](docs/en/main-agent.md): everything about the user comes to it, and it hands longer work
+to worker agents. The third tier of the multi-agent layer and long-term memory are described in
+[the architecture](docs/en/architecture.md) but not built here. For the Inbox on its own, a scripted
+worker stands in for the agent, so that its contract can be exercised end to end.
 
 ## What it guarantees
 
@@ -129,7 +130,7 @@ explains how the service works and how to run it in production.
 | `openapi-testkit` | Test support: checks a service's HTTP traffic in tests against its OpenAPI document |
 | `agent-cma` | The port to Claude Managed Agents: the interface the agent service uses, its adapter over the official Java SDK, and a scriptable in-process stand-in |
 | `agent-api` | Wire types of the Agent API, shared by the agent service and its clients |
-| `agent-server` | The agent service: the Agent API, turns on Claude Managed Agents, actions, schedules, updates, webhooks and credentials |
+| `agent-server` | The agent service: the Agent API, turns on Claude Managed Agents, main agents and their workers' tasks, actions, schedules, updates, webhooks and credentials |
 
 ## Documentation
 
@@ -142,6 +143,7 @@ explains how the service works and how to run it in production.
 | [Testing](docs/en/testing.md) | How to run the tests and which test proves which acceptance check |
 | [Agent service](docs/en/agent-service.md) | How the agent service works, what it does when something breaks, and how to run it |
 | [Agent API](docs/en/agent-api.md) | The guide for applications: concepts, authentication, conversations, events, actions, schedules, updates, credentials |
+| [Main agent and workers](docs/en/main-agent.md) | The agent that hears of everything about a user and hands work to worker agents: the review, the decision and its reasons, how it works |
 | [Tutorial](docs/en/tutorial.md) | Run the service with Docker and connect an application step by step: back end, users' apps, events, approvals, live mode, going live |
 
 ## Configuration

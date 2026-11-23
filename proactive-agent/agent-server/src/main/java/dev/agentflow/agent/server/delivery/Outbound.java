@@ -69,7 +69,7 @@ public class Outbound {
         });
     }
 
-    /** What a {@code run.failed} update says: which run, on which line, and why. */
+    /** What a {@code run.failed} update says: which run, on which line (a conversation's, a subject's or a delegated task's), and why. */
     public static java.util.Map<String, Object> failure(String runId, String mergeKey, String error) {
         java.util.Map<String, Object> data = new java.util.LinkedHashMap<>();
         data.put("run_id", runId);
@@ -77,6 +77,8 @@ public class Outbound {
             data.put("conversation_id", mergeKey.substring("conv:".length()));
         } else if (mergeKey != null && mergeKey.startsWith("task:")) {
             data.put("subject", mergeKey.substring("task:".length()));
+        } else if (mergeKey != null && mergeKey.startsWith("work:")) {
+            data.put("task_id", mergeKey.substring("work:".length()));
         }
         data.put("error", error);
         return data;

@@ -20,17 +20,24 @@ import java.util.List;
  * @param memory {@code per_user}: the agent keeps notes about each user across sessions, in files of
  *     its sandbox, which must be enabled; it writes them in conversations and reads them in the
  *     background. {@code none} when absent
+ * @param coordinator makes the agent a main agent, which hears of everything that happens for a
+ *     user and may hand work to other agents; an ordinary agent when absent
  */
 public record AgentProfileRequest(String name, String model, String effort, String instructions, SandboxConfig sandbox,
-        List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd, String memory) {
+        List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd, String memory, CoordinatorConfig coordinator) {
 
     public AgentProfileRequest(String name, String model, String effort, String instructions, SandboxConfig sandbox,
             List<McpServerConfig> mcpServers) {
-        this(name, model, effort, instructions, sandbox, mcpServers, null, null);
+        this(name, model, effort, instructions, sandbox, mcpServers, null, null, null);
     }
 
     public AgentProfileRequest(String name, String model, String effort, String instructions, SandboxConfig sandbox,
             List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd) {
-        this(name, model, effort, instructions, sandbox, mcpServers, sessionBudgetUsd, null);
+        this(name, model, effort, instructions, sandbox, mcpServers, sessionBudgetUsd, null, null);
+    }
+
+    public AgentProfileRequest(String name, String model, String effort, String instructions, SandboxConfig sandbox,
+            List<McpServerConfig> mcpServers, BigDecimal sessionBudgetUsd, String memory) {
+        this(name, model, effort, instructions, sandbox, mcpServers, sessionBudgetUsd, memory, null);
     }
 }

@@ -7,8 +7,9 @@ reply) is appended to a per-user Event Inbox, and only the Inbox turns events in
 beneath it can be woken, suspended and resumed, and a run may end without saying anything. An Outbox
 decides what the user actually receives.
 
-This document describes the whole system. Only the Event Inbox is built in this repository; its design
-is in [Event Inbox design](event-inbox-design.md).
+This document describes the whole system. The table below says which layers this repository builds.
+The design of the Inbox is in [Event Inbox design](event-inbox-design.md), and that of the main agent
+and its workers in [Main agent and workers](main-agent.md).
 
 ## At a glance
 
@@ -56,10 +57,10 @@ event. Memory, governance and observability serve every layer and are not drawn.
 | --- | --- | --- |
 | Trigger sources | Produce events | Any signed HTTP client; timers are part of the Inbox |
 | Event Inbox | Durable queue with one write entry; the source of truth | **Built** (roadmap stages M0 and M1) |
-| Multi-agent hierarchy | Dispatch, execution and concurrency of agents | Not built |
+| Multi-agent hierarchy | Dispatch, execution and concurrency of agents | **Built** in the agent service for two tiers: a main agent per conversation, and a worker's session per task. Several work agents under one task are not built |
 | Agent runtime | Sleep, wake, run, suspend, resume | **Built** as the agent service, on Claude Managed Agents (`agent-server`); `ScriptedWorker` stands in for it when the Inbox runs alone |
 | Outbox | Decides what is sent, where and at what pace | **Built** in the agent service: a log of updates per user, read by polling, a stream and webhooks; `MemoryOutbox` and `FileOutbox` stand in when the Inbox runs alone |
-| Memory | Persists across runs | Not built |
+| Memory | Persists across runs | In the agent service, notes per user and agent, kept in memory stores of Claude Managed Agents. The types, scopes and retrieval described below are not built |
 | Governance and observability | Permissions, budgets, audit, product metrics | The Inbox's audit trail and metrics; in the agent service, keys and user tokens, rate limits, notification limits and session budgets |
 
 ## Trigger sources
@@ -116,6 +117,12 @@ Messages flow back up, so the user never has to visit each thread.
 
 Every entry point connects to the same inbox and the same main session, so a user can switch entry
 points in the middle of a task.
+
+The agent service builds the first two tiers. Its main agent is the main-session agent, one per
+conversation; an application that wants one main session per user gives each user one conversation.
+A task that the main agent delegates is a thread: a worker's agent, in a session of its own. A
+thread's messages reach the main session as Inbox events, and the user's reply reaches a thread
+through the main agent, which passes it on. [Main agent and workers](main-agent.md) has the design.
 
 ## Agent runtime
 
@@ -204,8 +211,10 @@ schedulers.
 
 Three layers are described as principles only and need their own design before they are built.
 
-- **Thread sync.** How a thread's messages reach the main session (as Inbox events or as direct
-  writes), and how a user's reply is routed back to its thread.
+- **Work agents.** The third tier: how a thread hands steps to several work agents at once and
+  aggregates their results. Thread sync, the other open question of the hierarchy, is settled: a
+  thread's messages reach the main session as Inbox events, and the main agent routes the user's
+  reply back.
 - **Outbox.** Its data model, its throttling policy, and how "one run replies once" survives retries.
   The Inbox side of that guarantee is in place: a re-delivered run keeps its `run_id`.
 - **Session store.** Where a suspended run's state is kept, and for how long. The Inbox bounds the

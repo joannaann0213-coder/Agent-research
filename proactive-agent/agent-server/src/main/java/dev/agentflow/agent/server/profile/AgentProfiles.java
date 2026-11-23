@@ -2,8 +2,10 @@ package dev.agentflow.agent.server.profile;
 
 import dev.agentflow.agent.api.AgentProfileRequest;
 import dev.agentflow.agent.api.AgentProfileView;
+import dev.agentflow.agent.api.CoordinatorConfig;
 import dev.agentflow.agent.api.McpServerConfig;
 import dev.agentflow.agent.api.SandboxConfig;
+import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.cma.AgentRef;
 import dev.agentflow.agent.cma.AgentSpec;
 import dev.agentflow.agent.cma.CmaException;
@@ -31,7 +33,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * The agents of applications. An application describes its agent in its own terms; this class
  * keeps the description and sets up what the agent platform needs for it: an agent there, which is
- * versioned, and an environment for the agent's containers.
+ * versioned, and an environment for the agent's containers. A main agent and its workers are each
+ * an agent of their own on the platform; what joins them is kept here.
  *
  * <p>Saving a profile and setting up the platform happen in one transaction around the profile's
  * row. If the platform refuses or cannot be reached, nothing is saved and the caller is told; a
@@ -61,6 +64,11 @@ public class AgentProfiles {
     private static final Set<String> APPROVALS = Set.of("always_ask", "auto", "always_allow");
     private static final Set<String> APPROVERS = Set.of("app", "user");
     private static final int MAX_INSTRUCTIONS = 50_000;
+    private static final Pattern ROLE = Pattern.compile("[a-z0-9][a-z0-9_-]{0,31}");
+    private static final int MAX_WORKERS = 10;
+    private static final int MAX_ROLE_DESCRIPTION = 500;
+    private static final int MAX_ACTIVE_TASKS = 20;
+    private static final int DEFAULT_ACTIVE_TASKS = 4;
 
     private record Row(String appId, String agentKey, AgentProfileRequest config, int revision, String environmentId,
             String agentId, Integer agentVersion, String provisionedHash, Instant createdAt, Instant updatedAt) {
@@ -85,6 +93,7 @@ public class AgentProfiles {
         String json = Json.STORED.writeValueAsString(config);
         return tx.execute(status -> {
             Instant now = clock.now();
+            checkRoster(appId, agentKey, config.coordinator());
             boolean created = jdbc.sql("""
                     INSERT INTO agent_profile (app_id, agent_key, config, revision, created_at, updated_at)
                     VALUES (:appId, :agentKey, CAST(:config AS jsonb), 1, :now, :now)
@@ -115,6 +124,11 @@ public class AgentProfiles {
     public AgentProfileRequest config(String appId, String agentKey) {
         return find(appId, agentKey, false).map(Row::config)
                 .orElseThrow(() -> AgentException.notFound("no agent " + agentKey + " in this application"));
+    }
+
+    /** The profile's configuration as it is stored, if the application has such an agent. */
+    public Optional<AgentProfileRequest> configIfThere(String appId, String agentKey) {
+        return find(appId, agentKey, false).map(Row::config);
     }
 
     public boolean exists(String appId, String agentKey) {
@@ -154,6 +168,42 @@ public class AgentProfiles {
                 .query(AgentProfiles::row)
                 .optional()
                 .map(row -> ProfileSpec.of(row.appId(), row.agentKey(), row.config()).agent());
+    }
+
+    /**
+     * A main agent delegates to agents that exist and are not main agents themselves, and an agent
+     * that some main agent delegates to cannot become one: delegation is one level deep. This is what
+     * keeps a worker from handing its task on, and a main agent's session from being a worker's.
+     */
+    private void checkRoster(String appId, String agentKey, CoordinatorConfig coordinator) {
+        if (coordinator == null) {
+            return;
+        }
+        for (WorkerConfig worker : coordinator.workers()) {
+            if (worker.agent().equals(agentKey)) {
+                throw AgentException.invalid("coordinator.workers: role " + worker.role() + " names this agent itself");
+            }
+            Optional<Row> found = find(appId, worker.agent(), false);
+            if (found.isEmpty()) {
+                throw AgentException.invalid("coordinator.workers: this application has no agent " + worker.agent()
+                        + " for the role " + worker.role() + "; create it first with PUT /v1/agents/" + worker.agent());
+            }
+            if (found.get().config().coordinator() != null) {
+                throw AgentException.invalid("coordinator.workers: agent " + worker.agent() + " is a main agent itself; "
+                        + "a main agent delegates to ordinary agents only");
+            }
+        }
+        Optional<String> delegatedToBy = jdbc.sql("""
+                SELECT agent_key FROM agent_profile
+                 WHERE app_id = :appId AND config -> 'coordinator' -> 'workers' @> CAST(:worker AS jsonb)
+                 ORDER BY agent_key LIMIT 1
+                """)
+                .param("appId", appId).param("worker", "[{\"agent\": \"" + agentKey + "\"}]")
+                .query(String.class).optional();
+        if (delegatedToBy.isPresent()) {
+            throw AgentException.invalid("coordinator: this agent is a worker of the main agent " + delegatedToBy.get()
+                    + "; a worker cannot be a main agent");
+        }
     }
 
     // ================================================================ the platform
@@ -242,7 +292,43 @@ public class AgentProfiles {
             throw AgentException.invalid("memory needs the sandbox: the agent keeps its notes in files there, with its file tools");
         }
         return new AgentProfileRequest(request.name(), model, request.effort(), request.instructions(),
-                sandbox, servers(request.mcpServers()), budget == null ? null : budget.setScale(2), memory);
+                sandbox, servers(request.mcpServers()), budget == null ? null : budget.setScale(2), memory,
+                coordinator(request.coordinator()));
+    }
+
+    /** The shape of what makes an agent a main agent. Whether the agents it names can be its workers is checked when it is saved. */
+    private static CoordinatorConfig coordinator(CoordinatorConfig coordinator) {
+        if (coordinator == null) {
+            return null;
+        }
+        List<WorkerConfig> workers = coordinator.workers() == null ? List.of() : coordinator.workers();
+        if (workers.size() > MAX_WORKERS) {
+            throw AgentException.invalid("coordinator.workers takes at most " + MAX_WORKERS + " workers");
+        }
+        List<WorkerConfig> normalised = new ArrayList<>();
+        Set<String> roles = new HashSet<>();
+        for (WorkerConfig worker : workers) {
+            if (worker == null || worker.role() == null || !ROLE.matcher(worker.role()).matches()) {
+                throw AgentException.invalid("a worker's role must be 1 to 32 characters of a-z, 0-9, _ and -, starting with a letter or a digit");
+            }
+            if (!roles.add(worker.role())) {
+                throw AgentException.invalid("worker roles are unique within a main agent: " + worker.role());
+            }
+            if (worker.agent() == null || !Names.AGENT_KEY.matcher(worker.agent()).matches()) {
+                throw AgentException.invalid("the agent of worker role " + worker.role() + " must be the key of an agent of this application");
+            }
+            if (worker.description() == null || worker.description().isBlank()
+                    || worker.description().length() > MAX_ROLE_DESCRIPTION) {
+                throw AgentException.invalid("worker role " + worker.role() + " needs a description of at most "
+                        + MAX_ROLE_DESCRIPTION + " characters: the main agent reads it to decide whom to give a task");
+            }
+            normalised.add(new WorkerConfig(worker.role(), worker.agent(), worker.description().strip()));
+        }
+        Integer active = coordinator.maxActiveTasks();
+        if (active != null && (active < 1 || active > MAX_ACTIVE_TASKS)) {
+            throw AgentException.invalid("coordinator.max_active_tasks is between 1 and " + MAX_ACTIVE_TASKS);
+        }
+        return new CoordinatorConfig(List.copyOf(normalised), active == null ? DEFAULT_ACTIVE_TASKS : active);
     }
 
     private static SandboxConfig sandbox(SandboxConfig sandbox) {
@@ -352,6 +438,6 @@ public class AgentProfiles {
         AgentProfileRequest config = row.config();
         return new AgentProfileView(row.agentKey(), config.name(), config.model(), config.effort(), config.instructions(),
                 config.sandbox(), config.mcpServers(), config.sessionBudgetUsd(), config.memory() == null ? "none" : config.memory(),
-                row.revision(), row.createdAt(), row.updatedAt());
+                row.revision(), row.createdAt(), row.updatedAt(), config.coordinator());
     }
 }

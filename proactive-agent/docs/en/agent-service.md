@@ -52,6 +52,8 @@ one turn at a time. Every line has a session of its own on CMA, which remembers 
 | --- | --- | --- | --- |
 | Conversation | `conv:<conversation_id>` | The user's messages | The agent's last text, as the reply |
 | Subject | `task:<subject>` | The application's events and schedules | Only what the agent sends with `notify_user` |
+| Main agent's conversation | `conv:<conversation_id>` | The user's messages; the application's events and schedules for the main agent; its workers' reports | The reply to a message; in the background, only what the agent sends with `notify_user` |
+| Task | `work:<task_id>` | What the main agent sends to the worker, and the worker's own follow-ups | Nothing: the worker's last text is its report to the main agent |
 
 A follow-up runs on the line that set it. A conversation's line can thus also work in the
 background, for example when it reminds the user of something an hour later.
@@ -59,6 +61,22 @@ background, for example when it reminds the user of something an hour later.
 A line's session is replaced when it can no longer be used, and renewed between turns when the agent
 was configured anew or the user's vaults changed. Each session is a new generation of the line; the
 first input of a conversation's new session begins with what the user and the agent said before.
+
+## Main agent and workers
+
+An agent with a `coordinator` in its configuration is a main agent. What the application sends for
+it, events and schedules, is not handled on a line per subject but on the line of the conversation
+it serves, so that one session hears of everything about the user. With `delegate_task` the main
+agent starts a task: a line of its own, `work:<task_id>`, on which a worker's agent runs in a
+session of its own. The two never call each other. What one has for the other is stored as a note
+of the task, and an event for the other's line is queued in the same transaction, so the Inbox turns
+it into a run like any other input.
+
+Workers run on the Inbox's lane `batch`, so that a worker's long turn does not hold up what wakes
+the main agent; the cap of that lane is how many workers of one user run at a time. A worker cannot
+reach the user: what it writes last in a turn is its report, which wakes the main agent, and when
+its turn fails the service writes a note in its place. [Main agent and workers](main-agent.md) has
+the design, the tools and the reasons.
 
 ## When something breaks
 
@@ -72,9 +90,10 @@ first input of a conversation's new session begins with what the user and the ag
 | A turn takes longer than its deadline (10 minutes) | The session is interrupted, the turn fails, and a `run.failed` update is recorded |
 | A run dies (its attempts are used up) | A sweep closes its turn and records `run.failed`; the next turn of the line brings the session to rest first |
 | The stream breaks | The tail opens it again and reads what is stored in between |
+| A worker's turn on a task fails | Besides `run.failed`, a note tells the task's main agent that the work is not done, and wakes it |
 
 Points in the turn where a test can make the worker die (`TurnHooks`) prove each of these; see the
-crash tests in `TurnRecoveryIT`, `ProactiveTurnIT` and `ActionsIT`.
+crash tests in `TurnRecoveryIT`, `ProactiveTurnIT`, `ActionsIT` and `CoordinatorIT`.
 
 ## Work in the background
 
@@ -136,7 +155,9 @@ one per user and agent, which a session finds as files under `/mnt/memory/`. A c
 session has it to read and write. A session in the background has it to read only: there the agent
 works on what other systems say, and that must not end up in what it remembers about the user. The
 store is made the first time a session of the user needs it; turning memory on or off takes effect
-at the next turn of each line, in a new session.
+at the next turn of each line, in a new session. A main agent's session is a conversation's, so it
+can write the memory although it also reads events and reports there;
+[Main agent and workers](main-agent.md#trust) says what follows from that.
 
 ## Security
 
@@ -167,16 +188,21 @@ Every setting is under `agent.*` and can be set by environment variable.
 | `agent.turn.deadline` | `10m` | Longest turn; keep it below the Inbox's `inbox.lease.max-duration` |
 | `agent.cma.creations-per-minute`, `requests-per-minute` | `300`, `600` | CMA's rate limits; with several instances, give each its share |
 | `agent.worker.claim-wait` | `5s` | How long a claim waits in the Inbox for work |
+| `agent.tasks.lane` | `batch` | The Inbox lane on which the workers of a main agent run: `batch` or `background` |
+| `agent.tasks.max-open`, `idle-ttl` | `20`, `7d` | Open tasks per main agent's conversation, and how long an idle task is kept before it is closed to make room |
 | `AGENT_CORS_ALLOWEDORIGINS` | none | Origins of web pages that may call the API from the browser, comma-separated |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`, `false` | Webhooks to private addresses and over plain http; only to try them on one machine |
 
 The Inbox needs a client for the service with the roles `RUNTIME` and `PRODUCER` and no tenant, and
-should allow more attempts than its default for long outages (`inbox.retry.max-attempts`).
+should allow more attempts than its default for long outages (`inbox.retry.max-attempts`). For the
+workers of a main agent to run side by side, raise the cap of the lane `batch`
+(`inbox.lanes.batch.cap`, 1 by default; `docker-compose.yml` sets 4).
 
 ### Demo mode and live mode
 
 In demo mode a script plays every agent: it repeats what the user says, reads events and notifies
-about each one, so that the whole service can be tried without a key. Live mode needs an Anthropic
+about each one, hands on as a main agent what the user writes after `task:`, and reports as a worker
+that it is done, so that the whole service can be tried without a key. Live mode needs an Anthropic
 API key with access to Managed Agents. Before going live, run `scripts/cma-live-check.sh`: it checks
 the behaviour of CMA that the service relies on and that the documentation leaves open. Then
 `scripts/agent-live-smoke.sh` runs both services against CMA and checks a conversation, a
@@ -217,3 +243,6 @@ else: live mode starts with new applications.
   also told the recent dialogue.
 - The rate limits and the stream's wake-ups are per instance.
 - Notifications are not sent to other channels (push, e-mail); applications do that from the updates.
+- A main agent takes one thing at a time: a user's message waits while it works on an event or a
+  report. Several agents under one task, and writing to a worker directly as the user, are not
+  built; see [Main agent and workers](main-agent.md#what-is-not-built).
