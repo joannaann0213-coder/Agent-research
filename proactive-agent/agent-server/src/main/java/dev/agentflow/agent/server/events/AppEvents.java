@@ -13,6 +13,7 @@ import dev.agentflow.agent.server.core.Ids;
 import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.core.Names;
 import dev.agentflow.agent.server.relay.InboxRelay;
+import dev.agentflow.agent.server.tasks.Tasks;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.inbox.api.CanonicalJson;
 import dev.agentflow.inbox.api.EventSource;
@@ -37,7 +38,9 @@ import tools.jackson.databind.node.ObjectNode;
  * What applications tell the agent about their users from their own systems. An event is stored
  * here and announced to the Event Inbox in the same transaction; the Inbox turns it into a run, in
  * which the agent reads the event and decides whether the user needs to hear about it. The run is
- * one of the subject's line, or, when the agent is a main agent, of the conversation it serves.
+ * one of the subject's line, or, when the agent is a main agent, of the conversation it serves. In
+ * a conversation that a main agent serves, an event for another agent becomes a task of the main
+ * agent: that agent handles it as a worker, and the main agent is told at once.
  */
 @Service
 public class AppEvents {
@@ -62,17 +65,19 @@ public class AppEvents {
     private final TransactionTemplate tx;
     private final Users users;
     private final Lines lines;
+    private final Tasks tasks;
     private final InboxRelay relay;
     private final Actions actions;
     private final AgentClock clock;
     private final Ids ids;
 
-    public AppEvents(JdbcClient jdbc, TransactionTemplate tx, Users users, Lines lines, InboxRelay relay, Actions actions,
-            AgentClock clock, Ids ids) {
+    public AppEvents(JdbcClient jdbc, TransactionTemplate tx, Users users, Lines lines, Tasks tasks, InboxRelay relay,
+            Actions actions, AgentClock clock, Ids ids) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
         this.lines = lines;
+        this.tasks = tasks;
         this.relay = relay;
         this.actions = actions;
         this.clock = clock;
@@ -127,12 +132,17 @@ public class AppEvents {
                 }
                 AppEvent event = earlier.get().event();
                 return new EventAccepted(eventId, event.type(), event.subject(), event.conversationId(), event.createdAt(),
-                        event.deliverAt(), true);
+                        event.deliverAt(), true, tasks.ofEvent(appId, userId, eventId).orElse(null));
             }
 
-            // The subject's own line, or, for a main agent, the line of the conversation it serves.
-            Threads.Thread line = lines.background(appId, userId, subject, agentKey, conversationId,
-                    "; a subject keeps the agent of its first event");
+            // The subject's own line; or, where a main agent serves the conversation, the main agent's line
+            // for what is its own, and a task of the main agent for what is another agent's.
+            String keeps = "; a subject keeps the agent of its first event";
+            Lines.Route route = lines.route(appId, userId, subject, agentKey, conversationId, keeps);
+            Threads.Thread line = switch (route) {
+                case Lines.Direct direct -> direct.line();
+                case Lines.Hub hub -> hub.line();
+            };
             String mergeKey = line.mergeKey();
 
             jdbc.sql("""
@@ -145,6 +155,17 @@ public class AppEvents {
                     .param("subject", subject).param("conversationId", conversationId).param("data", dataJson)
                     .param("fingerprint", fingerprint).param("deliverAt", Db.ts(deliverAt)).param("now", Db.ts(now))
                     .update();
+
+            if (route instanceof Lines.Hub) {
+                Optional<Tasks.Task> task = tasks.assign(line, agentKey, eventId, type, subject, data, deliverAt, keeps);
+                if (task.isPresent()) {
+                    // Something new happened to the subject: what its worker waits for people to decide no longer applies.
+                    if (deliverAt == null) {
+                        actions.supersede(appId, userId, task.get().line(), Actions.supersededNote(task.get().line()));
+                    }
+                    return new EventAccepted(eventId, type, subject, conversationId, now, deliverAt, false, task.get().taskId());
+                }
+            }
 
             // Something new happened to the subject: whatever its line waits for people to decide no longer applies.
             // An event that is held back counts from when it is due, so it does not withdraw anything now.

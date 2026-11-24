@@ -241,8 +241,14 @@ class TurnTools {
     }
 
     private static void said(ObjectNode one, Tasks.Note note) {
-        one.put("from", fromWhom(note)).put("kind", note.kind()).put("text", note.text())
-                .put("sent_at", note.createdAt().toString());
+        one.put("from", fromWhom(note)).put("kind", note.kind());
+        if (Tasks.EVENT.equals(note.kind())) {
+            // An event of the application's systems, as it is: information, like any event.
+            one.set("event", Json.STORED.readTree(note.text()));
+        } else {
+            one.put("text", note.text());
+        }
+        one.put("sent_at", note.createdAt().toString());
     }
 
     /** Who a note of a task is from, in words for an agent. */
@@ -250,6 +256,7 @@ class TurnTools {
         return switch (note.from()) {
             case "main" -> "the main agent";
             case "worker" -> "the worker";
+            case "app" -> "the application";
             default -> "the service";
         };
     }
@@ -419,7 +426,18 @@ class TurnTools {
         for (Tasks.Task task : tasks.open(line)) {
             ObjectNode one = open.addObject();
             one.put("task_id", task.taskId()).put("role", task.role()).put("title", task.title()).put("status", task.status())
+                    .put("started_by", task.ofApplication() ? "the application" : "you")
                     .put("delegated_at", task.createdAt().toString());
+            if (task.subject() != null) {
+                one.put("subject", task.subject());
+            }
+            // What the worker waits for people to decide: the main agent is who the user asks about it.
+            List<Actions.Action> waiting = actions.pendingOfLine(task.appId(), task.userId(), task.line());
+            if (!waiting.isEmpty()) {
+                ArrayNode waitsFor = one.putArray("waits_for");
+                waiting.forEach(action -> waitsFor.add((Actions.BY_USER.equals(action.approver()) ? "the user's" : "the application's")
+                        + " approval of " + action.toolServer() + "." + action.toolName()));
+            }
             tasks.lastForMain(task).ifPresent(note -> one.putObject("latest").put("from", fromWhom(note))
                     .put("kind", note.kind()).put("text", Tasks.excerpt(note.text())).put("sent_at", note.createdAt().toString()));
         }

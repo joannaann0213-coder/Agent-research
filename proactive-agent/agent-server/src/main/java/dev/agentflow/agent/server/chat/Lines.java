@@ -13,6 +13,10 @@ import org.springframework.stereotype.Service;
  * the subject's earlier events. For a main agent it is the line of the conversation that the agent
  * serves: whatever happens for the user reaches the one session that also talks to them, so the
  * main agent knows of all of it, and decides itself what to hand to a worker.
+ *
+ * <p>In a conversation that a main agent serves, nothing works for the user that the main agent
+ * does not know of. What the application has there for another agent is therefore not a line of its
+ * own either: it is a task of the main agent, with that agent as its worker ({@link Hub}).
  */
 @Service
 public class Lines {
@@ -23,6 +27,38 @@ public class Lines {
     public Lines(Threads threads, AgentProfiles profiles) {
         this.threads = threads;
         this.profiles = profiles;
+    }
+
+    /** Where something of the application's goes. */
+    public sealed interface Route {
+    }
+
+    /** It is handled on this line, by the line's agent. */
+    public record Direct(Threads.Thread line) implements Route {
+    }
+
+    /**
+     * The conversation is served by a main agent. What is for the main agent itself is handled on
+     * its line; what is for another agent becomes a task of the main agent.
+     *
+     * @param line the main agent's line
+     */
+    public record Hub(Threads.Thread line) implements Route {
+    }
+
+    /**
+     * Where an event of the application goes. A conversation that a main agent serves, or would
+     * serve because nobody has written to it yet and the application's default agent is a main
+     * agent, is started if need be. In the caller's transaction, under the user's lock.
+     */
+    public Route route(String appId, String userId, String subject, String agentKey, String conversationId, String keeps) {
+        Optional<Threads.Thread> conversation = threads.find(appId, userId, Threads.chatKey(conversationId));
+        String server = conversation.map(Threads.Thread::agentKey).orElse(Messages.DEFAULT_AGENT);
+        boolean mainServes = profiles.configIfThere(appId, server).map(config -> config.coordinator() != null).orElse(false);
+        if (!mainServes) {
+            return new Direct(background(appId, userId, subject, agentKey, conversationId, keeps));
+        }
+        return new Hub(conversation.orElseGet(() -> threads.ensureChat(appId, userId, conversationId, server)));
     }
 
     /**

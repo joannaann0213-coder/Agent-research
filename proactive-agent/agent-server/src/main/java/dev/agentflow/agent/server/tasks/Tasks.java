@@ -1,5 +1,6 @@
 package dev.agentflow.agent.server.tasks;
 
+import dev.agentflow.agent.api.AgentProfileRequest;
 import dev.agentflow.agent.api.TaskNoteView;
 import dev.agentflow.agent.api.TaskPage;
 import dev.agentflow.agent.api.TaskView;
@@ -14,7 +15,9 @@ import dev.agentflow.agent.server.config.AgentProperties;
 import dev.agentflow.agent.server.core.Db;
 import dev.agentflow.agent.server.core.Ids;
 import dev.agentflow.agent.server.core.Names;
+import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.delivery.Outbound;
+import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.relay.InboxRelay;
 import dev.agentflow.agent.server.schedules.Schedules;
 import dev.agentflow.agent.server.time.AgentClock;
@@ -33,6 +36,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.ObjectNode;
 
 /**
@@ -45,6 +49,12 @@ import tools.jackson.databind.node.ObjectNode;
  * transaction: a note for the worker wakes the task's line, a note for the main agent wakes the main
  * agent's line. So a report is input like any other: it is deduplicated, it waits its turn, and it
  * survives a worker of this service that dies.
+ *
+ * <p>The application can hand work to a worker as well, by sending an event for another agent than
+ * the main agent to a conversation that a main agent serves ({@link #assign}). That is a task of the
+ * main agent like the ones it delegates itself: the main agent is told of it at once, through its
+ * own line, and the worker reports to it. Nothing works for the user that the main agent does not
+ * know of.
  *
  * <p>A task does not always start when it is delegated. What the main agent begins on its own
  * initiative waits for the user's confirmation, as a proposal, unless the application lets the role
@@ -76,6 +86,10 @@ public class Tasks {
 
     public static final String ASSIGNMENT = "assignment";
     public static final String MESSAGE = "message";
+    /** An event that the application handed to the worker. */
+    public static final String EVENT = "event";
+    /** What tells the main agent that the application handed its worker an event. */
+    public static final String ASSIGNED = "assigned";
     public static final String REPORT = "report";
     public static final String FAILURE = "failure";
     public static final String CLOSED_NOTE = "closed";
@@ -107,7 +121,13 @@ public class Tasks {
      */
     public record Task(String appId, String userId, String taskId, String hubKey, String conversationId, String role,
             String agentKey, String title, String summary, String status, String authorizedBy, Instant expiresAt,
-            String closedBy, String closedReason, Instant createdAt, Instant updatedAt, Instant closedAt) {
+            String closedBy, String closedReason, Instant createdAt, Instant updatedAt, Instant closedAt, String createdBy,
+            String subject) {
+
+        /** Whether the application handed the work to the worker itself, rather than the main agent. */
+        public boolean ofApplication() {
+            return BY_APP.equals(createdBy);
+        }
 
         public boolean closed() {
             return CLOSED.equals(status);
@@ -130,7 +150,10 @@ public class Tasks {
 
         /** Who it is from, for people and for agents: the main agent, the worker, or this service. */
         public String from() {
-            return TO_WORKER.equals(direction) ? "main" : REPORT.equals(kind) ? "worker" : "service";
+            if (TO_WORKER.equals(direction)) {
+                return EVENT.equals(kind) ? "app" : "main";
+            }
+            return REPORT.equals(kind) ? "worker" : ASSIGNED.equals(kind) ? "app" : "service";
         }
 
         public TaskNoteView view() {
@@ -178,6 +201,7 @@ public class Tasks {
     private final Actions actions;
     private final Schedules schedules;
     private final Grants grants;
+    private final AgentProfiles profiles;
     private final InboxRelay relay;
     private final Outbound outbound;
     private final AgentClock clock;
@@ -186,8 +210,8 @@ public class Tasks {
     private final Lane lane;
 
     public Tasks(JdbcClient jdbc, TransactionTemplate tx, Users users, Threads threads, Messages messages, Actions actions,
-            Schedules schedules, Grants grants, InboxRelay relay, Outbound outbound, AgentClock clock, Ids ids,
-            AgentProperties properties) {
+            Schedules schedules, Grants grants, AgentProfiles profiles, InboxRelay relay, Outbound outbound, AgentClock clock,
+            Ids ids, AgentProperties properties) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
@@ -196,6 +220,7 @@ public class Tasks {
         this.actions = actions;
         this.schedules = schedules;
         this.grants = grants;
+        this.profiles = profiles;
         this.relay = relay;
         this.outbound = outbound;
         this.clock = clock;
@@ -367,6 +392,116 @@ public class Tasks {
         }
         outbound.record(task.appId(), task.userId(), Update.TASK_UPDATED, view(find(task).orElseThrow(), false, false));
         return Start.STARTED;
+    }
+
+    // ================================================================ for the application
+
+    /**
+     * Hands an event of the application to a worker, as a task of the main agent that serves the
+     * conversation. The first event of a subject makes the task; later ones go to the same task while
+     * it is open, and so to the session of the worker that remembers the earlier ones. The worker is
+     * woken with the event, and the main agent is told of it at once, through its own line like
+     * everything else that concerns the user. In the caller's transaction, under the user's lock.
+     *
+     * @param hub the main agent's line
+     * @param agentKey the agent that the application named; {@code null} when it named none
+     * @param data what the event says, as the application sent it
+     * @param readyAt when the event is to be handled at the earliest; {@code null} for at once
+     * @param keeps how the refusal ends when the subject already has another agent than the one named
+     * @return the task; empty when the event is for the main agent itself, and so for its own line
+     */
+    public Optional<Task> assign(Threads.Thread hub, String agentKey, String eventId, String type, String subject, JsonNode data,
+            Instant readyAt, String keeps) {
+        Optional<Task> open = jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND hub_key = :hubKey AND subject = :subject AND status <> 'closed'
+                """)
+                .param("appId", hub.appId()).param("userId", hub.userId()).param("hubKey", hub.mergeKey()).param("subject", subject)
+                .query(Tasks::task)
+                .optional();
+        if (open.isPresent() && agentKey != null && !open.get().agentKey().equals(agentKey)) {
+            throw AgentException.conflict("subject " + subject + " is handled by agent " + open.get().agentKey() + keeps);
+        }
+        String worker = open.map(Task::agentKey).orElse(agentKey == null ? Messages.DEFAULT_AGENT : agentKey);
+        if (worker.equals(hub.agentKey())) {
+            return Optional.empty();
+        }
+        Instant now = clock.now();
+        Task task = open.orElseGet(() -> begin(hub, worker, type, subject, now));
+        ObjectNode event = Json.STORED.createObjectNode();
+        event.put("event_id", eventId).put("type", type).put("subject", subject).put("received_at", now.toString());
+        event.set("data", data);
+        Written handed = write(task, TO_WORKER, EVENT, event.toString(), "evt:" + eventId, null);
+        if (!handed.created()) {
+            return Optional.of(task);
+        }
+        wakeWorker(task, handed.note(), readyAt);
+        moveTo(task, QUEUED, " AND status = 'idle'");
+        // The main agent hears of it now, not when the worker reports: nothing works for the user that it does not know of.
+        Written told = write(task, TO_MAIN, ASSIGNED, "The application handed your worker " + task.role() + " an event itself: "
+                + type + ", on the subject " + subject + ". The worker has it and reports to you when it is done, so there is "
+                + "nothing you have to do. If what you know from the user changes what the worker should do, tell it with "
+                + "message_worker, or close the task. What the event says: " + Json.STORED.writeValueAsString(data),
+                "assigned:" + eventId, null);
+        wakeMain(task, told.note(), readyAt);
+        return find(task);
+    }
+
+    /** The task that an event of the application became part of, if it went to a worker. */
+    public Optional<String> ofEvent(String appId, String userId, String eventId) {
+        return jdbc.sql("SELECT task_id FROM task_note WHERE app_id = :appId AND user_id = :userId AND note_key = :noteKey LIMIT 1")
+                .param("appId", appId).param("userId", userId).param("noteKey", "evt:" + eventId)
+                .query(String.class)
+                .optional();
+    }
+
+    /** Makes the task for a subject of the application's events that has none open. */
+    private Task begin(Threads.Thread hub, String worker, String type, String subject, Instant now) {
+        AgentProfileRequest profile = profiles.configIfThere(hub.appId(), worker).orElseThrow(() -> AgentException.invalid(
+                "this application has no agent " + worker + "; create it with PUT /v1/agents/" + worker));
+        if (profile.coordinator() != null) {
+            throw AgentException.conflict("conversation " + hub.conversationId() + " is served by agent " + hub.agentKey()
+                    + "; what is for the main agent " + worker + " goes to a conversation that it serves");
+        }
+        closeStale(hub);
+        long open = count(hub, " AND status <> 'closed'");
+        if (open >= config.getMaxOpen()) {
+            // The application's own task that has rested longest makes room. Its subject starts anew with its next event.
+            Optional<Task> resting = jdbc.sql(SELECT + """
+                     WHERE app_id = :appId AND user_id = :userId AND hub_key = :hubKey AND status = 'idle' AND created_by = 'app'
+                     ORDER BY updated_at, task_id LIMIT 1
+                    """)
+                    .param("appId", hub.appId()).param("userId", hub.userId()).param("hubKey", hub.mergeKey())
+                    .query(Tasks::task)
+                    .optional();
+            if (resting.isEmpty()) {
+                throw AgentException.conflict(open + " tasks are open in conversation " + hub.conversationId()
+                        + ", which is the limit: close the ones that are finished");
+            }
+            closeIn(resting.get(), BY_SERVICE, "it made room for a newer task of the application");
+        }
+        String taskId = ids.next("task");
+        // The role under which the main agent knows this agent, if it is on its list.
+        String role = profiles.configIfThere(hub.appId(), hub.agentKey()).map(AgentProfileRequest::coordinator)
+                .filter(coordinator -> coordinator.workers() != null)
+                .flatMap(coordinator -> coordinator.workers().stream().filter(listed -> listed.agent().equals(worker))
+                        .map(WorkerConfig::role).findFirst())
+                .orElse(worker);
+        jdbc.sql("""
+                INSERT INTO delegated_task (app_id, user_id, task_id, hub_key, conversation_id, role, agent_key, title, status,
+                                            authorized_by, authorized_at, created_by_run, created_by_call, created_at, updated_at,
+                                            created_by, subject)
+                VALUES (:appId, :userId, :taskId, :hubKey, :conversationId, :role, :agentKey, :title, 'queued', 'app', :now,
+                        :madeBy, 0, :now, :now, 'app', :subject)
+                """)
+                .param("appId", hub.appId()).param("userId", hub.userId()).param("taskId", taskId)
+                .param("hubKey", hub.mergeKey()).param("conversationId", hub.conversationId()).param("role", role)
+                .param("agentKey", worker).param("title", subject.equals(type) ? type : type + ": " + subject)
+                .param("now", Db.ts(now)).param("madeBy", "app:" + taskId).param("subject", subject)
+                .update();
+        threads.ensureWork(hub.appId(), hub.userId(), taskId, hub.conversationId(), worker);
+        Task task = find(hub.appId(), hub.userId(), taskId).orElseThrow();
+        outbound.record(task.appId(), task.userId(), Update.TASK_CREATED, view(task, false, false));
+        return task;
     }
 
     /**
@@ -749,7 +884,7 @@ public class Tasks {
         return new TaskView(task.taskId(), task.conversationId(), task.role(), task.agentKey(), task.title(), task.summary(),
                 task.status(), task.authorizedBy(), task.proposed() ? task.expiresAt() : null, task.closedBy(), task.closedReason(),
                 report, task.createdAt(), task.updatedAt(), task.closedAt(),
-                withNotes ? notes(task).stream().map(Note::view).toList() : null);
+                withNotes ? notes(task).stream().map(Note::view).toList() : null, task.createdBy(), task.subject());
     }
 
     /** The beginning of a text, for lists. */
@@ -841,6 +976,11 @@ public class Tasks {
     // ================================================================ waking the other side
 
     private void wakeWorker(Task task, Note note) {
+        wakeWorker(task, note, null);
+    }
+
+    /** @param readyAt when the worker is to be woken at the earliest; {@code null} for at once */
+    private void wakeWorker(Task task, Note note, Instant readyAt) {
         relay.enqueue(task.appId(), task.userId(), WriteEventRequest.builder(EventSource.AGENT_SELF, MESSAGE_EVENT)
                 .sourceEventId("task:" + task.taskId() + ":" + note.seq())
                 .mergeKey(task.line())
@@ -848,11 +988,17 @@ public class Tasks {
                 .lane(lane)
                 .interrupt(false)
                 .occurredAt(note.createdAt())
+                .readyAt(readyAt)
                 .payload(named(task, note))
                 .build());
     }
 
     private void wakeMain(Task task, Note note) {
+        wakeMain(task, note, null);
+    }
+
+    /** @param readyAt when the main agent is to be woken at the earliest; {@code null} for at once */
+    private void wakeMain(Task task, Note note, Instant readyAt) {
         relay.enqueue(task.appId(), task.userId(), WriteEventRequest.builder(EventSource.AGENT_SELF, REPORT_EVENT)
                 .sourceEventId("task:" + task.taskId() + ":" + note.seq())
                 .mergeKey(task.hubKey())
@@ -860,6 +1006,7 @@ public class Tasks {
                 .lane(Lane.BACKGROUND)
                 .interrupt(false)
                 .occurredAt(note.createdAt())
+                .readyAt(readyAt)
                 .payload(named(task, note))
                 .build());
     }
@@ -874,7 +1021,7 @@ public class Tasks {
 
     private static final String SELECT = """
             SELECT app_id, user_id, task_id, hub_key, conversation_id, role, agent_key, title, summary, status, authorized_by,
-                   expires_at, closed_by, closed_reason, created_at, updated_at, closed_at
+                   expires_at, closed_by, closed_reason, created_at, updated_at, closed_at, created_by, subject
               FROM delegated_task
             """;
 
@@ -887,7 +1034,7 @@ public class Tasks {
                 rs.getString("conversation_id"), rs.getString("role"), rs.getString("agent_key"), rs.getString("title"),
                 rs.getString("summary"), rs.getString("status"), rs.getString("authorized_by"), Db.instant(rs, "expires_at"),
                 rs.getString("closed_by"), rs.getString("closed_reason"), Db.instant(rs, "created_at"),
-                Db.instant(rs, "updated_at"), Db.instant(rs, "closed_at"));
+                Db.instant(rs, "updated_at"), Db.instant(rs, "closed_at"), rs.getString("created_by"), rs.getString("subject"));
     }
 
     private static Note note(ResultSet rs, int rowNumber) throws SQLException {

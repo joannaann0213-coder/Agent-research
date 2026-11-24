@@ -465,6 +465,18 @@ curl -s -X POST $API/v1/users/u-1001/tasks/TASK_ID/start -H "Authorization: Bear
 curl -s -X PUT $API/v1/users/u-1001/grants/default/research -H "Authorization: Bearer $KEY"
 ```
 
+Work that you know whom to give, you hand to the worker yourself: name the agent in the event. The
+event becomes a task of the main agent, and its receipt has the task's `task_id`. Nobody is asked to
+confirm it, because your application ordered the work. The main agent is told at once, so it can
+answer when the user asks about it, and the worker reports to it like any other worker.
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/events -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "order.returned", "subject": "order-7777", "agent": "researcher", "conversation_id": "support",
+       "data": {"order_id": "7777"}}'
+```
+
 The worker's report goes back to the main agent, which decides what to tell the user. Your
 application follows a task through the updates `task.created` and `task.updated`.
 `examples/agent-api/main-agent.sh` runs all of this, step by step.

@@ -171,11 +171,12 @@ public final class PlatformTools {
                                   "additionalProperties": false
                                 }""")),
                 new AgentSpec.CustomTool(LIST_TASKS, """
-                        Returns the tasks you have delegated that are not closed, each with its state \
-                        (`proposed` while it waits for the user's confirmation) and the beginning of the \
-                        worker's latest report. Use it when you are not sure what is \
-                        under way, for example in a new session, or before you tell the user how things \
-                        stand.""",
+                        Returns the tasks of your workers that are not closed: the ones you delegated, and \
+                        the ones that the application handed to a worker itself. Each comes with its state \
+                        (`proposed` while it waits for the user's confirmation), who started it, what its \
+                        worker waits for somebody to approve, and the beginning of the worker's latest \
+                        report. Use it when you are not sure what is under way, for example in a new \
+                        session, or before you tell the user how things stand.""",
                         Json.STORED.readTree("""
                                 {
                                   "type": "object",

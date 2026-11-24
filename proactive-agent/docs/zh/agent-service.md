@@ -38,9 +38,9 @@ flowchart LR
 | 工作线 | key | 它的输入 | 用户得到什么 |
 | --- | --- | --- | --- |
 | 会话 | `conv:<conversation_id>` | 用户的消息 | agent 最后写的文字，作为回复 |
-| 主题 | `task:<subject>` | 应用的事件和定时计划 | 只有 agent 用 `notify_user` 发出的内容 |
-| 主 agent 的会话 | `conv:<conversation_id>` | 用户的消息；应用发给主 agent 的事件和定时计划；它的 worker 的汇报 | 对消息的回复；在后台，只有 agent 用 `notify_user` 发出的内容 |
-| 任务 | `work:<task_id>` | 主 agent 发给 worker 的内容，以及 worker 自己的跟进 | 什么都没有：worker 最后写的文字是给主 agent 的汇报 |
+| 主题 | `task:<subject>` | 应用的事件和定时计划，前提是会话不由主 agent 服务 | 只有 agent 用 `notify_user` 发出的内容 |
+| 主 agent 的会话 | `conv:<conversation_id>` | 用户的消息；应用发给主 agent 的事件和定时计划；它的 worker 的汇报；应用把什么交给了 worker 的告知 | 对消息的回复；在后台，只有 agent 用 `notify_user` 发出的内容 |
+| 任务 | `work:<task_id>` | 主 agent 发给 worker 的内容、应用发给这个 worker 的事件，以及 worker 自己的跟进 | 什么都没有：worker 最后写的文字是给主 agent 的汇报 |
 
 跟进在设置它的那条线上运行。因此会话所在的线也可以在后台工作，比如一小时后提醒用户某件事。
 
@@ -54,6 +54,10 @@ flowchart LR
 
 worker 跑在收件箱的 `batch` lane 上，这样 worker 的长回合不会挡住唤醒主 agent 的东西；这条 lane 的上限就是一个用户同时运行多少个
 worker。worker 接触不到用户：它在一轮里最后写的文字就是汇报，汇报会唤醒主 agent；它的回合失败时，由服务替它写一条记录。
+
+应用也可以自己把活交给 worker。在主 agent 服务的会话里，指明另一个 agent 的事件不会得到自己主题的线：它成为主 agent 的一个任务，每个主题一个，以那个
+agent 为 worker。事件是给 worker 的一条记录；同一个事务里，第二条记录告诉主 agent，并给它的线排一个事件。于是，替用户干的活，没有哪一件是主
+agent 没有通过收件箱得知的。
 
 主 agent 自己起意的任务不会自己开始。它以 `proposed` 状态等用户确认，除非它那个角色的规则（`start`）或者用户的长期授权允许它直接开始。在等的任务没有 session，收件箱里也没有它的事件；确认之后才排上唤醒
 worker 的事件。规则见[主 agent 与 worker](main-agent.md#谁让任务开始)，设计、工具和理由见那份文档的其余部分。

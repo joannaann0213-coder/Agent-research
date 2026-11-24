@@ -248,6 +248,18 @@ public class Actions {
                 .list();
     }
 
+    /** What a line waits for people to decide, oldest first. */
+    public List<Action> pendingOfLine(String appId, String userId, String mergeKey) {
+        return jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey AND status = 'pending' AND expires_at > :now
+                 ORDER BY created_at, action_id
+                 LIMIT 20
+                """)
+                .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey).param("now", Db.ts(clock.now()))
+                .query(Actions::row)
+                .list();
+    }
+
     /** The question in the conversation that the user would answer by writing to it: the latest one that waits. */
     public Optional<Action> latestPendingQuestion(String appId, String userId, String conversationId) {
         return jdbc.sql(SELECT + """

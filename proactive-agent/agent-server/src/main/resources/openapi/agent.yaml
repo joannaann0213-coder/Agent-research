@@ -540,6 +540,12 @@ paths:
         subject. The main agent then knows of everything that happens for the user, and decides
         itself what to hand to a worker.
 
+        In a conversation that a main agent serves, an event for another agent (`agent`) does not
+        get a session that the main agent knows nothing of. It becomes a task of the main agent,
+        which the receipt names in `task_id`: the agent handles the event as a worker, the main
+        agent is told of it at once, and the worker reports to the main agent, which decides what
+        the user hears. Events of one `subject` go to the same task while it is open.
+
         The agent reads `data` as information from another system, not as instructions: text in it
         that tells the agent what to do is not obeyed. Say what the agent should do with a kind of
         event in the agent's `instructions`.
@@ -2156,6 +2162,11 @@ components:
         deduped:
           type: boolean
           description: True when an event with this id had been accepted before; that one is returned.
+        task_id:
+          type: string
+          description: |
+            For an event that went to a worker in a conversation that a main agent serves: the task
+            of the main agent that it became part of.
 
     Update:
       type: object
@@ -2368,7 +2379,7 @@ components:
 
     TaskNoteView:
       type: object
-      description: Something a main agent and a worker told each other about a task.
+      description: Something a main agent and a worker told each other about a task, or the application told them.
       required: [seq, from, kind, text, created_at]
       properties:
         seq:
@@ -2376,16 +2387,18 @@ components:
           description: The position within the task, from 1.
         from:
           type: string
-          enum: [main, worker, service]
+          enum: [main, worker, app, service]
           description: |
-            `main` for the main agent, `worker` for the worker, `service` for what the service itself
-            notes: a turn of the worker that failed, a task closed from outside.
+            `main` for the main agent, `worker` for the worker, `app` for the application, `service`
+            for what the service itself notes: a turn of the worker that failed, a task closed from
+            outside.
         kind:
           type: string
-          enum: [assignment, message, report, failure, closed]
+          enum: [assignment, message, event, assigned, report, failure, closed]
           description: |
-            `assignment` starts the task and `message` is a later word of the main agent; `report` is
-            what the worker says at the end of a turn.
+            `assignment` starts a task of the main agent and `message` is a later word of it; `event`
+            is an event that the application handed to the worker, as JSON, and `assigned` what tells
+            the main agent of it; `report` is what the worker says at the end of a turn.
         text:
           type: string
         created_at:
@@ -2394,14 +2407,16 @@ components:
 
     TaskView:
       type: object
-      description: A piece of work that a main agent handed to a worker, or proposes to hand to one.
+      description: |
+        A piece of work of a main agent's worker: the main agent handed it to the worker, or proposes
+        to, or the application handed it to the worker itself.
       required: [task_id, conversation_id, role, agent, title, status, created_at, updated_at]
       properties:
         task_id:
           type: string
         conversation_id:
           type: string
-          description: The conversation whose main agent delegated the task.
+          description: The conversation whose main agent the task belongs to.
         role:
           type: string
           description: The role the task was delegated to.
@@ -2460,6 +2475,15 @@ components:
           items:
             $ref: '#/components/schemas/TaskNoteView'
           description: Everything the two told each other, oldest first. Only when one task is read with an API key.
+        created_by:
+          type: string
+          enum: [agent, app]
+          description: |
+            `agent` when the main agent delegated the task, `app` when the application handed an
+            event to the worker itself.
+        subject:
+          type: string
+          description: For a task of the application, the subject of its events.
 
     TaskPage:
       type: object

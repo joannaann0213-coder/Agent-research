@@ -4,11 +4,13 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * A piece of work that a main agent handed to a worker, or proposes to hand to one.
+ * A piece of work of a main agent's worker: the main agent handed it to the worker, or proposes to,
+ * or the application handed it to the worker itself.
  *
- * @param conversationId the conversation whose main agent delegated it
+ * @param conversationId the conversation whose main agent the task belongs to
  * @param role the role it was delegated to, and {@code agent} the key of the agent that works on it
- * @param title a short name, as the main agent gave it
+ * @param title a short name, as the main agent gave it; for a task of the application, the type
+ *     and the subject of its events
  * @param summary what the main agent wants to do and why, written for the user. Always there for a
  *     task that waits for a confirmation
  * @param status {@code proposed} while the task waits for the user's confirmation and has not
@@ -27,8 +29,11 @@ import java.util.List;
  *     it. Only for an API key
  * @param notes everything the main agent and the worker told each other, oldest first. Only when a
  *     single task is read with an API key
+ * @param createdBy {@code agent} when the main agent delegated it, {@code app} when the application
+ *     handed an event to the worker itself
+ * @param subject for a task of the application: the subject of its events
  */
 public record TaskView(String taskId, String conversationId, String role, String agent, String title, String summary,
         String status, String authorizedBy, Instant expiresAt, String closedBy, String closedReason, String report,
-        Instant createdAt, Instant updatedAt, Instant closedAt, List<TaskNoteView> notes) {
+        Instant createdAt, Instant updatedAt, Instant closedAt, List<TaskNoteView> notes, String createdBy, String subject) {
 }

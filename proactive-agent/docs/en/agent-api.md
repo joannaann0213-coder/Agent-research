@@ -34,7 +34,7 @@ curl -s http://localhost:8090/openapi.yaml -o agent-api.yaml
 | Event | Something that happened in the application's systems that concerns a user. Events of one `subject` are handled by an agent that remembers the earlier ones |
 | Action | What the agent waits for a person to decide: an approval of a tool call, or a question to the user |
 | Schedule | What the agent is to do at a given time: set up by the application, or a follow-up the agent set itself |
-| Task | A piece of work that a main agent handed to a worker: another agent of the application, in a session of its own. What the main agent begins on its own initiative waits for the user's confirmation first |
+| Task | A piece of work that a worker does under a main agent: another agent of the application, in a session of its own. The main agent hands it on, or the application does, with an event for that agent; either way the main agent knows of it. What the main agent begins on its own initiative waits for the user's confirmation first |
 | Grant | A user's standing authorisation: their main agent may start the tasks of one role on its own initiative, without asking each time |
 | Update | What happened for a user that the application may want to know: a message, an action, a failure. Read by polling, by a stream, or at a webhook |
 | Credential | What an MCP server needs to let the agent in. Kept in vaults on the agent platform, never by this service |
@@ -144,6 +144,9 @@ needs to hear about it. If so, it sends a message with `kind: notification` to t
   the user's next message.
 - An event for a [main agent](#a-main-agent-and-its-tasks) is not handled on a line of its `subject`:
   it goes to the conversation that `conversation_id` names, where the main agent hears of everything.
+- In a conversation that a main agent serves, an event that names another agent (`agent`) has no
+  line of its own either. It becomes a task of the main agent: the named agent handles it as a
+  worker, the main agent is told at once, and the receipt has the task's `task_id`.
 
 ## Actions
 
@@ -313,9 +316,12 @@ your systems post events, as before. What changes is where those go.
 - Events and schedules for a main agent are handled in the conversation that `conversation_id` names
   (`default` unless named), by the session that talks to the user there. If another agent serves
   that conversation, the request is a 409.
-- Only the main agent makes a task. `GET /v1/users/{user_id}/tasks` lists the open ones, with
-  `status=all` the closed ones too, and `POST .../tasks/{task_id}/close` stops one; the main agent is
-  told.
+- The main agent makes a task, and so does an event of yours that names another agent (`agent`):
+  that agent handles the event as a worker, in a task with `created_by: app` and the event's
+  `subject`, which starts without a confirmation. The main agent is told of the event at once, and
+  the worker reports to it. Later events of the subject go to the same task while it is open.
+- `GET /v1/users/{user_id}/tasks` lists the open tasks, with `status=all` the closed ones too, and
+  `POST .../tasks/{task_id}/close` stops one; the main agent is told.
 - What the user asks the main agent for starts at once. What the main agent begins on its own
   initiative is a task with the status `proposed`: show it to the user with its `summary`, and call
   `POST .../tasks/{task_id}/start` when they confirm it, or close it when they decline. It can be
@@ -331,12 +337,13 @@ your systems post events, as before. What changes is where those go.
 - The user hears of a task from the main agent. A worker cannot notify or ask the user, but its tool
   calls that need an approval appear among the [actions](#actions) as usual.
 - A worker is any agent of the application that is not a main agent. Of the user and the
-  conversation it knows only what the main agent writes into the task.
+  conversation it knows only what the main agent writes into the task, or what your event says.
 - The workers of one user run one at a time, unless the Inbox allows more (`inbox.lanes.batch.cap`).
 
 In demo mode the script hands on whatever the user writes after `task:`, and the worker answers that
-it is done; an event whose data has a text `task` makes the script propose that work by itself.
-`examples/agent-api/main-agent.sh` walks through both.
+it is done; an event whose data has a text `task` makes the script propose that work by itself, and
+an event that names the worker is handled by the worker, whose report the main agent passes on.
+`examples/agent-api/main-agent.sh` walks through all three.
 
 ## Limits
 

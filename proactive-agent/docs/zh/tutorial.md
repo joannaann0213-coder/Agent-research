@@ -423,6 +423,16 @@ curl -s -X POST $API/v1/users/u-1001/tasks/TASK_ID/start -H "Authorization: Bear
 curl -s -X PUT $API/v1/users/u-1001/grants/default/research -H "Authorization: Bearer $KEY"
 ```
 
+你清楚该交给谁的活，可以自己交给 worker：在事件里指明那个 agent。这个事件成为主 agent 的一个任务，回执里带着任务的 `task_id`。它不需要谁来确认，因为这是你的应用下的令。主
+agent 立刻得知，所以用户问起时它答得上来；worker 和其他 worker 一样向它汇报。
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/events -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "order.returned", "subject": "order-7777", "agent": "researcher", "conversation_id": "support",
+       "data": {"order_id": "7777"}}'
+```
+
 worker 的汇报回到主 agent，由它决定告诉用户什么。你的应用通过 `task.created` 和 `task.updated` 这两种更新跟踪任务。
 `examples/agent-api/main-agent.sh` 会一步步把这些都跑一遍。
 

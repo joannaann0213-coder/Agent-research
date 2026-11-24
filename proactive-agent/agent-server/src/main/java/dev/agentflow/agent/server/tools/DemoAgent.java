@@ -23,8 +23,10 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>As a main agent it hands on whatever the user writes after {@code task:} to the first of its
  *       workers, and tells the user what the worker reports. An event whose data has a text
  *       {@code "task"} makes it hand that on by itself, in the background: the task then waits for
- *       the user's confirmation, unless the role may start unasked.
- *   <li>As a worker it reads the task and reports that it is done.
+ *       the user's confirmation, unless the role may start unasked. When the application hands an
+ *       event to one of its workers itself, it takes note and says nothing.
+ *   <li>As a worker it reads the task, or the event that the application handed it, and reports
+ *       that it is done.
  * </ul>
  */
 public final class DemoAgent implements FakeBrain {
@@ -96,6 +98,10 @@ public final class DemoAgent implements FakeBrain {
             tell.add("[demo] Something happened that you should know about: " + String.join(", ", worthTelling) + ".");
         }
         for (JsonNode report : waiting.path("reports")) {
+            if ("assigned".equals(report.path("kind").asString())) {
+                // The application handed a worker an event itself. The main agent knows now; the worker's report will follow.
+                continue;
+            }
             tell.add("[demo] Your task \"" + report.path("title").asString() + "\" is back from the "
                     + report.path("role").asString() + ": " + report.path("text").asString());
         }
@@ -127,10 +133,18 @@ public final class DemoAgent implements FakeBrain {
             return ModelStep.say("[demo] Nothing more to report.");
         }
         String asked = "";
+        String handled = null;
         for (JsonNode message : Json.STORED.readTree(read.text()).path("messages")) {
-            asked = message.path("text").asString();
+            if (message.has("event")) {
+                // An event that the application handed to this worker itself.
+                handled = message.path("event").path("type").asString() + " (" + message.path("event").path("subject").asString() + ")";
+            } else {
+                asked = message.path("text").asString();
+                handled = null;
+            }
         }
-        return ModelStep.say("[demo] Done. You asked for: " + asked);
+        return ModelStep.say(handled != null ? "[demo] Done. I handled the event " + handled + "."
+                : "[demo] Done. You asked for: " + asked);
     }
 
     /** The first role a main agent can delegate to, as its delegation tool names them; {@code null} for an agent without workers. */

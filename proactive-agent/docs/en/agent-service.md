@@ -51,9 +51,9 @@ one turn at a time. Every line has a session of its own on CMA, which remembers 
 | Line | Key | Its input | What the user gets |
 | --- | --- | --- | --- |
 | Conversation | `conv:<conversation_id>` | The user's messages | The agent's last text, as the reply |
-| Subject | `task:<subject>` | The application's events and schedules | Only what the agent sends with `notify_user` |
-| Main agent's conversation | `conv:<conversation_id>` | The user's messages; the application's events and schedules for the main agent; its workers' reports | The reply to a message; in the background, only what the agent sends with `notify_user` |
-| Task | `work:<task_id>` | What the main agent sends to the worker, and the worker's own follow-ups | Nothing: the worker's last text is its report to the main agent |
+| Subject | `task:<subject>` | The application's events and schedules, where no main agent serves the conversation | Only what the agent sends with `notify_user` |
+| Main agent's conversation | `conv:<conversation_id>` | The user's messages; the application's events and schedules for the main agent; its workers' reports; word of what the application handed to a worker | The reply to a message; in the background, only what the agent sends with `notify_user` |
+| Task | `work:<task_id>` | What the main agent sends to the worker, the application's events for the worker, and the worker's own follow-ups | Nothing: the worker's last text is its report to the main agent |
 
 A follow-up runs on the line that set it. A conversation's line can thus also work in the
 background, for example when it reminds the user of something an hour later.
@@ -76,6 +76,12 @@ Workers run on the Inbox's lane `batch`, so that a worker's long turn does not h
 the main agent; the cap of that lane is how many workers of one user run at a time. A worker cannot
 reach the user: what it writes last in a turn is its report, which wakes the main agent, and when
 its turn fails the service writes a note in its place.
+
+The application can give a worker work itself. In a conversation that a main agent serves, an event
+that names another agent does not get a line of its subject: it becomes a task of the main agent,
+one per subject, with that agent as the worker. The event is a note for the worker, and in the same
+transaction a second note tells the main agent and an event for its line is queued. Nothing works
+for the user, then, that the main agent has not heard of through the Inbox.
 
 A task that the main agent begins on its own initiative does not start by itself. It waits, as
 `proposed`, for the user's confirmation, unless the rule of its role (`start`) or the user's
