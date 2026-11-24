@@ -66,6 +66,10 @@ run，发现记录已经读过，就不跑回合直接结束。
 哪些记录会唤醒主 agent、要求它告诉用户多少，取决于用户想要的主动程度：`proactive`、`balanced` 或 `quiet`。档位先看用户自己的设置，没有就用 agent
 的默认值，再没有就用服务的默认值；服务在每个后台回合里把它告诉主 agent。对照表见[主 agent 与 worker](main-agent.md#主动程度)。
 
+会话的线一次只跑一轮，而用户不应该排在后台工作后面等。后台回合正占着这条线时用户发来消息，这个回合就让路：它的 session 被叫停，回合放开 session，它的 run
+在收件箱里挂起 `agent.turn.yield-delay` 这么久。用户的消息由收件箱优先交出，先得到自己的回合；之后回来的 run 在同一个 session 里把回合重新开始。副作用以 run
+和调用在回合里的序号为键，所以什么都不会发生两次。
+
 主 agent 自己起意的任务不会自己开始。它以 `proposed` 状态等用户确认，除非它那个角色的规则（`start`）或者用户的长期授权允许它直接开始。在等的任务没有 session，收件箱里也没有它的事件；确认之后才排上唤醒
 worker 的事件。规则见[主 agent 与 worker](main-agent.md#谁让任务开始)，设计、工具和理由见那份文档的其余部分。
 
@@ -155,6 +159,7 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 | `agent.tasks.max-proposed`, `proposal-ttl` | `5`、`3d` | 每个主 agent 会话里可以等用户确认的任务数，以及一个任务等多久 |
 | `agent.tasks.proactivity` | `proactive` | 用户没说过、agent 自己的配置里也没写时，主 agent 的主动程度：`proactive`、`balanced` 或 `quiet` |
 | `agent.notify.quiet-per-user-per-day` | `5` | 想让主 agent 安静的用户 24 小时内收到的通知数，用户自己要的事的结果不计在内 |
+| `agent.turn.max-yields`, `yield-delay` | `2`、`5s` | 后台回合给同一条线上用户的消息让路的次数，以及让开多久；设为 `0` 即关闭 |
 | `AGENT_CORS_ALLOWEDORIGINS` | 无 | 可以从浏览器调用 API 的网页的源，用逗号分隔 |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`、`false` | 允许 webhook 投递到内网地址、使用明文 http；只用于在一台机器上试用 |
 
@@ -191,5 +196,5 @@ key。上线前先运行 `scripts/cma-live-check.sh`：它检查本服务所依�
 - 记忆按用户和 agent 区分，并且只适用于开启了沙箱的 agent。会话的新 session 同时也会被告知最近的对话。
 - 限流和流的唤醒都按实例计算。
 - 通知不会发到其他渠道（推送、邮件）；应用根据更新自行处理。
-- 主 agent 一次只处理一件事：它在处理事件或汇报时，用户的消息要等。一个任务之下的多个 agent、用户直接给 worker
-  写消息，都没有实现；见[主 agent 与 worker](main-agent.md#没有实现什么)。
+- 主 agent 一次只处理一件事。后台回合会给用户的消息让路，之后重新开始，所以用户不用等它；但用户的第二条消息仍然要等第一条的回复。一个任务之下的多个 agent、用户直接给
+  worker 写消息，都没有实现；见[主 agent 与 worker](main-agent.md#没有实现什么)。

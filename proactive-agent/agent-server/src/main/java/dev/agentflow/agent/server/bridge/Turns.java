@@ -45,24 +45,26 @@ public class Turns {
      * @param closing why the turn has to finish without waiting for anybody again, or {@code null}
      * @param work what the turn works on, as found at its first delivery
      * @param parked whether the turn waits for people, its run suspended in the Inbox
+     * @param yields how often the turn has given way to a message of the user and started over
      */
     public record Turn(String runId, String mergeKey, int epoch, String state, Integer generation, String sessionId,
             boolean boundarySet, String boundaryEventId, Instant boundaryAt, String inputEventId, String error,
-            Instant createdAt, Instant deadlineAt, String closing, JsonNode work, boolean parked, String appId, String userId) {
+            Instant createdAt, Instant deadlineAt, String closing, JsonNode work, boolean parked, String appId, String userId,
+            int yields) {
 
         Turn inSession(int newGeneration, String newSessionId) {
             return new Turn(runId, mergeKey, epoch, state, newGeneration, newSessionId, false, null, null, null, error,
-                    createdAt, deadlineAt, closing, work, parked, appId, userId);
+                    createdAt, deadlineAt, closing, work, parked, appId, userId, yields);
         }
 
         Turn withBoundary(String eventId, Instant eventAt) {
             return new Turn(runId, mergeKey, epoch, state, generation, sessionId, true, eventId, eventAt, inputEventId, error,
-                    createdAt, deadlineAt, closing, work, parked, appId, userId);
+                    createdAt, deadlineAt, closing, work, parked, appId, userId, yields);
         }
 
         Turn withWork(JsonNode newWork) {
             return new Turn(runId, mergeKey, epoch, state, generation, sessionId, boundarySet, boundaryEventId, boundaryAt,
-                    inputEventId, error, createdAt, deadlineAt, closing, newWork, parked, appId, userId);
+                    inputEventId, error, createdAt, deadlineAt, closing, newWork, parked, appId, userId, yields);
         }
     }
 
@@ -134,6 +136,19 @@ public class Turns {
                 UPDATE turn SET input_event_id = :inputEventId, updated_at = :now
                  WHERE run_id = :runId AND epoch = :epoch AND state = 'open'
                 """, "inputEventId", inputEventId);
+    }
+
+    /**
+     * Has the turn give way: it lets go of the session and will start over, in the same session, when
+     * its run comes back. From here on a later turn of the line does not wait for it. Call it in the
+     * transaction that notes how far the session was read.
+     */
+    public void startOver(Turn turn) {
+        update(turn, """
+                UPDATE turn SET boundary_set = false, boundary_event_id = NULL, boundary_at = NULL, input_event_id = NULL,
+                       yields = yields + 1, updated_at = :now
+                 WHERE run_id = :runId AND epoch = :epoch AND state = 'open'
+                """);
     }
 
     /** Notes that the turn waits for people, its run about to be suspended in the Inbox. */
@@ -229,7 +244,7 @@ public class Turns {
 
     private static final String COLUMNS = """
              run_id, merge_key, epoch, state, generation, cma_session_id, boundary_set, boundary_event_id, boundary_at,
-             input_event_id, error, created_at, deadline_at, closing, work::text AS work, parked, app_id, user_id
+             input_event_id, error, created_at, deadline_at, closing, work::text AS work, parked, app_id, user_id, yields
             """;
 
     private static Turn row(ResultSet rs, int rowNumber) throws SQLException {
@@ -241,6 +256,6 @@ public class Turns {
                 rs.getString("boundary_event_id"), Db.instant(rs, "boundary_at"), rs.getString("input_event_id"),
                 rs.getString("error"), Db.instant(rs, "created_at"), Db.instant(rs, "deadline_at"), rs.getString("closing"),
                 work == null ? null : Json.STORED.readTree(work), rs.getBoolean("parked"), rs.getString("app_id"),
-                rs.getString("user_id"));
+                rs.getString("user_id"), rs.getInt("yields"));
     }
 }

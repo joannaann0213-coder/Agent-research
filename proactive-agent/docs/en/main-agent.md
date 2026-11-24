@@ -298,6 +298,8 @@ The requirement was checked against the design case by case. "New" marks what th
 | The user asks the main agent about something a worker waits for | Yes, new | The main agent was told when the worker began to wait, and is told what was decided; `list_tasks` shows what each worker waits for |
 | The user writes while a worker's report is on its way to the main agent | Yes, new | The main agent reads the report first and answers knowing it; no second turn follows for it |
 | The user confirms a proposal in the application, not in the conversation | Yes, new | The main agent is told with its next turn that the task has started |
+| The user writes while the main agent is busy with an event or a report | Yes, new | The turn in the background gives way, the user is answered, and the turn starts over without doing anything twice |
+| Many workers are at work for a user, and the user writes | Yes | Workers run in sessions and on a lane of their own; the main agent answers at once |
 | A user finds the main agent too forward, or not forward enough | Yes, new | The user's `proactivity`: set in their own client, or by telling the main agent |
 | An application wants its assistant restrained for everybody | Yes, new | `proactivity` of the main agent's `coordinator`; a user's own setting goes first |
 | The user wants to see a plan before confirming | No | The user confirms the main agent's summary; a worker does not plan first |
@@ -355,6 +357,7 @@ update, `task.created` or `task.updated`.
 | The application sends events of more and more subjects | At 20 open tasks, the application's own task that has rested longest is closed to make room; when there is none, the event is refused with a 409 |
 | What the application scheduled for a worker cannot be handed to it, because its agent has become a main agent or no task can make room | A `run.failed` update tells the application; the schedule counts as having been due |
 | The service stops between handing a schedule to the worker and telling the Inbox | The run is delivered again and hands nothing over twice: a firing is one note of the task |
+| The service stops while a turn gives way to the user | The run's lease runs out, the user's message is handed out first, and the turn starts over after it |
 
 `CoordinatorIT` and `TaskConfirmationIT` have a test for each row.
 
@@ -399,10 +402,37 @@ update, `task.created` or `task.updated`.
 | Workers of one user that run at the same time | 1 | The Inbox's `inbox.lanes.batch.cap`; `docker-compose.yml` sets 4 |
 | How long a turn of a worker may take | 20 minutes; a conversation's turn has 10 | `agent.tasks.turn-deadline`, below the Inbox's `inbox.lease.max-duration` |
 | How forward a main agent is with a user who has not said | `proactive` | `proactivity` of the agent's `coordinator`, else `agent.tasks.proactivity` |
+| How often a turn in the background gives way to the user, and for how long it stays out of the way | 2 times, 5 seconds | `agent.turn.max-yields` (0 turns it off), `agent.turn.yield-delay` |
 | Notifications in 24 hours for a user who wants it quiet | 5, not counting what came of work they asked for | `agent.notify.quiet-per-user-per-day` |
 
 Workers have a lane of their own so that a worker's long turn never holds up what wakes the main
 agent, and the main agent's turns never wait for a free slot behind workers.
+
+### Side by side, and one at a time
+
+The work is spread over many sessions; only the main agent's own line takes turns.
+
+| What | Where it runs | How much at once |
+| --- | --- | --- |
+| The main agent | One session per conversation, on the conversation's line | One turn at a time: a session has one context. Its turns are short, because what takes long is a worker's |
+| The worker of a task | A session of its own per task, on the task's line, in the Inbox's lane `batch` | As many of one user's workers at once as `inbox.lanes.batch.cap` allows; workers of different users do not wait for each other |
+| The service | Instances without state of their own, which claim runs from the Inbox | 8 turns per instance at once, and more with more instances |
+
+A user who writes must not wait behind a turn of the main agent in the background. Three things see
+to that.
+
+1. **The user goes first.** The Inbox hands out a user's message before anything of the background
+   that waits for the same line.
+2. **A turn in the background gives way.** When the user writes while such a turn holds the line,
+   the turn is put aside: its session is stopped, its run is suspended in the Inbox for a few
+   seconds, and the user is answered. Then the turn starts over in the same session. What it had
+   already done, a notification or a task, is on record under its run and is not done twice.
+3. **The user's turn brings the news.** It is given what the tasks have for the main agent, so a
+   turn that gave way for a worker's report has nothing left to do when it comes back, and ends
+   without the model.
+
+A turn gives way twice at most, and only to a message of the last two minutes, so that a user who
+keeps writing cannot keep the main agent from its work for good.
 
 ## Why this, and what would show it wrong
 
@@ -412,15 +442,15 @@ percentages are estimates of the author, made in November 2026 for the following
 | Judgement | Confidence | What it rests on | What would show it wrong |
 | --- | --- | --- | --- |
 | Workers belong on lines of the Inbox, not on threads of the main session | 80% | The platform's documentation of its multi-agent sessions, read in November 2026: threads share the session's resources, and a client cannot post into one | The platform gives threads resources of their own and lets clients post into them; or most tasks turn out to need a shared working directory |
-| One session for everything about a user is affordable | 70% | A turn of the main agent that only sorts and delegates is short; long work is the workers' | A user's message often waits behind a turn in the background; the input tokens of the main agent's turns grow with every event |
+| One session for everything about a user is affordable | 70% | A turn of the main agent that only sorts and delegates is short; long work is the workers'; a turn in the background gives way to the user | Turns in the background are put aside so often that they start over again and again; the input tokens of the main agent's turns grow with every event |
 | The platform's threads are the right tool inside a worker | 65% | They start without a new session and share files, which is what several steps of one task need | The official SDK does not carry them, or their cost per thread is close to a session's |
 | The main agent should hear of the application's work for a worker at once, not at the report | 75% | The user may ask about it at any moment, and only the main agent knows what the user said | Nearly all of the turns it costs end with nothing done, or the cost of them is what applications complain about |
 | `proactive` is the level to start with | 60% | An assistant has to show what it can do before a user can say how much of it they want, and tokens are not what limits a product at first | Turning it down is the first thing most users do, or applications set a lower default for everybody |
 | Confirmation belongs to the task, and standing authorisation to the role | 85% | A role is what the application bounds with tools and approvals, so it can be authorised without knowing the task | Users ask to authorise by kind of event or up to an amount instead, or want a plan to confirm and not a summary |
 
 The strongest argument against the decision is cost and delay. A main agent that hears everything
-runs a turn for everything, including what it then decides to ignore, and a user's message waits
-while such a turn runs, because a line runs one turn at a time. Anthropic
+runs a turn for everything, including what it then decides to ignore, and its line runs one turn at a
+time, so that a turn in the background has to be put aside and started over when the user writes. Anthropic
 [reports](https://www.anthropic.com/engineering/multi-agent-research-system) that its own multi-agent
 research system used about 15 times the tokens of a chat. The answer built here is
 structural, not complete: turns of the main agent are kept short by delegating, events that arrive
@@ -430,7 +460,7 @@ stands is the user's, or the application's, to turn down.
 What to measure once the service runs with a model:
 
 - How long a user's message waits behind a turn in the background on the same line, at the 95th
-  percentile.
+  percentile, and how often a turn gives way and starts over.
 - The input tokens of the main agent's turns per user and day, and how many of those turns end
   without a message or a task.
 - How many tasks end with a failure note, and how many are closed by the user.

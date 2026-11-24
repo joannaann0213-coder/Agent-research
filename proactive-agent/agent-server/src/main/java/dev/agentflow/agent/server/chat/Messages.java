@@ -139,7 +139,7 @@ public class Messages {
             insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, answered, null);
             question.ifPresent(asked -> actions.settle(asked, Actions.ANSWERED, text, null, Actions.BY_USER));
             actions.supersede(appId, userId, line, Actions.supersededNote(line));
-            announce(appId, userId, conversationId, messageId, now);
+            announce(appId, userId, conversationId, messageId, seq, now);
             return new MessageAccepted(messageId, conversationId, seq, now, false, answered);
         });
     }
@@ -156,14 +156,18 @@ public class Messages {
         }
         Instant now = clock.now();
         String line = Threads.chatKey(conversationId);
-        insert(appId, userId, users.nextSeq(appId, userId), conversationId, messageId, "user", "message", text, null, now, line,
-                actionId, null);
+        long seq = users.nextSeq(appId, userId);
+        insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, actionId, null);
         actions.supersede(appId, userId, line, Actions.supersededNote(line));
-        announce(appId, userId, conversationId, messageId, now);
+        announce(appId, userId, conversationId, messageId, seq, now);
     }
 
-    /** Queues the Inbox event that gets a user's message answered. */
-    private void announce(String appId, String userId, String conversationId, String messageId, Instant now) {
+    /**
+     * Queues the Inbox event that gets a user's message answered, and notes on the conversation's line
+     * that somebody waits: a turn in the background that holds the line gives way to it.
+     */
+    private void announce(String appId, String userId, String conversationId, String messageId, long seq, Instant now) {
+        threads.posted(appId, userId, Threads.chatKey(conversationId), seq);
         ObjectNode payload = InboxJson.mapper().createObjectNode();
         payload.put("conversation_id", conversationId).put("message_id", messageId);
         relay.enqueue(appId, userId, WriteEventRequest.builder(EventSource.CONVERSATION, EVENT_TYPE)

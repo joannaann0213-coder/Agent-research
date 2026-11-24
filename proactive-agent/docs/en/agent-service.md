@@ -96,6 +96,13 @@ the user wants it: `proactive`, `balanced` or `quiet`. The level is the user's o
 agent's default, else the service's, and is said to the main agent with every turn in the
 background. [Main agent and workers](main-agent.md#how-forward-the-main-agent-is) has the table.
 
+A conversation's line takes one turn at a time, and the user must not wait behind work in the
+background. When the user writes while a turn in the background holds the line, that turn gives way:
+its session is brought to rest, the turn lets go of the session and its run is suspended in the Inbox
+for `agent.turn.yield-delay`. The user's message, which the Inbox hands out first, gets its turn, and
+the run that comes back starts its turn over in the same session. Side effects are keyed by the run
+and the call's place in the turn, so nothing happens twice.
+
 A task that the main agent begins on its own initiative does not start by itself. It waits, as
 `proposed`, for the user's confirmation, unless the rule of its role (`start`) or the user's
 standing authorisation lets it start. A task that waits has no session and no event in the Inbox;
@@ -223,6 +230,7 @@ Every setting is under `agent.*` and can be set by environment variable.
 | `agent.tasks.max-proposed`, `proposal-ttl` | `5`, `3d` | Tasks per main agent's conversation that may wait for the user's confirmation, and for how long one waits |
 | `agent.tasks.proactivity` | `proactive` | How forward a main agent is with a user who has not said, where the agent's own configuration does not say either: `proactive`, `balanced` or `quiet` |
 | `agent.notify.quiet-per-user-per-day` | `5` | Notifications in 24 hours for a user who wants their main agent quiet, not counting what came of work they asked for |
+| `agent.turn.max-yields`, `yield-delay` | `2`, `5s` | How often a turn in the background gives way to a message of the user on its line, and for how long it stays out of the way; `0` turns it off |
 | `AGENT_CORS_ALLOWEDORIGINS` | none | Origins of web pages that may call the API from the browser, comma-separated |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`, `false` | Webhooks to private addresses and over plain http; only to try them on one machine |
 
@@ -276,6 +284,7 @@ else: live mode starts with new applications.
   also told the recent dialogue.
 - The rate limits and the stream's wake-ups are per instance.
 - Notifications are not sent to other channels (push, e-mail); applications do that from the updates.
-- A main agent takes one thing at a time: a user's message waits while it works on an event or a
-  report. Several agents under one task, and writing to a worker directly as the user, are not
-  built; see [Main agent and workers](main-agent.md#what-is-not-built).
+- A main agent takes one thing at a time. A turn in the background gives way to a message of the
+  user and starts over afterwards, so the user does not wait for it; a second message of the user
+  still waits for the reply to the first. Several agents under one task, and writing to a worker
+  directly as the user, are not built; see [Main agent and workers](main-agent.md#what-is-not-built).

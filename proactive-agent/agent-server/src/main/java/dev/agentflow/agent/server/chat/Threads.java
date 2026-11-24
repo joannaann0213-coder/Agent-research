@@ -191,6 +191,43 @@ public class Threads {
                 .update();
     }
 
+    /**
+     * Notes that a message of the user has come in that is to get a turn of its own. In the caller's
+     * transaction.
+     */
+    public void posted(String appId, String userId, String mergeKey, long seq) {
+        jdbc.sql("""
+                UPDATE thread SET posted_seq = GREATEST(posted_seq, :seq), posted_at = :now
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
+                """)
+                .param("seq", seq).param("now", Db.ts(clock.now())).param("appId", appId).param("userId", userId)
+                .param("mergeKey", mergeKey)
+                .update();
+    }
+
+    /** Notes that a turn of the conversation has taken the user's messages up to position {@code seq}. */
+    public void took(String appId, String userId, String mergeKey, long seq) {
+        jdbc.sql("""
+                UPDATE thread SET taken_seq = GREATEST(taken_seq, :seq)
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
+                """)
+                .param("seq", seq).param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
+                .update();
+    }
+
+    /**
+     * Whether the user wrote to the conversation since {@code since} and no turn has taken the
+     * message yet: somebody is waiting for an answer.
+     */
+    public boolean userWaits(String appId, String userId, String mergeKey, Instant since) {
+        return jdbc.sql("""
+                SELECT posted_seq > GREATEST(taken_seq, stopped_through) AND posted_at > :since FROM thread
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
+                """)
+                .param("since", Db.ts(since)).param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
+                .query(Boolean.class).optional().orElse(false);
+    }
+
     /** How far the conversation's messages are stopped, as it stands now. */
     public long stoppedThrough(String appId, String userId, String mergeKey) {
         return jdbc.sql("SELECT stopped_through FROM thread WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey")

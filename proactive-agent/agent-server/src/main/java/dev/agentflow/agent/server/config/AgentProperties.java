@@ -426,8 +426,47 @@ public class AgentProperties {
         /** How long a run waits before it tries again when an earlier turn of its line has to finish first. */
         private Duration lineBusyDelay = Duration.ofSeconds(2);
 
+        /**
+         * How often one turn in the background gives way to a message of the user on the same
+         * line, starting over afterwards. 0 turns it off: the user's message then waits for the turn.
+         */
+        private int maxYields = 2;
+
+        /**
+         * How long a turn that gave way stays out of the way before it starts over. Longer than the
+         * Inbox's quiet window, so that the user's message is claimed first.
+         */
+        private Duration yieldDelay = Duration.ofSeconds(5);
+
+        /** A turn gives way only to a message of the user that is this recent: an older one is not somebody waiting. */
+        private Duration yieldWindow = Duration.ofMinutes(2);
+
         public Duration getLineBusyDelay() {
             return lineBusyDelay;
+        }
+
+        public int getMaxYields() {
+            return maxYields;
+        }
+
+        public void setMaxYields(int maxYields) {
+            this.maxYields = maxYields;
+        }
+
+        public Duration getYieldDelay() {
+            return yieldDelay;
+        }
+
+        public void setYieldDelay(Duration yieldDelay) {
+            this.yieldDelay = yieldDelay;
+        }
+
+        public Duration getYieldWindow() {
+            return yieldWindow;
+        }
+
+        public void setYieldWindow(Duration yieldWindow) {
+            this.yieldWindow = yieldWindow;
         }
 
         public void setLineBusyDelay(Duration lineBusyDelay) {

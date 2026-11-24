@@ -240,6 +240,14 @@ public class TurnRunner {
 
         // A resumed run is handed only what woke it. What the turn works on is on record since its first delivery.
         Work work = turn.work() != null ? load(run, turn.work()) : fresh;
+        if (turn.yields() > 0 && work instanceof Work.Task task) {
+            // It gave way to a message of the user. What the user's turn was given of its news meanwhile is not due again.
+            work = leftOf(task);
+            if (work == null) {
+                turns.finish(turn, Turns.DONE, "absorbed", null);
+                return new Settlement.Done();
+            }
+        }
         if (work == null || run.mergeKey() == null
                 || threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).isEmpty()) {
             return fail(run, "the run holds nothing this service can work on");
@@ -256,6 +264,10 @@ public class TurnRunner {
             return new Settlement.Done();
         }
         if (turn.work() == null) {
+            if (work instanceof Work.Chat chat) {
+                // From here on the user's messages have their turn: nothing has to give way to them any more.
+                threads.took(run.tenantId(), run.inboxId(), run.mergeKey(), chat.messages().getLast().seq());
+            }
             turn = turns.work(turn, stored(work));
         }
         Optional<Settlement> earlierFirst = waitForTheLine(run, turn);
@@ -350,24 +362,31 @@ public class TurnRunner {
             }
             Instant deadline = turn.deadlineAt();
             Instant from = since(turn.boundaryAt());
+            // Whether the session has this turn's input, when the turn gives way: it then has to be stopped first.
+            boolean begun;
             try (EventTail tail = platform(() -> EventTail.open(cma, thread.sessionId(), from))) {
                 Reading reading = new Reading(turn.inputEventId());
                 after(tail.stored(), turn.boundaryEventId(), turn.boundaryAt()).forEach(event -> see(thread, reading, event));
-                if (!reading.inputSeen) {
+                begun = reading.inputSeen;
+                boolean givesWay = !begun && givesWay(turn, thread, work);
+                if (!begun && !givesWay) {
                     if (stopped(thread, work)) {
                         turns.finish(turn, Turns.DONE, work instanceof Work.Job ? "closed" : "stopped", null);
                         return new Settlement.Done();
                     }
-                    String inputId = sendInput(turn, thread, input(thread, work));
+                    String inputId = sendInput(turn, thread, input(thread, work, turn));
                     hooks.at(Point.INPUT_SENT, run);
                     turns.input(turn, inputId);
                     reading.inputId = inputId;
+                    begun = true;
                 }
-                hooks.at(Point.INPUT_RECORDED, run);
-                if (work instanceof Work.Job job) {
-                    tasks.working(job.task());
+                if (!givesWay) {
+                    hooks.at(Point.INPUT_RECORDED, run);
+                    if (work instanceof Work.Job job) {
+                        tasks.working(job.task());
+                    }
                 }
-                while (reading.end == null) {
+                while (!givesWay && reading.end == null) {
                     if (lease.lost()) {
                         throw new StaleTurnException(run.runId(), run.epoch());
                     }
@@ -378,19 +397,78 @@ public class TurnRunner {
                         reading.stopping = true;
                         stop(run, thread);
                     }
+                    if (!reading.stopping && givesWay(turn, thread, work)) {
+                        givesWay = true;
+                        break;
+                    }
                     if (!reading.stopping && answerWaitingCalls(run, turn, thread, work, reading)) {
                         return park(run, turn);
                     }
                     patience.next(tail, config.getPoll()).ifPresent(event -> see(thread, reading, event));
                 }
-                return finish(run, turn, thread, work, reading);
+                if (!givesWay) {
+                    return finish(run, turn, thread, work, reading);
+                }
             }
+            return giveWay(run, turn, thread, begun);
         } catch (CmaException e) {
             if (e.kind() == CmaException.Kind.NOT_FOUND) {
                 throw new SessionLost(thread, "the platform does not know it");
             }
             throw e;
         }
+    }
+
+    // ================================================================ giving way to the user
+
+    /**
+     * Whether a turn in the background has to give way: the user has written to the conversation whose
+     * line the turn holds, and waits. A line takes one turn at a time, so without this the user would
+     * wait until the turn is over. A turn gives way only so often, and only to a recent message, so
+     * that nothing can keep it from its work for good.
+     */
+    private boolean givesWay(Turn turn, Threads.Thread thread, Work work) {
+        return work instanceof Work.Task && thread.chat() && turn.yields() < config.getMaxYields()
+                && threads.userWaits(thread.appId(), thread.userId(), thread.mergeKey(), clock.now().minus(config.getYieldWindow()));
+    }
+
+    /**
+     * Puts the turn aside for the user's message. A session that has the turn's input is stopped. The
+     * turn lets go of the session, so that the user's turn does not wait for it, and its run is
+     * suspended in the Inbox for a moment: long enough for the user's message to be claimed first.
+     * When the run comes back the turn starts over in the same session. What it had already done is
+     * on record under the run and the call's place in the turn, so nothing is done twice.
+     */
+    private Settlement giveWay(ClaimedRun run, Turn turn, Threads.Thread thread, boolean begun) {
+        if (begun) {
+            bringToRest(thread);
+        }
+        turns.startOver(turn);
+        hooks.at(Point.YIELDED, run);
+        long seconds = Math.max(1, config.getYieldDelay().toSeconds());
+        ApiResult<RunOutcome> suspended = inbox.suspend(run.runId(), new SuspendRequest(run.epoch(),
+                Actions.resumeKey(run.runId()), seconds, SuspendRequest.RESUME, run.lastRunSeq()));
+        if (suspended.status() == 404 || suspended.status() == 409) {
+            throw new StaleTurnException(run.runId(), run.epoch());
+        }
+        if (!suspended.ok()) {
+            throw new IllegalStateException("the Inbox did not suspend run " + run.runId() + ": " + suspended.status() + " "
+                    + suspended.code());
+        }
+        log.info("run {} gives way to a message of the user on line {}", run.runId(), thread.mergeKey());
+        return new Settlement.Parked();
+    }
+
+    /**
+     * What a turn that gave way has left to do when it comes back: the news of tasks that the user's
+     * turn was given meanwhile is not due again.
+     *
+     * @return {@code null} when nothing is left
+     */
+    private static Work leftOf(Work.Task task) {
+        List<Tasks.Report> unread = task.reports().stream().filter(report -> report.note().readAt() == null).toList();
+        return task.events().isEmpty() && task.due().isEmpty() && unread.isEmpty() ? null
+                : new Work.Task(task.events(), task.due(), unread);
     }
 
     // ================================================================ the session
@@ -879,13 +957,18 @@ public class TurnRunner {
      * handed over as the result of a tool, never as a message, because the agent takes a message as
      * the word of whoever it works for, and the content of an event is not that.
      */
-    private String input(Threads.Thread thread, Work work) {
+    private String input(Threads.Thread thread, Work work, Turn turn) {
         return switch (work) {
             case Work.Chat chat -> said(thread, chat.messages(), chat.news());
-            case Work.Task task -> recalled(thread) + background(task, howForward(thread));
+            case Work.Task task -> recalled(thread) + (turn.yields() == 0 ? "" : AGAIN) + background(task, howForward(thread));
             case Work.Job job -> assigned(job);
         };
     }
+
+    /** What a turn in the background is told first when it starts over after it gave way to the user. */
+    private static final String AGAIN = "[From the service that runs you, not from the user: what follows was put aside "
+            + "because the user wrote, and is due again now. If you had already begun on it, what you did then is done: a "
+            + "call that you repeat is not made twice.]\n";
 
     /**
      * The notice that starts a worker's turn on a delegated task. What the main agent wants is read

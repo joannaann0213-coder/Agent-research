@@ -300,7 +300,7 @@ class ProactiveTurnIT extends AgentTestBase {
     // ================================================================ once, and not too often
 
     @ParameterizedTest
-    @EnumSource(value = Point.class, mode = EnumSource.Mode.EXCLUDE, names = {"HANDED_OVER", "PARKING"})
+    @EnumSource(value = Point.class, mode = EnumSource.Mode.EXCLUDE, names = {"HANDED_OVER", "YIELDED", "PARKING"})
     void theUserIsToldOnce_whereverAWorkerDies(Point point) {
         delayed("order-1234");
         deliver();
