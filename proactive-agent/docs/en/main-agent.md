@@ -61,9 +61,9 @@ Three changes carry it.
    `work:<task_id>`, where the worker's agent runs. What the worker writes last in a turn is its
    report, and the report wakes the main agent.
 3. **Nothing works for the user that the main agent does not know of.** In a conversation that a
-   main agent serves, an event that the application sends for another agent is not a line of its own
-   any more. It is a task of the main agent, and word of it reaches the main agent through the Inbox
-   at once, like everything else that it perceives.
+   main agent serves, an event that the application sends for another agent, or a schedule that it
+   sets for one, is not a line of its own any more. It is a task of the main agent, and word of it
+   reaches the main agent through the Inbox at once, like everything else that it perceives.
 
 Claude Managed Agents has multi-agent sessions of its own, in beta: a coordinator hands work to
 sub-agents that run as threads of its session. That is the obvious alternative, and it is not what
@@ -98,7 +98,7 @@ Two things would change the decision.
 | An event of the application for this agent | A notice in fixed words; the content through `read_events` | `background` |
 | A schedule of the application, or a follow-up the main agent set itself | A notice in fixed words, with the instructions or the note | `background` |
 | A worker reports, a worker's turn fails, or somebody else closes a task | A notice in fixed words; the content through `read_events` | `background` |
-| The application hands an event to one of its workers itself | A notice in fixed words; what was handed over through `read_events` | `background` |
+| The application hands work to one of its workers itself: an event, or what it scheduled | A notice in fixed words; what was handed over through `read_events` | `background` |
 
 All five are runs of one line, `conv:<conversation_id>`, so they come to one session, one at a time.
 What arrives close together is handed over together, which is what lets the main agent weigh one
@@ -155,8 +155,17 @@ what its worker waits for somebody to approve.
 
 Later events of a subject go to the same task while it is open, and so to the session that remembers
 the earlier ones; a subject keeps its worker. An agent that is not on the main agent's list works
-under it all the same, under its own name for want of a role. An event that names no agent, or the
-main agent, is the main agent's own and comes to its line as before.
+under it all the same, under its own name for want of a role. An event that names the main agent is
+the main agent's own and comes to its line as before; so is one that names no agent, where the main
+agent is the application's `default` agent.
+
+A schedule that names another agent goes the same way each time it is due. Its timer falls due on
+the main agent's line, like everything that concerns the user. There the service hands it to the
+worker, as part of the task of the schedule's `subject`, and tells the main agent; the main agent is
+not asked to do it. The worker gets the application's instructions as such, in the notice that
+starts its turn. Closing the task does not cancel the schedule, which stays the application's: its
+next run starts a new task. `list_tasks` also shows what the application has scheduled for the
+workers and is still to come.
 
 ## Who lets a task start
 
@@ -239,6 +248,7 @@ The requirement was checked against the design case by case. "New" marks what th
 | The product shows nothing but the conversation | Yes, new | The proposal is a message of the conversation, and the user's "go ahead" there starts the task |
 | The main agent asks the user something, and other things happen before the answer | Yes, new | The question is asked in passing: nothing but the user's word ends it, and the answer is the user's next message |
 | The application gives work straight to a worker | Yes, new | The event becomes a task of the main agent, which hears of it at once; the worker reports to the main agent |
+| The application has a worker do something every morning | Yes, new | Each run of the schedule is handed to the worker as a task of the main agent, which hears of it at once; `list_tasks` shows what is still to come |
 | The user asks the main agent about something a worker waits for | Yes, new | `list_tasks` shows what each worker waits for somebody to approve |
 | The user wants to see a plan before confirming | No | The user confirms the main agent's summary; a worker does not plan first |
 | The user authorises more narrowly than a role | No | An authorisation names a role; the application can make its roles finer |
@@ -250,7 +260,7 @@ The requirement was checked against the design case by case. "New" marks what th
 | `delegate_task` | Makes a task for one of its roles, and answers with the task's id and whether it has started or waits for the user | Not there |
 | `start_task` | Starts a task that waits, when the user has said in the conversation to go ahead | Not there |
 | `message_worker` | Sends the worker of an open task more: an answer, a correction, a next step | Not there |
-| `list_tasks` | The open tasks, its own and the application's: their state, who started each, what its worker waits for, and the latest word from each | Not there |
+| `list_tasks` | The open tasks, its own and the application's: their state, who started each, what its worker waits for, and the latest word from each. Also what the application has scheduled for the workers | Not there |
 | `close_task` | Ends a task. A turn of the worker that is under way stops, and what it waits for is withdrawn | Not there |
 | `read_events` | Events, due follow-ups and what workers have for it | What the main agent sent, and its own due follow-ups |
 | `notify_user`, `ask_user` | `notify_user` as for every agent; `ask_user` asks without waiting, see [Asking the user](#asking-the-user) | Refused: a worker reports to the main agent, which decides what the user hears |
@@ -274,7 +284,7 @@ woken and told. When the service does, nothing wakes it: it is told the next tim
 wakes it in the background.
 
 The tables are `delegated_task` and `task_note`. A task names the main agent's line, the role, the
-worker's agent and the call that made it; a note has a direction, a kind (`assignment`, `message`, `event`, `assigned`,
+worker's agent and the call that made it; a note has a direction, a kind (`assignment`, `message`, `event`, `schedule`, `assigned`,
 `report`, `failure` or `closed`) and its text. Every change of a task's state is recorded as an
 update, `task.created` or `task.updated`.
 
@@ -292,6 +302,8 @@ update, `task.created` or `task.updated`.
 | The main agent proposes more and more | `delegate_task` is refused while 5 tasks wait for a confirmation |
 | A main agent that may start work unasked starts more and more | After 10 such tasks in 24 hours for one user, the next ones wait for the user's confirmation, authorisation or not |
 | The application sends events of more and more subjects | At 20 open tasks, the application's own task that has rested longest is closed to make room; when there is none, the event is refused with a 409 |
+| What the application scheduled for a worker cannot be handed to it, because its agent has become a main agent or no task can make room | A `run.failed` update tells the application; the schedule counts as having been due |
+| The service stops between handing a schedule to the worker and telling the Inbox | The run is delivered again and hands nothing over twice: a firing is one note of the task |
 
 `CoordinatorIT` and `TaskConfirmationIT` have a test for each row.
 
@@ -384,8 +396,8 @@ What to measure once the service runs with a model:
 - Authorisations narrower than a role, for example by kind of event or up to an amount.
 - A tool of the main agent's own that needs an approval still holds its turn, and whatever comes in
   next ends that wait. Work that needs approvals belongs with a worker.
-- A schedule that the application sets for another agent, in a conversation that a main agent
-  serves, still runs on a line of its own.
+- What was set up before a main agent served the conversation stays where it was: a schedule keeps
+  running on its subject's line. Cancel it and set it up again to bring it under the main agent.
 - A main agent hears of the tasks of its conversation. What happens in another conversation of the
   same user, it does not.
 - Nothing here ran against a model or the platform: the tests use the scripted stand-in.

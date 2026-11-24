@@ -156,15 +156,13 @@ public class AppEvents {
                     .param("fingerprint", fingerprint).param("deliverAt", Db.ts(deliverAt)).param("now", Db.ts(now))
                     .update();
 
-            if (route instanceof Lines.Hub) {
-                Optional<Tasks.Task> task = tasks.assign(line, agentKey, eventId, type, subject, data, deliverAt, keeps);
-                if (task.isPresent()) {
-                    // Something new happened to the subject: what its worker waits for people to decide no longer applies.
-                    if (deliverAt == null) {
-                        actions.supersede(appId, userId, task.get().line(), Actions.supersededNote(task.get().line()));
-                    }
-                    return new EventAccepted(eventId, type, subject, conversationId, now, deliverAt, false, task.get().taskId());
+            if (route instanceof Lines.Hub hub && hub.worker() != null) {
+                Tasks.Task task = tasks.assign(line, hub.worker(), eventId, type, subject, data, deliverAt);
+                // Something new happened to the subject: what its worker waits for people to decide no longer applies.
+                if (deliverAt == null) {
+                    actions.supersede(appId, userId, task.line(), Actions.supersededNote(task.line()));
                 }
+                return new EventAccepted(eventId, type, subject, conversationId, now, deliverAt, false, task.taskId());
             }
 
             // Something new happened to the subject: whatever its line waits for people to decide no longer applies.

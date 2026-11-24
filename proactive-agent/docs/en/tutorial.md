@@ -468,7 +468,8 @@ curl -s -X PUT $API/v1/users/u-1001/grants/default/research -H "Authorization: B
 Work that you know whom to give, you hand to the worker yourself: name the agent in the event. The
 event becomes a task of the main agent, and its receipt has the task's `task_id`. Nobody is asked to
 confirm it, because your application ordered the work. The main agent is told at once, so it can
-answer when the user asks about it, and the worker reports to it like any other worker.
+answer when the user asks about it, and the worker reports to it like any other worker. A schedule
+that names the agent goes the same way each time it is due.
 
 ```bash
 curl -s -X POST $API/v1/users/u-1001/events -H "Authorization: Bearer $KEY" \

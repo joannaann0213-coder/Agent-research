@@ -42,6 +42,10 @@ import tools.jackson.databind.node.ObjectNode;
  * rule in the user's time zone, or a follow-up the agent set itself. The Event Inbox keeps the time
  * as a timer; when it is due, the timer puts an event on the schedule's line, and the agent works on
  * it in the background. What to do stays here.
+ *
+ * <p>In a conversation that a main agent serves, the line is the main agent's, also for what the
+ * application schedules for another agent: when that is due, the main agent's line hands it to the
+ * other agent as a task, so that the main agent knows of it.
  */
 @Service
 public class Schedules {
@@ -62,19 +66,30 @@ public class Schedules {
     public static final int MAX_INSTRUCTIONS = 4000;
     public static final Duration MAX_AHEAD = Duration.ofDays(366);
 
+    /**
+     * @param agentKey the agent that does it. On a main agent's line that is the main agent itself, or
+     *     another agent, to which the main agent's line hands it as a task each time it is due
+     * @param subject for a schedule that a main agent's line hands to another agent: the subject its
+     *     task is kept under; {@code null} for every other schedule
+     */
     public record Schedule(String appId, String userId, String scheduleId, String createdBy, String kind, String name,
             String instructions, String note, int chain, String mergeKey, String agentKey, String conversationId,
             Instant fireAt, String cron, String timeZone, String fingerprint, String timerId, String state,
-            Instant lastFiredAt, Instant createdAt) {
+            Instant lastFiredAt, Instant createdAt, String subject) {
 
         public boolean followup() {
             return BY_AGENT.equals(createdBy);
         }
 
+        /** Whether it is the application's, for a worker of the main agent on whose line it falls due. */
+        public boolean forWorker() {
+            return subject != null;
+        }
+
         public ScheduleView view() {
-            String subject = mergeKey.startsWith(Threads.TASK_PREFIX) ? mergeKey.substring(Threads.TASK_PREFIX.length()) : null;
-            return new ScheduleView(scheduleId, createdBy, kind, name, instructions, note, fireAt, cron, timeZone, subject,
-                    agentKey, conversationId, state, lastFiredAt, createdAt);
+            String ofLine = mergeKey.startsWith(Threads.TASK_PREFIX) ? mergeKey.substring(Threads.TASK_PREFIX.length()) : null;
+            return new ScheduleView(scheduleId, createdBy, kind, name, instructions, note, fireAt, cron, timeZone,
+                    subject != null ? subject : ofLine, agentKey, conversationId, state, lastFiredAt, createdAt);
         }
     }
 
@@ -167,12 +182,20 @@ public class Schedules {
                 }
                 return existing;
             }
-            // The subject's own line, or, for a main agent, the line of the conversation it serves.
-            Threads.Thread line = lines.background(appId, userId, subject, agentKey, conversationId,
+            // The subject's own line; or, where a main agent serves the conversation, the main agent's line. There
+            // it falls due like everything that concerns the user, also when it is for another agent: the line then
+            // hands it to that agent, as a task of the main agent.
+            Lines.Route route = lines.route(appId, userId, subject, agentKey, conversationId,
                     "; a subject keeps the agent it started with");
+            Threads.Thread line = switch (route) {
+                case Lines.Direct direct -> direct.line();
+                case Lines.Hub hub -> hub.line();
+            };
+            String worker = route instanceof Lines.Hub hub ? hub.worker() : null;
             insert(appId, userId, scheduleId, BY_APP, once ? CreateTimerRequest.ONCE : CreateTimerRequest.CRON, name,
-                    instructions, null, 0, line.mergeKey(), line.agentKey(), conversationId, once ? request.at() : null,
-                    once ? null : request.cron().trim(), zoneId, fingerprint);
+                    instructions, null, 0, line.mergeKey(), worker == null ? line.agentKey() : worker, conversationId,
+                    once ? request.at() : null, once ? null : request.cron().trim(), zoneId, fingerprint,
+                    worker == null ? null : subject);
             return Optional.empty();
         });
         if (earlier.isPresent()) {
@@ -221,6 +244,20 @@ public class Schedules {
     }
 
     /**
+     * What the application has scheduled for workers of the main agent of a line, and that is still
+     * to come: oldest first.
+     */
+    public List<Schedule> forWorkers(String appId, String userId, String hubKey) {
+        return jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :hubKey AND state = 'active' AND subject IS NOT NULL
+                 ORDER BY created_at, schedule_id LIMIT 50
+                """)
+                .param("appId", appId).param("userId", userId).param("hubKey", hubKey)
+                .query(Schedules::row)
+                .list();
+    }
+
+    /**
      * Cancels every schedule that waits on a line: the follow-ups an agent set itself there. Used
      * when the line is over, as when a delegated task is closed.
      */
@@ -261,7 +298,7 @@ public class Schedules {
         }
         insert(appId, userId, followup.scheduleId(), BY_AGENT, CreateTimerRequest.ONCE, null, null, followup.note(),
                 followup.chain(), followup.mergeKey(), followup.agentKey(), followup.conversationId(), followup.fireAt(), null,
-                null, followup.scheduleId());
+                null, followup.scheduleId(), null);
         return true;
     }
 
@@ -327,18 +364,20 @@ public class Schedules {
 
     private void insert(String appId, String userId, String scheduleId, String createdBy, String kind, String name,
             String instructions, String note, int chain, String mergeKey, String agentKey, String conversationId,
-            Instant fireAt, String cron, String timeZone, String fingerprint) {
+            Instant fireAt, String cron, String timeZone, String fingerprint, String subject) {
         jdbc.sql("""
                 INSERT INTO schedule (app_id, user_id, schedule_id, created_by, kind, name, instructions, note, chain, merge_key,
-                                      agent_key, conversation_id, fire_at, cron, time_zone, fingerprint, state, created_at)
+                                      agent_key, conversation_id, fire_at, cron, time_zone, fingerprint, state, created_at,
+                                      subject)
                 VALUES (:appId, :userId, :scheduleId, :createdBy, :kind, :name, :instructions, :note, :chain, :mergeKey,
-                        :agentKey, :conversationId, :fireAt, :cron, :timeZone, :fingerprint, 'active', :now)
+                        :agentKey, :conversationId, :fireAt, :cron, :timeZone, :fingerprint, 'active', :now, :subject)
                 """)
                 .param("appId", appId).param("userId", userId).param("scheduleId", scheduleId).param("createdBy", createdBy)
                 .param("kind", kind).param("name", name).param("instructions", instructions).param("note", note)
                 .param("chain", chain).param("mergeKey", mergeKey).param("agentKey", agentKey)
                 .param("conversationId", conversationId).param("fireAt", Db.ts(fireAt)).param("cron", cron)
                 .param("timeZone", timeZone).param("fingerprint", fingerprint).param("now", Db.ts(clock.now()))
+                .param("subject", subject)
                 .update();
     }
 
@@ -362,7 +401,7 @@ public class Schedules {
 
     private static final String SELECT = """
             SELECT app_id, user_id, schedule_id, created_by, kind, name, instructions, note, chain, merge_key, agent_key,
-                   conversation_id, fire_at, cron, time_zone, fingerprint, timer_id, state, last_fired_at, created_at
+                   conversation_id, fire_at, cron, time_zone, fingerprint, timer_id, state, last_fired_at, created_at, subject
               FROM schedule
             """;
 
@@ -372,6 +411,6 @@ public class Schedules {
                 rs.getString("note"), rs.getInt("chain"), rs.getString("merge_key"), rs.getString("agent_key"),
                 rs.getString("conversation_id"), Db.instant(rs, "fire_at"), rs.getString("cron"), rs.getString("time_zone"),
                 rs.getString("fingerprint"), rs.getString("timer_id"), rs.getString("state"), Db.instant(rs, "last_fired_at"),
-                Db.instant(rs, "created_at"));
+                Db.instant(rs, "created_at"), rs.getString("subject"));
     }
 }

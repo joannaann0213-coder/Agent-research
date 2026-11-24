@@ -175,8 +175,10 @@ public final class PlatformTools {
                         the ones that the application handed to a worker itself. Each comes with its state \
                         (`proposed` while it waits for the user's confirmation), who started it, what its \
                         worker waits for somebody to approve, and the beginning of the worker's latest \
-                        report. Use it when you are not sure what is under way, for example in a new \
-                        session, or before you tell the user how things stand.""",
+                        report. It also returns what the application has scheduled for your workers and \
+                        is still to come. Use it when you are not sure what is under way, for example in \
+                        a new session, or before you tell the user how things stand or promise them \
+                        something that recurs.""",
                         Json.STORED.readTree("""
                                 {
                                   "type": "object",

@@ -665,6 +665,12 @@ paths:
         After an outage, a repeating schedule runs once for what it missed, and the agent is told that
         it comes late.
 
+        In a conversation that a main agent serves, a schedule that names another agent is that
+        agent's to do, as a worker: each time it is due it becomes part of a task of the main agent,
+        kept under the schedule's `subject`. The worker gets the application's `instructions`, the
+        main agent is told at once, and the worker reports to the main agent, which is the one that
+        tells the user.
+
         The call is idempotent on `schedule_id`: the same id with the same content returns the
         schedule with 200; with other content it is a 409.
 
@@ -2352,8 +2358,9 @@ components:
         subject:
           type: string
           description: |
-            The subject it runs on. Absent for what runs on another line: a follow-up in a
-            conversation, a schedule of a main agent, a follow-up of a worker.
+            The subject it runs on, or, for what a main agent's conversation hands to another agent,
+            the subject its task is kept under. Absent for what runs on another line: a follow-up in
+            a conversation, a schedule of a main agent itself, a follow-up of a worker.
         agent:
           type: string
         conversation_id:
@@ -2394,11 +2401,12 @@ components:
             outside.
         kind:
           type: string
-          enum: [assignment, message, event, assigned, report, failure, closed]
+          enum: [assignment, message, event, schedule, assigned, report, failure, closed]
           description: |
             `assignment` starts a task of the main agent and `message` is a later word of it; `event`
-            is an event that the application handed to the worker, as JSON, and `assigned` what tells
-            the main agent of it; `report` is what the worker says at the end of a turn.
+            is an event that the application handed to the worker and `schedule` something that the
+            application scheduled for the worker and that is due, both as JSON, and `assigned` what
+            tells the main agent of either; `report` is what the worker says at the end of a turn.
         text:
           type: string
         created_at:
@@ -2479,11 +2487,11 @@ components:
           type: string
           enum: [agent, app]
           description: |
-            `agent` when the main agent delegated the task, `app` when the application handed an
-            event to the worker itself.
+            `agent` when the main agent delegated the task, `app` when the application handed work
+            to the worker itself: an event, or something it scheduled.
         subject:
           type: string
-          description: For a task of the application, the subject of its events.
+          description: For a task of the application, the subject of its events and schedules.
 
     TaskPage:
       type: object

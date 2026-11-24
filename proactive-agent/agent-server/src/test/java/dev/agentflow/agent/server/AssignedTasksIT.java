@@ -4,6 +4,7 @@ import static dev.agentflow.agent.cma.fake.ModelStep.custom;
 import static dev.agentflow.agent.cma.fake.ModelStep.mcp;
 import static dev.agentflow.agent.cma.fake.ModelStep.say;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.groups.Tuple.tuple;
 
 import dev.agentflow.agent.api.ActionPage;
@@ -11,6 +12,7 @@ import dev.agentflow.agent.api.AgentJson;
 import dev.agentflow.agent.api.AgentProfileRequest;
 import dev.agentflow.agent.api.AgentProfileView;
 import dev.agentflow.agent.api.CoordinatorConfig;
+import dev.agentflow.agent.api.CreateScheduleRequest;
 import dev.agentflow.agent.api.EventAccepted;
 import dev.agentflow.agent.api.McpServerConfig;
 import dev.agentflow.agent.api.MessageAccepted;
@@ -18,6 +20,8 @@ import dev.agentflow.agent.api.MessageView;
 import dev.agentflow.agent.api.PostEventRequest;
 import dev.agentflow.agent.api.PostMessageRequest;
 import dev.agentflow.agent.api.ProblemCodes;
+import dev.agentflow.agent.api.SchedulePage;
+import dev.agentflow.agent.api.ScheduleView;
 import dev.agentflow.agent.api.TaskNoteView;
 import dev.agentflow.agent.api.TaskPage;
 import dev.agentflow.agent.api.TaskView;
@@ -27,12 +31,15 @@ import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.cma.fake.ModelContext;
 import dev.agentflow.agent.cma.fake.ModelStep;
 import dev.agentflow.agent.cma.fake.ToolOutcome;
+import dev.agentflow.agent.server.bridge.TurnHooks.Point;
 import dev.agentflow.agent.server.support.AgentTestBase;
 import dev.agentflow.agent.server.support.EmbeddedInbox;
+import dev.agentflow.agent.server.support.SimulatedCrash;
 import dev.agentflow.agent.server.support.TestApi;
 import dev.agentflow.agent.server.tools.DemoAgent;
 import dev.agentflow.inbox.server.timer.TimerScheduler;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,13 +52,16 @@ import tools.jackson.databind.node.ObjectNode;
  * event for another agent does not get a session of its own that the main agent knows nothing of:
  * it becomes a task of the main agent. The worker starts at once, the main agent is told at once,
  * through its own line, and the worker reports to the main agent, which is still the only one that
- * talks to the user.
+ * talks to the user. What the application schedules for another agent goes the same way each time
+ * it is due.
  */
 class AssignedTasksIT extends AgentTestBase {
 
     private static final String USER = "u42";
     private static final String EVENTS = "/v1/users/u42/events";
     private static final String TASKS = "/v1/users/u42/tasks";
+    private static final String SCHEDULES = "/v1/users/u42/schedules";
+    private static final String BRIEF = "Look at the user's open orders and say what needs them today.";
 
     private TestApi acme;
     /** What read_events gave the main agent in the background, call by call. */
@@ -138,6 +148,9 @@ class AssignedTasksIT extends AgentTestBase {
             if (last.path("event").path("data").path("refund").asBoolean(false)) {
                 return ModelStep.of(mcp("payments", "refund", "{\"order\": \"1234\"}"));
             }
+            if (last.has("schedule")) {
+                return say("Ran " + last.path("schedule").path("name").asString() + ".");
+            }
             return say(last.has("event") ? "Handled " + last.path("event").path("type").asString() + " of "
                     + last.path("event").path("data").path("order").asString("?") + "." : "Did: " + last.path("text").asString());
         }
@@ -176,7 +189,7 @@ class AssignedTasksIT extends AgentTestBase {
                 + "order.delayed, on the subject order-1234.").contains("{\"order\":\"1234\",\"days\":3}");
         String mainNotice = cma.userMessages(sessionOf("conv:default")).getFirst();
         assertThat(mainNotice).contains("The user is not here",
-                "The application has handed one of your workers an event itself. Call read_events to get it");
+                "The application has handed one of your workers work itself. Call read_events to get it");
 
         // The worker read the event as information from another system, and reported to the main agent.
         JsonNode handed = workerRead.getFirst();
@@ -377,6 +390,237 @@ class AssignedTasksIT extends AgentTestBase {
         assertThat(acme.get(TASKS + "/" + first).as(TaskView.class)).extracting(TaskView::status, TaskView::closedBy, TaskView::closedReason)
                 .containsExactly("closed", "service", "it made room for a newer task of the application");
         assertThat(tasks()).hasSize(20).extracting(TaskView::taskId).contains(next).doesNotContain(first);
+    }
+
+    // ================================================================ what the application schedules for a worker
+
+    @Test
+    void whatTheApplicationSchedulesForAnotherAgentIsHandedToItWhenItIsDue_andTheMainAgentIsToldAtOnce() {
+        ScheduleView created = acme.post(SCHEDULES, new CreateScheduleRequest("brief", "Morning brief", BRIEF,
+                clock.now().plus(Duration.ofHours(1)), null, null, null, "research", null)).as(ScheduleView.class);
+
+        assertThat(created).extracting(ScheduleView::agent, ScheduleView::subject, ScheduleView::conversationId)
+                .containsExactly("research", "schedule-brief", "default");
+        assertThat(jdbc.sql("SELECT merge_key FROM schedule").query(String.class).single())
+                .as("it falls due on the main agent's line, like everything that concerns the user").isEqualTo("conv:default");
+        assertThat(count("SELECT count(*) FROM thread WHERE kind = 'task'")).as("no line that the main agent knows nothing of").isZero();
+        assertThat(untilQuiet()).as("nothing runs before its time").isZero();
+        assertThat(tasks()).isEmpty();
+
+        clock.advance(Duration.ofHours(1));
+        assertThat(EmbeddedInbox.bean(TimerScheduler.class).runOnce()).isEqualTo(1);
+        untilQuiet();
+
+        TaskView task = tasks().getFirst();
+        assertThat(task).extracting(TaskView::createdBy, TaskView::subject, TaskView::role, TaskView::agent, TaskView::title,
+                        TaskView::status, TaskView::authorizedBy, TaskView::conversationId)
+                .containsExactly("app", "schedule-brief", "researcher", "research", "Morning brief", "idle", "app", "default");
+
+        // The worker got the application's instructions as such, in the notice of its turn.
+        assertThat(cma.userMessages(sessionOf("work:" + task.taskId())).getFirst()).contains("The user is not here",
+                "It is time for \"Morning brief\", which the application scheduled. It is yours to do, as a task of the user's "
+                        + "main agent. The application's instructions for it: " + BRIEF,
+                "What you write at the end of this turn is your report to the main agent");
+        assertThat(workerRead.getFirst().path("messages").path(0).path("from").asString()).isEqualTo("the application");
+        assertThat(workerRead.getFirst().path("messages").path(0).path("kind").asString()).isEqualTo("schedule");
+        assertThat(workerRead.getFirst().path("messages").path(0).path("schedule").path("instructions").asString()).isEqualTo(BRIEF);
+
+        // The main agent heard of it through its own line, before the worker reported, and was not asked to do it.
+        JsonNode told = mainRead.getFirst().path("reports").path(0);
+        assertThat(told.path("from").asString()).isEqualTo("the application");
+        assertThat(told.path("kind").asString()).isEqualTo("assigned");
+        assertThat(told.path("task_id").asString()).isEqualTo(task.taskId());
+        assertThat(told.path("text").asString()).startsWith("It is time for \"Morning brief\", which the application scheduled "
+                + "for your worker researcher. The worker has the application's instructions for it and reports to you")
+                .contains("that does not cancel the schedule").endsWith("The application's instructions for it: " + BRIEF);
+        List<String> mainNotices = cma.userMessages(sessionOf("conv:default"));
+        assertThat(mainNotices.getFirst())
+                .contains("The application has handed one of your workers work itself. Call read_events to get it")
+                .as("the schedule is the worker's to do, not the main agent's").doesNotContain("It is time for");
+
+        assertThat(messagesOf(acme, USER)).extracting(MessageView::kind, MessageView::text)
+                .containsExactly(tuple("notification", "About Morning brief: Ran Morning brief."));
+        assertThat(jdbc.sql("SELECT split_part(merge_key, ':', 1) || ' ' || outcome FROM turn ORDER BY created_at, run_id")
+                .query(String.class).list())
+                .as("the main agent's line hands it over without a turn; then the main agent takes note, the worker works, "
+                        + "and the main agent tells the user")
+                .containsExactlyInAnyOrder("conv silent", "work reported", "conv notified");
+        assertThat(acme.get(TASKS + "/" + task.taskId()).as(TaskView.class).notes())
+                .extracting(TaskNoteView::from, TaskNoteView::kind)
+                .containsExactly(tuple("app", "schedule"), tuple("app", "assigned"), tuple("worker", "report"));
+        assertThat(jdbc.sql("SELECT state FROM schedule").query(String.class).single()).as("it ran once, and has run").isEqualTo("done");
+        assertThat(updates("run.failed")).isEmpty();
+    }
+
+    @Test
+    void aRepeatingScheduleGoesToTheSameTaskEachTime_andTheMainAgentCanSeeWhatIsStillToCome() {
+        acme.post(SCHEDULES, new CreateScheduleRequest("brief", "Morning brief", BRIEF, null, "0 8 * * *", "Asia/Shanghai",
+                "orders", "research", null)).as(ScheduleView.class);
+
+        // 10:00 UTC is 18:00 in Shanghai. 8:00 in Shanghai is 0:00 UTC.
+        clock.advance(Duration.ofHours(14));
+        assertThat(EmbeddedInbox.bean(TimerScheduler.class).runOnce()).isEqualTo(1);
+        untilQuiet();
+        clock.advance(Duration.ofDays(1));
+        EmbeddedInbox.bean(TimerScheduler.class).runOnce();
+        untilQuiet();
+
+        assertThat(tasks()).as("one task for the subject").hasSize(1);
+        String taskId = tasks().getFirst().taskId();
+        assertThat(cma.sessionIds().stream().filter(id -> cma.sessionSpec(id).metadata().get("line").equals("work:" + taskId)))
+                .as("one session of the worker, which remembers the earlier runs").hasSize(1);
+        assertThat(cma.userMessages(sessionOf("work:" + taskId))).hasSize(2);
+        assertThat(repliesTo(acme, USER)).containsExactly("About Morning brief: Ran Morning brief.", "About Morning brief: Ran Morning brief.");
+        assertThat(acme.get(SCHEDULES).as(SchedulePage.class).schedules()).singleElement()
+                .extracting(ScheduleView::state, ScheduleView::subject, ScheduleView::agent)
+                .containsExactly("active", "orders", "research");
+
+        // An event of the same subject goes to the same worker, also when it names no agent.
+        EventAccepted event = event("order.delayed", "orders", null, "{\"order\": \"1234\"}");
+        untilQuiet();
+        assertThat(event.taskId()).isEqualTo(taskId);
+
+        userSays(acme, USER, "list");
+        untilQuiet();
+        JsonNode listed = AgentJson.mapper().readTree(answers.getLast().substring("list_tasks: ".length()));
+        assertThat(listed.path("tasks").path(0).path("started_by").asString()).isEqualTo("the application");
+        JsonNode standing = listed.path("scheduled_by_the_application").path(0);
+        assertThat(standing.path("name").asString()).isEqualTo("Morning brief");
+        assertThat(standing.path("role").asString()).isEqualTo("researcher");
+        assertThat(standing.path("subject").asString()).isEqualTo("orders");
+        assertThat(standing.path("cron").asString()).isEqualTo("0 8 * * *");
+        assertThat(standing.path("time_zone").asString()).isEqualTo("Asia/Shanghai");
+        assertThat(standing.has("last_due_at")).isTrue();
+        assertThat(standing.path("instructions").asString()).isEqualTo(BRIEF);
+    }
+
+    @Test
+    void whenTheTaskWasClosed_theNextRunStartsANewOne_becauseTheScheduleIsTheApplications() {
+        acme.post(SCHEDULES, new CreateScheduleRequest("brief", "Morning brief", BRIEF, null, "0 8 * * *", "Asia/Shanghai",
+                null, "research", null)).as(ScheduleView.class);
+        clock.advance(Duration.ofHours(14));
+        EmbeddedInbox.bean(TimerScheduler.class).runOnce();
+        untilQuiet();
+        String first = tasks().getFirst().taskId();
+
+        userSays(acme, USER, "stop " + first);
+        untilQuiet();
+        assertThat(acme.get(SCHEDULES).as(SchedulePage.class).schedules()).as("closing the task does not cancel the schedule").hasSize(1);
+        clock.advance(Duration.ofDays(1));
+        EmbeddedInbox.bean(TimerScheduler.class).runOnce();
+        untilQuiet();
+
+        assertThat(tasks()).singleElement().extracting(TaskView::taskId).isNotEqualTo(first);
+        assertThat(repliesTo(acme, USER)).filteredOn(text -> text.startsWith("About Morning brief")).hasSize(2);
+    }
+
+    @Test
+    void whatIsScheduledForTheMainAgentItselfStaysItsOwn() {
+        ScheduleView created = acme.post(SCHEDULES, new CreateScheduleRequest("look", "Morning look", "See whether anything needs the user.",
+                clock.now().plus(Duration.ofHours(1)), null, null, null, "default", null)).as(ScheduleView.class);
+        assertThat(created.subject()).isNull();
+
+        clock.advance(Duration.ofHours(1));
+        EmbeddedInbox.bean(TimerScheduler.class).runOnce();
+        untilQuiet();
+
+        assertThat(tasks()).isEmpty();
+        assertThat(cma.userMessages(sessionOf("conv:default")).getFirst()).contains("It is time for \"Morning look\"");
+    }
+
+    @Test
+    void aSubjectKeepsItsWorker_acrossEventsAndSchedules() {
+        acme.put("/v1/agents/billing", new AgentProfileRequest("Billing", null, null, "You bill.", null, null)).as(AgentProfileView.class);
+        acme.post(SCHEDULES, new CreateScheduleRequest("brief", "Morning brief", BRIEF, clock.now().plus(Duration.ofHours(1)), null,
+                null, "orders", "research", null)).as(ScheduleView.class);
+
+        TestApi.Reply otherAgent = acme.post(EVENTS, new PostEventRequest(null, "order.delayed", "orders", "billing", null, null, null));
+        assertThat(otherAgent.status()).isEqualTo(409);
+        assertThat(otherAgent.body().path("detail").asString())
+                .isEqualTo("subject orders is handled by agent research; a subject keeps the agent of its first event");
+
+        String taskId = event("order.delayed", "invoice-7", "billing", "{\"order\": \"7\"}").taskId();
+        untilQuiet();
+        TestApi.Reply otherSchedule = acme.post(SCHEDULES, new CreateScheduleRequest("dunning", "Dunning", "Remind.",
+                clock.now().plus(Duration.ofHours(1)), null, null, "invoice-7", "research", null));
+        assertThat(otherSchedule.status()).isEqualTo(409);
+        assertThat(otherSchedule.body().path("detail").asString())
+                .isEqualTo("subject invoice-7 is handled by agent billing; a subject keeps the agent it started with");
+        assertThat(taskId).isNotNull();
+        assertThat(count("SELECT count(*) FROM schedule")).as("nothing refused is kept").isEqualTo(1);
+    }
+
+    @Test
+    void aScheduleForAnAgentThatIsNotThereIsRefused_andSoIsOneForAnotherMainAgent() {
+        acme.put("/v1/agents/concierge", new AgentProfileRequest("Concierge", null, null, "You serve.", null, null, null, null,
+                new CoordinatorConfig(List.of(), null))).as(AgentProfileView.class);
+        Instant later = clock.now().plus(Duration.ofHours(1));
+
+        TestApi.Reply nobody = acme.post(SCHEDULES, new CreateScheduleRequest(null, "x", BRIEF, later, null, null, null, "nobody", null));
+        TestApi.Reply main = acme.post(SCHEDULES, new CreateScheduleRequest(null, "x", BRIEF, later, null, null, null, "concierge", null));
+
+        assertThat(nobody.status()).isEqualTo(400);
+        assertThat(main.status()).isEqualTo(409);
+        assertThat(main.body().path("detail").asString()).isEqualTo("conversation default is served by agent default; what is "
+                + "for the main agent concierge goes to a conversation that it serves");
+        assertThat(count("SELECT count(*) FROM schedule")).isZero();
+    }
+
+    @Test
+    void aScheduleThatWasCancelledAfterItFellDueIsNotHandedOver() {
+        acme.post(SCHEDULES, new CreateScheduleRequest("brief", "Morning brief", BRIEF, clock.now().plus(Duration.ofHours(1)), null,
+                null, null, "research", null)).as(ScheduleView.class);
+        clock.advance(Duration.ofHours(1));
+        assertThat(EmbeddedInbox.bean(TimerScheduler.class).runOnce()).isEqualTo(1);
+
+        assertThat(acme.delete(SCHEDULES + "/brief").status()).isEqualTo(204);
+        untilQuiet();
+
+        assertThat(tasks()).isEmpty();
+        assertThat(cma.sessionIds()).as("nobody was woken for it").isEmpty();
+    }
+
+    @Test
+    void aRunThatIsDeliveredAgainHandsNothingOverTwice() {
+        acme.post(SCHEDULES, new CreateScheduleRequest("brief", "Morning brief", BRIEF, null, "0 8 * * *", "Asia/Shanghai",
+                null, "research", null)).as(ScheduleView.class);
+        clock.advance(Duration.ofHours(14));
+        EmbeddedInbox.bean(TimerScheduler.class).runOnce();
+        deliver();
+        hooks.crashAt(Point.HANDED_OVER);
+
+        assertThatThrownBy(() -> worker.runOnce()).isInstanceOf(SimulatedCrash.class);
+        assertThat(count("SELECT count(*) FROM task_note")).as("handed over, and the main agent's word written").isEqualTo(2);
+        leaseRunsOut();
+        untilQuiet();
+
+        assertThat(tasks()).hasSize(1);
+        assertThat(acme.get(TASKS + "/" + tasks().getFirst().taskId()).as(TaskView.class).notes())
+                .extracting(TaskNoteView::from, TaskNoteView::kind)
+                .containsExactly(tuple("app", "schedule"), tuple("app", "assigned"), tuple("worker", "report"));
+        assertThat(repliesTo(acme, USER)).containsExactly("About Morning brief: Ran Morning brief.");
+    }
+
+    @Test
+    void whenItCannotBeHandedOver_theApplicationHearsOfIt() {
+        acme.put("/v1/agents/billing", new AgentProfileRequest("Billing", null, null, "You bill.", null, null)).as(AgentProfileView.class);
+        acme.post(SCHEDULES, new CreateScheduleRequest("dunning", "Dunning", "Remind the user of what is overdue.",
+                clock.now().plus(Duration.ofHours(1)), null, null, null, "billing", null)).as(ScheduleView.class);
+        // Meanwhile the agent becomes a main agent itself, and can be nobody's worker.
+        acme.put("/v1/agents/billing", new AgentProfileRequest("Billing", null, null, "You bill.", null, null, null, null,
+                new CoordinatorConfig(List.of(), null))).as(AgentProfileView.class);
+
+        clock.advance(Duration.ofHours(1));
+        EmbeddedInbox.bean(TimerScheduler.class).runOnce();
+        untilQuiet();
+
+        assertThat(tasks()).isEmpty();
+        assertThat(updates("run.failed")).singleElement().satisfies(update -> {
+            assertThat(update.data().path("conversation_id").asString()).isEqualTo("default");
+            assertThat(update.data().path("error").asString()).startsWith("what the application scheduled as \"Dunning\" could not "
+                    + "be handed to agent billing: ");
+        });
+        assertThat(jdbc.sql("SELECT state FROM schedule").query(String.class).single()).as("it counts as having been due").isEqualTo("done");
     }
 
     // ================================================================ where there is no main agent

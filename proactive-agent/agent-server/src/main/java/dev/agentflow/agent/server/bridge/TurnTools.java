@@ -245,6 +245,9 @@ class TurnTools {
         if (Tasks.EVENT.equals(note.kind())) {
             // An event of the application's systems, as it is: information, like any event.
             one.set("event", Json.STORED.readTree(note.text()));
+        } else if (Tasks.SCHEDULE.equals(note.kind())) {
+            // What the application scheduled, with its instructions: the notice of the turn gave them too.
+            one.set("schedule", Json.STORED.readTree(note.text()));
         } else {
             one.put("text", note.text());
         }
@@ -440,6 +443,24 @@ class TurnTools {
             }
             tasks.lastForMain(task).ifPresent(note -> one.putObject("latest").put("from", fromWhom(note))
                     .put("kind", note.kind()).put("text", Tasks.excerpt(note.text())).put("sent_at", note.createdAt().toString()));
+        }
+        // What is still to come for the workers without the main agent's doing: the application's schedules for them.
+        List<Schedules.Schedule> standing = schedules.forWorkers(line.appId(), line.userId(), line.mergeKey());
+        if (!standing.isEmpty()) {
+            ArrayNode scheduled = result.putArray("scheduled_by_the_application");
+            for (Schedules.Schedule schedule : standing) {
+                ObjectNode one = scheduled.addObject();
+                one.put("name", schedule.name()).put("role", tasks.roleOf(line, schedule.agentKey())).put("subject", schedule.subject());
+                if (schedule.cron() == null) {
+                    one.put("at", schedule.fireAt().toString());
+                } else {
+                    one.put("cron", schedule.cron()).put("time_zone", schedule.timeZone());
+                }
+                if (schedule.lastFiredAt() != null) {
+                    one.put("last_due_at", schedule.lastFiredAt().toString());
+                }
+                one.put("instructions", Tasks.excerpt(schedule.instructions()));
+            }
         }
         return Answer.ok(result.toString());
     }

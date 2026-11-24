@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 public interface TurnHooks {
 
     enum Point {
+        /** What the application scheduled for a worker has been handed to it; the run has not gone on, and the Inbox knows nothing. */
+        HANDED_OVER,
         /** A session exists on the platform; the line does not know it yet. */
         SESSION_CREATED,
         /** The turn knows where the session stood before its input. */

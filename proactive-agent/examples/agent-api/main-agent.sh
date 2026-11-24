@@ -4,7 +4,8 @@
 # after "task:", and the worker answers that it is done. An event whose data has a text "task" makes
 # the main agent take that work up by itself: it then waits for the user's confirmation, unless the
 # user has allowed the role to start unasked. An event that the application sends to the worker itself
-# becomes a task of the main agent, which hears of it at once.
+# becomes a task of the main agent, which hears of it at once; so does what the application schedules
+# for the worker, when it is due.
 #
 #   API=http://localhost:8090 ADMIN=<an administration key> examples/agent-api/main-agent.sh
 #
@@ -120,11 +121,17 @@ BEFORE=$(notifications)
 call POST /v1/users/$USER_ID/events '{"type": "order.returned", "subject": "order-7777", "agent": "researcher", "data": {"order_id": "7777"}}'; echo
 echo "   notification: $(wait_for_notification "$BEFORE")"
 
-echo "17. With the API key, a task shows what was said about it: here by the application, to the worker and to the main agent, and by the worker."
+echo "17. The application schedules something for the worker, a few seconds from now. When it is due it goes the same way, to the task of its subject."
+AT=$(python3 -c "import datetime; print((datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=4)).strftime('%Y-%m-%dT%H:%M:%SZ'))")
+BEFORE=$(notifications)
+call POST /v1/users/$USER_ID/schedules "{\"name\": \"Returns check\", \"instructions\": \"See whether order 7777 has come back.\", \"at\": \"$AT\", \"agent\": \"researcher\", \"subject\": \"order-7777\"}"; echo
+echo "   notification: $(wait_for_notification "$BEFORE")"
+
+echo "18. With the API key, a task shows what was said about it: here by the application, to the worker and to the main agent, and by the worker."
 TASK=$(call GET "/v1/users/$USER_ID/tasks?status=all" | json "['tasks'][0]['task_id']")
 call GET "/v1/users/$USER_ID/tasks/$TASK" \
   | python3 -c "import json,sys; [print('  ', n['seq'], n['from'], n['kind'] + ':', n['text']) for n in json.load(sys.stdin)['notes']]"
 
-echo "18. Everything that happened for the user, in order:"
+echo "19. Everything that happened for the user, in order:"
 call GET "/v1/users/$USER_ID/updates?after=0" '' "$TOKEN" \
   | python3 -c "import json,sys; [print('  ', x['seq'], x['type'], x['data'].get('kind', x['data'].get('status', ''))) for x in json.load(sys.stdin)['updates']]"

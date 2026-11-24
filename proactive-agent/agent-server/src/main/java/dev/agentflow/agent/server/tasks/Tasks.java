@@ -88,7 +88,9 @@ public class Tasks {
     public static final String MESSAGE = "message";
     /** An event that the application handed to the worker. */
     public static final String EVENT = "event";
-    /** What tells the main agent that the application handed its worker an event. */
+    /** Something that the application scheduled for the worker, and that is due. */
+    public static final String SCHEDULE = "schedule";
+    /** What tells the main agent that the application handed its worker work itself: an event, or what it scheduled. */
     public static final String ASSIGNED = "assigned";
     public static final String REPORT = "report";
     public static final String FAILURE = "failure";
@@ -151,7 +153,7 @@ public class Tasks {
         /** Who it is from, for people and for agents: the main agent, the worker, or this service. */
         public String from() {
             if (TO_WORKER.equals(direction)) {
-                return EVENT.equals(kind) ? "app" : "main";
+                return EVENT.equals(kind) || SCHEDULE.equals(kind) ? "app" : "main";
             }
             return REPORT.equals(kind) ? "worker" : ASSIGNED.equals(kind) ? "app" : "service";
         }
@@ -404,35 +406,21 @@ public class Tasks {
      * everything else that concerns the user. In the caller's transaction, under the user's lock.
      *
      * @param hub the main agent's line
-     * @param agentKey the agent that the application named; {@code null} when it named none
+     * @param worker the agent that handles the subject, as {@link dev.agentflow.agent.server.chat.Lines} found
      * @param data what the event says, as the application sent it
      * @param readyAt when the event is to be handled at the earliest; {@code null} for at once
-     * @param keeps how the refusal ends when the subject already has another agent than the one named
-     * @return the task; empty when the event is for the main agent itself, and so for its own line
      */
-    public Optional<Task> assign(Threads.Thread hub, String agentKey, String eventId, String type, String subject, JsonNode data,
-            Instant readyAt, String keeps) {
-        Optional<Task> open = jdbc.sql(SELECT + """
-                 WHERE app_id = :appId AND user_id = :userId AND hub_key = :hubKey AND subject = :subject AND status <> 'closed'
-                """)
-                .param("appId", hub.appId()).param("userId", hub.userId()).param("hubKey", hub.mergeKey()).param("subject", subject)
-                .query(Tasks::task)
-                .optional();
-        if (open.isPresent() && agentKey != null && !open.get().agentKey().equals(agentKey)) {
-            throw AgentException.conflict("subject " + subject + " is handled by agent " + open.get().agentKey() + keeps);
-        }
-        String worker = open.map(Task::agentKey).orElse(agentKey == null ? Messages.DEFAULT_AGENT : agentKey);
-        if (worker.equals(hub.agentKey())) {
-            return Optional.empty();
-        }
+    public Task assign(Threads.Thread hub, String worker, String eventId, String type, String subject, JsonNode data,
+            Instant readyAt) {
         Instant now = clock.now();
-        Task task = open.orElseGet(() -> begin(hub, worker, type, subject, now));
+        Task task = openOf(hub, subject).orElseGet(() -> begin(hub, worker, subject.equals(type) ? type : type + ": " + subject,
+                subject, now));
         ObjectNode event = Json.STORED.createObjectNode();
         event.put("event_id", eventId).put("type", type).put("subject", subject).put("received_at", now.toString());
         event.set("data", data);
         Written handed = write(task, TO_WORKER, EVENT, event.toString(), "evt:" + eventId, null);
         if (!handed.created()) {
-            return Optional.of(task);
+            return task;
         }
         wakeWorker(task, handed.note(), readyAt);
         moveTo(task, QUEUED, " AND status = 'idle'");
@@ -443,7 +431,65 @@ public class Tasks {
                 + "message_worker, or close the task. What the event says: " + Json.STORED.writeValueAsString(data),
                 "assigned:" + eventId, null);
         wakeMain(task, told.note(), readyAt);
-        return find(task);
+        return find(task).orElseThrow();
+    }
+
+    /**
+     * Hands something that the application scheduled for a worker, and that is due, to that worker,
+     * as a task of the main agent on whose line it fell due. The task is the one of the schedule's
+     * subject, made if none is open. The worker is woken with the application's instructions, and
+     * the main agent is told at once. A firing is handed over once, however often this is called for
+     * it. In the caller's transaction, under the user's lock.
+     *
+     * @param hub the main agent's line
+     * @param late whether it comes late, because the service was not running when it was due
+     * @return whether this call handed it over
+     */
+    public boolean assignDue(Threads.Thread hub, Schedules.Schedule schedule, Instant dueAt, boolean late) {
+        String firing = schedule.scheduleId() + ":" + dueAt;
+        boolean handedBefore = jdbc.sql("SELECT count(*) FROM task_note WHERE app_id = :appId AND user_id = :userId AND note_key = :noteKey")
+                .param("appId", hub.appId()).param("userId", hub.userId()).param("noteKey", "due:" + firing)
+                .query(Long.class).single() > 0;
+        if (handedBefore) {
+            return false;
+        }
+        Instant now = clock.now();
+        Task task = openOf(hub, schedule.subject())
+                .orElseGet(() -> begin(hub, schedule.agentKey(), schedule.name(), schedule.subject(), now));
+        ObjectNode due = Json.STORED.createObjectNode();
+        due.put("schedule_id", schedule.scheduleId()).put("name", schedule.name()).put("instructions", schedule.instructions())
+                .put("due_at", dueAt.toString()).put("late", late);
+        Written handed = write(task, TO_WORKER, SCHEDULE, due.toString(), "due:" + firing, null);
+        wakeWorker(task, handed.note());
+        moveTo(task, QUEUED, " AND status = 'idle'");
+        Written told = write(task, TO_MAIN, ASSIGNED, "It is time for \"" + schedule.name() + "\", which the application "
+                + "scheduled for your worker " + task.role() + (late ? "; it comes late, because the service was not running "
+                + "when it was due" : "") + ". The worker has the application's instructions for it and reports to you when it "
+                + "is done, so there is nothing you have to do. If what you know from the user changes what the worker should "
+                + "do, tell it with message_worker, or close the task; that does not cancel the schedule, which is the "
+                + "application's. The application's instructions for it: " + schedule.instructions(),
+                "assigned-due:" + firing, null);
+        wakeMain(task, told.note());
+        return true;
+    }
+
+    /** The role under which a main agent knows an agent: the one on its list, or, for an agent that is not on it, the agent's key. */
+    public String roleOf(Threads.Thread hub, String agentKey) {
+        return profiles.configIfThere(hub.appId(), hub.agentKey()).map(AgentProfileRequest::coordinator)
+                .filter(coordinator -> coordinator.workers() != null)
+                .flatMap(coordinator -> coordinator.workers().stream().filter(listed -> listed.agent().equals(agentKey))
+                        .map(WorkerConfig::role).findFirst())
+                .orElse(agentKey);
+    }
+
+    /** The open task that the application's work on a subject goes to, under a main agent. */
+    private Optional<Task> openOf(Threads.Thread hub, String subject) {
+        return jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND hub_key = :hubKey AND subject = :subject AND status <> 'closed'
+                """)
+                .param("appId", hub.appId()).param("userId", hub.userId()).param("hubKey", hub.mergeKey()).param("subject", subject)
+                .query(Tasks::task)
+                .optional();
     }
 
     /** The task that an event of the application became part of, if it went to a worker. */
@@ -454,8 +500,8 @@ public class Tasks {
                 .optional();
     }
 
-    /** Makes the task for a subject of the application's events that has none open. */
-    private Task begin(Threads.Thread hub, String worker, String type, String subject, Instant now) {
+    /** Makes the task for a subject of the application's work that has none open. */
+    private Task begin(Threads.Thread hub, String worker, String title, String subject, Instant now) {
         AgentProfileRequest profile = profiles.configIfThere(hub.appId(), worker).orElseThrow(() -> AgentException.invalid(
                 "this application has no agent " + worker + "; create it with PUT /v1/agents/" + worker));
         if (profile.coordinator() != null) {
@@ -480,12 +526,6 @@ public class Tasks {
             closeIn(resting.get(), BY_SERVICE, "it made room for a newer task of the application");
         }
         String taskId = ids.next("task");
-        // The role under which the main agent knows this agent, if it is on its list.
-        String role = profiles.configIfThere(hub.appId(), hub.agentKey()).map(AgentProfileRequest::coordinator)
-                .filter(coordinator -> coordinator.workers() != null)
-                .flatMap(coordinator -> coordinator.workers().stream().filter(listed -> listed.agent().equals(worker))
-                        .map(WorkerConfig::role).findFirst())
-                .orElse(worker);
         jdbc.sql("""
                 INSERT INTO delegated_task (app_id, user_id, task_id, hub_key, conversation_id, role, agent_key, title, status,
                                             authorized_by, authorized_at, created_by_run, created_by_call, created_at, updated_at,
@@ -494,8 +534,8 @@ public class Tasks {
                         :madeBy, 0, :now, :now, 'app', :subject)
                 """)
                 .param("appId", hub.appId()).param("userId", hub.userId()).param("taskId", taskId)
-                .param("hubKey", hub.mergeKey()).param("conversationId", hub.conversationId()).param("role", role)
-                .param("agentKey", worker).param("title", subject.equals(type) ? type : type + ": " + subject)
+                .param("hubKey", hub.mergeKey()).param("conversationId", hub.conversationId()).param("role", roleOf(hub, worker))
+                .param("agentKey", worker).param("title", title.length() <= MAX_TITLE ? title : title.substring(0, MAX_TITLE))
                 .param("now", Db.ts(now)).param("madeBy", "app:" + taskId).param("subject", subject)
                 .update();
         threads.ensureWork(hub.appId(), hub.userId(), taskId, hub.conversationId(), worker);

@@ -11,7 +11,8 @@ import java.time.Instant;
  *     failed, a task closed from outside
  * @param kind {@code assignment} for what starts a task of the main agent, {@code message} for a
  *     later word of the main agent, {@code event} for an event that the application handed to the
- *     worker, {@code assigned} for what tells the main agent of such an event, {@code report} for
+ *     worker, {@code schedule} for something that the application scheduled for the worker and
+ *     that is due, {@code assigned} for what tells the main agent of either, {@code report} for
  *     what the worker says at the end of a turn, {@code failure} or {@code closed}
  */
 public record TaskNoteView(int seq, String from, String kind, String text, Instant createdAt) {

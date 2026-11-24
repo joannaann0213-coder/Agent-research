@@ -29,7 +29,7 @@ curl -s http://localhost:8090/openapi.yaml -o agent-api.yaml
 | 事件 | 应用系统里发生的、和某个用户有关的事。同一个 `subject` 的事件由一个记得之前事件的 agent 处理 |
 | 动作 | agent 等人来决定的事：对一次工具调用的审批，或者向用户提的问题 |
 | 定时计划 | agent 在某个时间要做的事：由应用设置，或者是 agent 给自己设的跟进 |
-| 任务 | worker 在主 agent 名下做的一件工作；worker 是应用的另一个 agent，有自己的 session。任务由主 agent 交出，或者由应用用一个发给那个 agent 的事件交出；两种情况主 agent 都知道。主 agent 自己起意的任务先要等用户确认 |
+| 任务 | worker 在主 agent 名下做的一件工作；worker 是应用的另一个 agent，有自己的 session。任务由主 agent 交出，或者由应用用发给那个 agent 的事件或定时计划交出；两种情况主 agent 都知道。主 agent 自己起意的任务先要等用户确认 |
 | 长期授权 | 用户给出的长期授权：他的主 agent 可以自己开始某个角色的任务，不用每次都问 |
 | 更新 | 用户身上发生的、应用可能想知道的事：一条消息、一个动作、一次失败。可以轮询、订阅流，或者推送到 webhook |
 | 凭据 | MCP 服务器放行 agent 所需的东西。保存在 agent 平台的 vault 里，本服务从不保存 |
@@ -165,6 +165,9 @@ token 只能决定该由用户决定的，其余的也看不到。
 agent 也会用自己的 `schedule_followup` 工具给自己设跟进：会话里的“一小时后提醒我”，或者后台的“明天再看一下这个订单”。两种都由
 `GET /v1/users/{user_id}/schedules` 列出，用 `DELETE .../schedules/{schedule_id}` 取消；用户的客户端两者都能做，用户因此可以叫停 agent 为自己做的事。
 
+在[主 agent](#主-agent-和它的任务) 服务的会话里，指明另一个 agent（`agent`）的定时计划由那个 agent 作为 worker 来做。每次到点，它都并入计划的
+`subject` 对应的那个主 agent 的任务，交给 worker；主 agent 立刻得知，并在用户需要知道时把 worker 的汇报转告用户。
+
 ## 更新
 
 用户身上发生的每件事都记录为一条更新：`message.created`、`action.created`、`action.resolved`、`run.failed`，以及主 agent
@@ -270,8 +273,8 @@ curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: B
 
 - 发给主 agent 的事件和定时计划，在 `conversation_id` 指定的会话里（不指定时是 `default`）处理，由在那里和用户说话的那个 session
   负责。如果这个会话由别的 agent 服务，请求返回 409。
-- 任务由主 agent 建立，你的事件指明另一个 agent（`agent`）时也会建立：那个 agent 作为 worker 处理这个事件，任务带着 `created_by: app`
-  和事件的 `subject`，不需要确认就开始。主 agent 立刻得知这个事件，worker 向它汇报。同一个主题后来的事件，只要任务还开着就进同一个任务。
+- 任务由主 agent 建立，你指明另一个 agent（`agent`）的活也会建立任务：一个事件，或者定时计划的每一次到点。那个 agent 作为 worker 来做，任务带着
+  `created_by: app` 和事件或计划的 `subject`，不需要确认就开始。主 agent 立刻得知，worker 向它汇报。同一个主题后来的活，只要任务还开着就进同一个任务。
 - `GET /v1/users/{user_id}/tasks` 列出开着的任务，加上 `status=all` 连已关闭的也列出；`POST .../tasks/{task_id}/close`
   叫停一个任务，主 agent 会被告知。
 - 用户向主 agent 要求的事直接开始。主 agent 自己起意的事是一个状态为 `proposed` 的任务：把它连同 `summary` 展示给用户，用户确认时调用
@@ -285,7 +288,7 @@ curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: B
 - 一个用户的 worker 一次只运行一个，除非收件箱放宽这个上限（`inbox.lanes.batch.cap`）。
 
 演示模式下，脚本会把用户写在 `task:` 后面的内容交出去，worker 回答说做完了；事件的数据里如果有一段文字 `task`，脚本会自己提出做这件事；指明 worker
-的事件由 worker 处理，它的汇报由主 agent 转告用户。`examples/agent-api/main-agent.sh` 把三种情况都走一遍。
+的事件或定时计划由 worker 处理，它的汇报由主 agent 转告用户。`examples/agent-api/main-agent.sh` 把这些情况都走一遍。
 
 ## 限制
 

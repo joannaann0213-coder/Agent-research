@@ -18,7 +18,9 @@ import java.time.Instant;
  *     when absent
  * @param subject the line the agent works on, as for events: runs of the same subject are handled by
  *     an agent that remembers the earlier ones; {@code schedule-<schedule_id>} when absent
- * @param agent the key of the agent that does it; {@code default} when absent
+ * @param agent the key of the agent that does it; {@code default} when absent. In a conversation
+ *     that a main agent serves, another agent does it as a worker of the main agent: each time the
+ *     schedule is due it becomes part of a task of the main agent, which is told of it
  * @param conversationId the conversation in which the user is told, if the agent tells them;
  *     {@code default} when absent
  */

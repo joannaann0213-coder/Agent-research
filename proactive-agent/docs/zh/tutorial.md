@@ -424,7 +424,7 @@ curl -s -X PUT $API/v1/users/u-1001/grants/default/research -H "Authorization: B
 ```
 
 你清楚该交给谁的活，可以自己交给 worker：在事件里指明那个 agent。这个事件成为主 agent 的一个任务，回执里带着任务的 `task_id`。它不需要谁来确认，因为这是你的应用下的令。主
-agent 立刻得知，所以用户问起时它答得上来；worker 和其他 worker 一样向它汇报。
+agent 立刻得知，所以用户问起时它答得上来；worker 和其他 worker 一样向它汇报。指明这个 agent 的定时计划，每次到点也走同一条路。
 
 ```bash
 curl -s -X POST $API/v1/users/u-1001/events -H "Authorization: Bearer $KEY" \

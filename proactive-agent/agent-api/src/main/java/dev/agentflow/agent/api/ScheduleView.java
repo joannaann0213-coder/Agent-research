@@ -6,6 +6,8 @@ import java.time.Instant;
  * A schedule: set up by the application, or a follow-up that the agent set itself.
  *
  * @param createdBy {@code app} or {@code agent}
+ * @param subject the subject it runs on; for what a main agent's conversation hands to another
+ *     agent, the subject its task is kept under
  * @param kind {@code once} or {@code cron}
  * @param name the application's name for it
  * @param instructions the application's instructions

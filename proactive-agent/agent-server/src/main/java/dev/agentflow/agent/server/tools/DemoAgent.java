@@ -23,10 +23,11 @@ import tools.jackson.databind.node.ObjectNode;
  *   <li>As a main agent it hands on whatever the user writes after {@code task:} to the first of its
  *       workers, and tells the user what the worker reports. An event whose data has a text
  *       {@code "task"} makes it hand that on by itself, in the background: the task then waits for
- *       the user's confirmation, unless the role may start unasked. When the application hands an
- *       event to one of its workers itself, it takes note and says nothing.
- *   <li>As a worker it reads the task, or the event that the application handed it, and reports
- *       that it is done.
+ *       the user's confirmation, unless the role may start unasked. When the application hands
+ *       work to one of its workers itself, an event or what it scheduled, it takes note and says
+ *       nothing.
+ *   <li>As a worker it reads the task, or what the application handed it, and reports that it is
+ *       done.
  * </ul>
  */
 public final class DemoAgent implements FakeBrain {
@@ -137,14 +138,17 @@ public final class DemoAgent implements FakeBrain {
         for (JsonNode message : Json.STORED.readTree(read.text()).path("messages")) {
             if (message.has("event")) {
                 // An event that the application handed to this worker itself.
-                handled = message.path("event").path("type").asString() + " (" + message.path("event").path("subject").asString() + ")";
+                handled = "I handled the event " + message.path("event").path("type").asString() + " ("
+                        + message.path("event").path("subject").asString() + ").";
+            } else if (message.has("schedule")) {
+                // Something that the application scheduled for this worker, and that is due.
+                handled = "It was time for \"" + message.path("schedule").path("name").asString() + "\".";
             } else {
                 asked = message.path("text").asString();
                 handled = null;
             }
         }
-        return ModelStep.say(handled != null ? "[demo] Done. I handled the event " + handled + "."
-                : "[demo] Done. You asked for: " + asked);
+        return ModelStep.say(handled != null ? "[demo] Done. " + handled : "[demo] Done. You asked for: " + asked);
     }
 
     /** The first role a main agent can delegate to, as its delegation tool names them; {@code null} for an agent without workers. */
