@@ -85,6 +85,12 @@ names another agent keeps its timer on the main agent's line; when it is due, th
 hands it to the worker in the same way, before any turn of the main agent, and ends. Nothing works
 for the user, then, that the main agent has not heard of through the Inbox.
 
+The main agent also knows how its tasks stand. A note tells it when a worker waits for a person's
+approval, and another what was decided. Whatever notes it has not seen are given to its next turn,
+whichever that is: a turn in the background, or the user's next message, ahead of which the service
+then says that there is news to read. The run that was to bring a note that has been read ends
+without a turn.
+
 A task that the main agent begins on its own initiative does not start by itself. It waits, as
 `proposed`, for the user's confirmation, unless the rule of its role (`start`) or the user's
 standing authorisation lets it start. A task that waits has no session and no event in the Inbox;

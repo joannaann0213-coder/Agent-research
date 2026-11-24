@@ -2398,15 +2398,17 @@ components:
           description: |
             `main` for the main agent, `worker` for the worker, `app` for the application, `service`
             for what the service itself notes: a turn of the worker that failed, a task closed from
-            outside.
+            outside, a worker that waits for a person.
         kind:
           type: string
-          enum: [assignment, message, event, schedule, assigned, report, failure, closed]
+          enum: [assignment, message, event, schedule, assigned, waiting, decided, report, failure, closed]
           description: |
             `assignment` starts a task of the main agent and `message` is a later word of it; `event`
             is an event that the application handed to the worker and `schedule` something that the
             application scheduled for the worker and that is due, both as JSON, and `assigned` what
-            tells the main agent of either; `report` is what the worker says at the end of a turn.
+            tells the main agent of either; `waiting` tells the main agent that the worker waits for
+            a person's decision, and `decided` what became of it; `report` is what the worker says at
+            the end of a turn.
         text:
           type: string
         created_at:

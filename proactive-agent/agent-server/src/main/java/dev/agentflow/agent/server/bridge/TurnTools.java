@@ -113,7 +113,7 @@ class TurnTools {
     private Answer readEvents(Threads.Thread line, Work work, JsonNode input) {
         return switch (work) {
             case Work.Task task -> waitingEvents(task, input);
-            case Work.Chat chat -> unreadNotifications(line);
+            case Work.Chat chat -> unreadNotifications(line, chat);
             case Work.Job job -> handedOver(line, job);
         };
     }
@@ -151,11 +151,7 @@ class TurnTools {
                         .put("received_at", event.createdAt().toString());
                 one.set("data", event.data());
             } else {
-                Tasks.Report report = reports.get(next - all.size());
-                one.put("task_id", report.task().taskId()).put("role", report.task().role())
-                        .put("title", report.task().title()).put("from", fromWhom(report.note()))
-                        .put("kind", report.note().kind()).put("text", report.note().text())
-                        .put("sent_at", report.note().createdAt().toString());
+                reported(one, reports.get(next - all.size()));
             }
             int length = one.toString().length();
             if (next > from && size + length > RESULT_BUDGET) {
@@ -181,11 +177,20 @@ class TurnTools {
         return Answer.ok(result.toString());
     }
 
+    /** A note of a task for the main agent, with the task it is about. */
+    private static void reported(ObjectNode one, Tasks.Report report) {
+        one.put("task_id", report.task().taskId()).put("role", report.task().role())
+                .put("title", report.task().title()).put("from", fromWhom(report.note()))
+                .put("kind", report.note().kind()).put("text", report.note().text())
+                .put("sent_at", report.note().createdAt().toString());
+    }
+
     /**
      * What other lines of work exchanged with the user in this conversation since this one's session
      * last looked: notifications and questions of work in the background, and the user's answers.
+     * A main agent is also given what its tasks have for it that it has not seen yet.
      */
-    private Answer unreadNotifications(Threads.Thread line) {
+    private Answer unreadNotifications(Threads.Thread line, Work.Chat chat) {
         long synced = threads.find(line.appId(), line.userId(), line.mergeKey()).map(Threads.Thread::syncedSeq)
                 .orElse(line.syncedSeq());
         List<MessageView> unread = messages.outsideAfter(line.appId(), line.userId(), line.conversationId(), line.mergeKey(),
@@ -197,6 +202,10 @@ class TurnTools {
                     .put("from", message.role().equals("user") ? "the user" : "you, in the background")
                     .put("kind", message.role().equals("user") ? "answer" : message.kind())
                     .put("text", message.text());
+        }
+        if (!chat.news().isEmpty()) {
+            ArrayNode reports = result.putArray("reports");
+            chat.news().forEach(report -> reported(reports.addObject(), report));
         }
         return new Answer(result.toString(), false, unread.isEmpty() ? null : unread.getLast().seq());
     }

@@ -104,6 +104,8 @@ public class TurnRunner {
 
     private static final int TRANSCRIPT_CHARS_PER_MESSAGE = 2000;
     private static final int NOTE_CHARS = 2000;
+    /** How much news of its tasks a main agent is given with a message of the user, in characters. */
+    private static final int CHAT_NEWS_CHARS = 32_000;
 
     private sealed interface Settlement {
         record Done() implements Settlement {
@@ -218,9 +220,11 @@ public class TurnRunner {
         boolean resumed = ClaimedRun.KIND_RESUME.equals(run.kind());
         Work fresh = resumed ? null : workOf(run);
         if (!resumed && fresh == null && !run.events().isEmpty() && run.events().stream()
-                .allMatch(event -> Actions.DOORBELL.equals(event.type()) || Schedules.TIMER_EVENT.equals(event.type()))) {
+                .allMatch(event -> Actions.DOORBELL.equals(event.type()) || Schedules.TIMER_EVENT.equals(event.type())
+                        || Tasks.REPORT_EVENT.equals(event.type()))) {
             // Rings that came after the turn they were to wake had ended, a schedule that was cancelled after
-            // it fell due, or one that this line has just handed to a worker. There is nothing more to do.
+            // it fell due, or one that this line has just handed to a worker; or word of a task that an earlier
+            // turn of the main agent was given already, such as the user's message. There is nothing more to do.
             return new Settlement.Done();
         }
         Turn turn = turns.open(run, deadlineOf(run)).orElseThrow(() -> new StaleTurnException(run.runId(), run.epoch()));
@@ -552,7 +556,10 @@ public class TurnRunner {
                 Optional<Tasks.Task> task = taskId == null ? Optional.empty() : tasks.find(run.tenantId(), run.inboxId(), taskId);
                 Optional<Tasks.Note> note = task.flatMap(found -> tasks.note(run.tenantId(), run.inboxId(), taskId, seq));
                 if (note.isPresent() && Tasks.REPORT_EVENT.equals(event.type())) {
-                    reported.add(new Tasks.Report(task.get(), note.get()));
+                    // What an earlier turn of the main agent was given already is not given to it again.
+                    if (note.get().readAt() == null) {
+                        reported.add(new Tasks.Report(task.get(), note.get()));
+                    }
                 } else if (note.isPresent()) {
                     told.add(note.get());
                 }
@@ -564,18 +571,48 @@ public class TurnRunner {
             return told.isEmpty() && due.isEmpty() ? null : new Work.Job(delegated.get(), told, due);
         }
         handOver(run, due);
+        // A main agent stands by for the user: whatever its tasks have for it is given to its next turn, whichever
+        // that is and whatever woke it, so that it never works on a picture that is behind.
+        boolean conversation = run.mergeKey() != null && run.mergeKey().startsWith(Threads.CHAT_PREFIX);
         if (!said.isEmpty()) {
             // Messages the user stopped before this turn began are not answered.
             long stoppedThrough = run.mergeKey() == null ? 0 : threads.stoppedThrough(run.tenantId(), run.inboxId(), run.mergeKey());
             return new Work.Chat(said.stream().filter(message -> message.seq() > stoppedThrough)
-                    .sorted(Comparator.comparingLong(MessageView::seq)).toList());
+                    .sorted(Comparator.comparingLong(MessageView::seq)).toList(),
+                    conversation ? fitting(tasks.news(run.tenantId(), run.inboxId(), run.mergeKey())) : List.of());
         }
         if (happened.isEmpty() && due.isEmpty() && reported.isEmpty()) {
             return null;
         }
-        // A main agent's turn that happens anyway also hears what the service did to its tasks without waking it.
-        reported.addAll(tasks.toldQuietly(run.tenantId(), run.inboxId(), run.mergeKey()));
-        return new Work.Task(happened, due, reported);
+        if (!conversation) {
+            return new Work.Task(happened, due, reported);
+        }
+        // In the order in which it came about; what woke this run is among it.
+        List<Tasks.Report> news = new ArrayList<>(tasks.news(run.tenantId(), run.inboxId(), run.mergeKey()));
+        for (Tasks.Report woke : reported) {
+            if (news.stream().noneMatch(given -> given.task().taskId().equals(woke.task().taskId())
+                    && given.note().seq() == woke.note().seq())) {
+                news.add(woke);
+            }
+        }
+        return new Work.Task(happened, due, news);
+    }
+
+    /**
+     * As much of the news as one answer of read_events holds, from the oldest on; at least one. A
+     * conversation's turn is given it in one piece. What is left comes with the next turn.
+     */
+    private static List<Tasks.Report> fitting(List<Tasks.Report> news) {
+        List<Tasks.Report> fits = new ArrayList<>();
+        int size = 0;
+        for (Tasks.Report report : news) {
+            size += report.note().text().length();
+            if (!fits.isEmpty() && size > CHAT_NEWS_CHARS) {
+                break;
+            }
+            fits.add(report);
+        }
+        return fits;
     }
 
     /**
@@ -669,17 +706,7 @@ public class TurnRunner {
                 waiting.add(followups == 1 ? "a follow-up you set for yourself is due"
                         : followups + " follow-ups you set for yourself are due");
             }
-            // What the application handed to a worker itself is told apart from what the workers report.
-            int handed = (int) task.reports().stream().filter(report -> Tasks.ASSIGNED.equals(report.note().kind())).count();
-            int reported = reports - handed;
-            if (reported > 0) {
-                waiting.add(reported == 1 ? "a worker has something for you on a task you delegated"
-                        : "workers have " + reported + " things for you on tasks you delegated");
-            }
-            if (handed > 0) {
-                waiting.add(handed == 1 ? "the application has handed one of your workers work itself"
-                        : "the application has handed your workers work itself, " + handed + " times");
-            }
+            waiting.addAll(newsByKind(task.reports()));
             String all = String.join(", and ", waiting);
             text.append(Character.toUpperCase(all.charAt(0))).append(all, 1, all.length())
                     .append(". Call read_events to get ").append(waiting.size() == 1 && reports == 1 ? "it" : "them")
@@ -709,6 +736,43 @@ public class TurnRunner {
                 + "without it.").toString();
     }
 
+    /**
+     * What the tasks of a main agent have for it, in fixed words and by kind: what workers report is
+     * told apart from what only says how a task stands.
+     */
+    private static List<String> newsByKind(List<Tasks.Report> news) {
+        int handed = count(news, Tasks.ASSIGNED);
+        int waits = count(news, Tasks.WAITING);
+        int decided = count(news, Tasks.DECIDED);
+        int reported = news.size() - handed - waits - decided;
+        List<String> words = new ArrayList<>();
+        if (reported > 0) {
+            words.add(reported == 1 ? "a worker has something for you on a task you delegated"
+                    : "workers have " + reported + " things for you on tasks you delegated");
+        }
+        if (handed > 0) {
+            words.add(handed == 1 ? "the application has handed one of your workers work itself"
+                    : "the application has handed your workers work itself, " + handed + " times");
+        }
+        if (waits > 0) {
+            words.add(waits == 1 ? "one of your workers waits for somebody's approval"
+                    : "your workers wait for somebody's approval of " + waits + " things");
+        }
+        if (decided > 0) {
+            words.add(decided == 1 ? "somebody has decided something about one of your tasks"
+                    : "somebody has decided " + decided + " things about your tasks");
+        }
+        return words;
+    }
+
+    private static String newsInWords(List<Tasks.Report> news) {
+        return String.join(", and ", newsByKind(news));
+    }
+
+    private static int count(List<Tasks.Report> news, String kind) {
+        return (int) news.stream().filter(report -> kind.equals(report.note().kind())).count();
+    }
+
     /** What the turn works on, for its row: the ids of the messages or events, not what they say. */
     private static JsonNode stored(Work work) {
         ObjectNode stored = Json.STORED.createObjectNode();
@@ -718,6 +782,9 @@ public class TurnRunner {
                 ArrayNode list = stored.putArray("messages");
                 chat.messages().forEach(message -> list.addObject()
                         .put("conversation_id", message.conversationId()).put("message_id", message.messageId()));
+                ArrayNode news = stored.putArray("reports");
+                chat.news().forEach(report -> news.addObject().put("task_id", report.task().taskId())
+                        .put("seq", report.note().seq()));
             }
             case Work.Task task -> {
                 stored.put("kind", "task");
@@ -752,7 +819,7 @@ public class TurnRunner {
                 messages.find(run.tenantId(), run.inboxId(), message.path("conversation_id").asString(),
                         message.path("message_id").asString()).ifPresent(said::add);
             }
-            return said.isEmpty() ? null : new Work.Chat(said);
+            return said.isEmpty() ? null : new Work.Chat(said, reportsOf(run, stored));
         }
         List<Work.Due> due = new ArrayList<>();
         for (JsonNode item : stored.path("due")) {
@@ -774,6 +841,12 @@ public class TurnRunner {
         for (JsonNode eventId : stored.path("events")) {
             appEvents.find(run.tenantId(), run.inboxId(), eventId.asString()).ifPresent(happened::add);
         }
+        List<Tasks.Report> reported = reportsOf(run, stored);
+        return happened.isEmpty() && due.isEmpty() && reported.isEmpty() ? null : new Work.Task(happened, due, reported);
+    }
+
+    /** The notes of tasks that a turn's row names: the same ones whenever the turn is read again. */
+    private List<Tasks.Report> reportsOf(ClaimedRun run, JsonNode stored) {
         List<Tasks.Report> reported = new ArrayList<>();
         for (JsonNode item : stored.path("reports")) {
             String taskId = item.path("task_id").asString();
@@ -781,7 +854,7 @@ public class TurnRunner {
                     tasks.note(run.tenantId(), run.inboxId(), taskId, item.path("seq").asInt())
                             .ifPresent(note -> reported.add(new Tasks.Report(task, note))));
         }
-        return happened.isEmpty() && due.isEmpty() && reported.isEmpty() ? null : new Work.Task(happened, due, reported);
+        return reported;
     }
 
     /**
@@ -794,7 +867,7 @@ public class TurnRunner {
      */
     private String input(Threads.Thread thread, Work work) {
         return switch (work) {
-            case Work.Chat chat -> said(thread, chat.messages());
+            case Work.Chat chat -> said(thread, chat.messages(), chat.news());
             case Work.Task task -> recalled(thread) + background(task);
             case Work.Job job -> assigned(job);
         };
@@ -901,7 +974,7 @@ public class TurnRunner {
      * it; and that work in the background has exchanged messages with the user in this conversation,
      * which this session has not read.
      */
-    private String said(Threads.Thread thread, List<MessageView> inputs) {
+    private String said(Threads.Thread thread, List<MessageView> inputs, List<Tasks.Report> news) {
         StringBuilder text = new StringBuilder();
         long synced = thread.syncedSeq();
         if (thread.generation() > 1 && thread.lastEventId() == null) {
@@ -925,6 +998,13 @@ public class TurnRunner {
                     + "the background has exchanged ").append(unread == 1 ? "a message" : unread + " messages")
                     .append(" with the user in this conversation. Call read_events to see ").append(unread == 1 ? "it" : "them")
                     .append(" before you answer.]\n\n");
+        }
+        if (!news.isEmpty()) {
+            // A main agent answers the user knowing how its tasks stand. What they say is read with read_events, like
+            // everything that does not come from the user.
+            text.append("[From the service that runs you, not from the user: there is news of your workers' tasks that "
+                    + "you have not seen yet: ").append(newsInWords(news)).append(". Call read_events to get it before you "
+                    + "answer, and tell the user what they should know of it.]\n\n");
         }
         for (int i = 0; i < inputs.size(); i++) {
             text.append(i == 0 ? "" : "\n\n").append(inputs.get(i).text());
@@ -1116,7 +1196,15 @@ public class TurnRunner {
     private Outgoing fromPerson(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, CmaEvent call) {
         Optional<Actions.Action> known = actions.ofCall(run.runId(), call.id());
         if (known.isPresent()) {
-            return answerFrom(call, known.get());
+            Outgoing outcome = answerFrom(call, known.get());
+            if (outcome != null && work instanceof Work.Job job) {
+                // The main agent, which was told that its worker waits, is told what became of it.
+                tx.executeWithoutResult(status -> {
+                    users.lock(thread.appId(), thread.userId());
+                    tasks.decided(job.task(), known.get());
+                });
+            }
+            return outcome;
         }
         Actions.Call spec;
         try {
@@ -1140,6 +1228,10 @@ public class TurnRunner {
                 // The question is part of the conversation; the user may answer it by writing to it.
                 messages.storeFromAgent(thread.appId(), thread.userId(), spec.conversationId(), thread.mergeKey(),
                         "ask:" + ensured.action().actionId(), "question", spec.question(), run.runId(), ensured.action().actionId());
+            }
+            if (ensured.created() && work instanceof Work.Job job) {
+                // A worker stands still until a person decides. The main agent, which stands by for the user, is told.
+                tasks.waits(job.task(), ensured.action());
             }
             return new Put(ensured.action(), null);
         });
@@ -1263,6 +1355,10 @@ public class TurnRunner {
                     }
                     if (reading.syncedTo != null) {
                         threads.synced(thread, reading.syncedTo);
+                    }
+                    if (reading.answeredCall(PlatformTools.READ_EVENTS)) {
+                        // The main agent has what its tasks had for it. The runs that were to bring it find nothing left.
+                        tasks.read(chat.news());
                     }
                     outcome = refused ? "refused" : wrote ? "replied" : "silent";
                 }
@@ -1451,6 +1547,12 @@ public class TurnRunner {
         /** The calls the session waits for that have no answer yet. */
         List<String> outstanding() {
             return waiting.stream().filter(id -> !answered.contains(id)).toList();
+        }
+
+        /** Whether the turn has called a tool of this service and got its answer, in this delivery or an earlier one. */
+        boolean answeredCall(String tool) {
+            return calls.values().stream().anyMatch(call -> call instanceof CmaEvent.CustomToolUse custom
+                    && custom.name().equals(tool) && answered.contains(custom.id()));
         }
 
         /**

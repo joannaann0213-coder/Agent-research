@@ -92,6 +92,10 @@ public class Tasks {
     public static final String SCHEDULE = "schedule";
     /** What tells the main agent that the application handed its worker work itself: an event, or what it scheduled. */
     public static final String ASSIGNED = "assigned";
+    /** What tells the main agent that a worker waits for a person's decision before it can go on. */
+    public static final String WAITING = "waiting";
+    /** What tells the main agent that a person decided: what a worker waited for, or to start a task that waited for a confirmation. */
+    public static final String DECIDED = "decided";
     public static final String REPORT = "report";
     public static final String FAILURE = "failure";
     public static final String CLOSED_NOTE = "closed";
@@ -113,6 +117,12 @@ public class Tasks {
 
     /** How much of a report a list shows. */
     private static final int EXCERPT = 1000;
+
+    /** How much of a call's input the main agent is shown when a worker waits for its approval. */
+    private static final int INPUT_EXCERPT = 500;
+
+    /** How many notes one turn of a main agent is given at most. The rest come with its next turn. */
+    private static final int MAX_NEWS = 50;
 
     private static final String NOT_CONFIRMED_IN_TIME = "it was not confirmed in time";
 
@@ -392,6 +402,12 @@ public class Tasks {
                 wakeWorker(task, note);
             }
         }
+        if (!BY_CONVERSATION.equals(by)) {
+            // The main agent did not see this happen. Its next turn is told; the worker's report wakes it.
+            write(task, TO_MAIN, DECIDED, (BY_USER.equals(by) ? "The user" : "The application") + " confirmed the task \""
+                    + task.title() + "\", which you proposed, outside this conversation. Its worker " + task.role()
+                    + " has started.", "confirmed", null);
+        }
         outbound.record(task.appId(), task.userId(), Update.TASK_UPDATED, view(find(task).orElseThrow(), false, false));
         return Start.STARTED;
     }
@@ -429,7 +445,7 @@ public class Tasks {
                 + type + ", on the subject " + subject + ". The worker has it and reports to you when it is done, so there is "
                 + "nothing you have to do. If what you know from the user changes what the worker should do, tell it with "
                 + "message_worker, or close the task. What the event says: " + Json.STORED.writeValueAsString(data),
-                "assigned:" + eventId, null);
+                "assigned:" + eventId, null, readyAt);
         wakeMain(task, told.note(), readyAt);
         return find(task).orElseThrow();
     }
@@ -471,6 +487,55 @@ public class Tasks {
                 "assigned-due:" + firing, null);
         wakeMain(task, told.note());
         return true;
+    }
+
+    // ================================================================ how a task stands, for the main agent
+
+    /**
+     * Tells the main agent that a worker waits for a person's decision before it can go on. The main
+     * agent stands by for the user, who may ask about it, or may have to be told. In the caller's
+     * transaction, under the user's lock.
+     */
+    public void waits(Task task, Actions.Action action) {
+        if (task.closed()) {
+            return;
+        }
+        String input = action.toolInput() == null ? "{}" : Json.STORED.writeValueAsString(action.toolInput());
+        boolean users = Actions.BY_USER.equals(action.approver());
+        Written written = write(task, TO_MAIN, WAITING, "Your worker " + task.role() + " waits for "
+                + (users ? "the user's" : "the application's") + " approval before it calls " + action.toolServer() + "."
+                + action.toolName() + " on the task \"" + task.title() + "\". It goes on as soon as that is decided, and does "
+                + "without the call if nobody decides by " + action.expiresAt() + ". "
+                + (users ? "The user decides it in the application, where it is put before them; you cannot decide it for them."
+                        : "The application decides it; the user has nothing to do.")
+                + " What the call would be given: " + (input.length() <= INPUT_EXCERPT ? input : input.substring(0, INPUT_EXCERPT) + "…"),
+                "waiting:" + action.actionId(), null);
+        if (written.created()) {
+            wakeMain(task, written.note());
+        }
+    }
+
+    /**
+     * Tells the main agent what became of something a worker waited for. Nothing wakes the main agent
+     * for it: the worker goes on and reports, and the next turn of the main agent is given this too.
+     * In the caller's transaction, under the user's lock.
+     */
+    public void decided(Task task, Actions.Action action) {
+        if (task.closed() || action.pending()) {
+            return;
+        }
+        String call = action.toolServer() + "." + action.toolName();
+        String by = Actions.BY_USER.equals(action.resolvedBy()) ? "The user" : "The application";
+        String text = switch (action.status()) {
+            case Actions.APPROVED -> by + " approved " + call + ", which your worker " + task.role() + " waited for. The worker goes on.";
+            case Actions.DENIED -> by + " denied " + call + ", which your worker " + task.role() + " waited for"
+                    + (action.note() == null ? "" : ": " + action.note()) + ". The worker has been told and goes on without it.";
+            case Actions.EXPIRED -> "Nobody decided in time on " + call + ", which your worker " + task.role()
+                    + " waited for. The worker has been told and goes on without it.";
+            default -> "What your worker " + task.role() + " waited for, " + call + ", is no longer asked"
+                    + (action.note() == null ? "" : ": " + action.note()) + ". The worker goes on.";
+        };
+        write(task, TO_MAIN, DECIDED, text, "decided:" + action.actionId(), null);
     }
 
     /** The role under which a main agent knows an agent: the one on its list, or, for an agent that is not on it, the agent's key. */
@@ -572,20 +637,22 @@ public class Tasks {
     }
 
     /**
-     * What this service wrote for the main agent of a line without waking it: that it closed a task
-     * itself, because nobody had touched it, or confirmed it, in time. Nothing wakes the main agent
-     * for that; a turn in the background that it has anyway is given these as well.
+     * What the tasks of a main agent's line have for it and no turn of it has been given yet, oldest
+     * first: what workers report, and what tells it how its tasks stand. Every turn of the main agent
+     * is given all of it, whatever woke the turn, so that it never works, or answers the user, on a
+     * picture that is behind. A note about something that is held back is left out until its time.
      */
-    public List<Report> toldQuietly(String appId, String userId, String hubKey) {
+    public List<Report> news(String appId, String userId, String hubKey) {
         return jdbc.sql("""
                 SELECT n.task_id, n.seq
                   FROM task_note n JOIN delegated_task t USING (app_id, user_id, task_id)
-                 WHERE t.app_id = :appId AND t.user_id = :userId AND t.hub_key = :hubKey AND t.closed_by = 'service'
-                   AND n.direction = 'to_main' AND n.kind = 'closed' AND n.read_at IS NULL
-                 ORDER BY n.created_at, n.task_id
-                 LIMIT 20
+                 WHERE t.app_id = :appId AND t.user_id = :userId AND t.hub_key = :hubKey
+                   AND n.direction = 'to_main' AND n.read_at IS NULL AND (n.ready_at IS NULL OR n.ready_at <= :now)
+                 ORDER BY n.created_at, n.task_id, n.seq
+                 LIMIT :limit
                 """)
-                .param("appId", appId).param("userId", userId).param("hubKey", hubKey)
+                .param("appId", appId).param("userId", userId).param("hubKey", hubKey).param("now", Db.ts(clock.now()))
+                .param("limit", MAX_NEWS)
                 .query((rs, rowNumber) -> Map.entry(rs.getString("task_id"), rs.getInt("seq")))
                 .list().stream()
                 .map(named -> find(appId, userId, named.getKey()).flatMap(task -> note(appId, userId, task.taskId(), named.getValue())
@@ -939,6 +1006,11 @@ public class Tasks {
 
     /** Writes a note of a task once: a second write under the same key finds the first. */
     private Written write(Task task, String direction, String kind, String text, String noteKey, String runId) {
+        return write(task, direction, kind, text, noteKey, runId, null);
+    }
+
+    /** @param readyAt for a note about something that is held back: when it may be given at the earliest */
+    private Written write(Task task, String direction, String kind, String text, String noteKey, String runId, Instant readyAt) {
         Optional<Note> earlier = jdbc.sql(NOTES + " WHERE app_id = :appId AND user_id = :userId AND task_id = :taskId AND note_key = :noteKey")
                 .param("appId", task.appId()).param("userId", task.userId()).param("taskId", task.taskId())
                 .param("noteKey", noteKey)
@@ -957,12 +1029,13 @@ public class Tasks {
                 .param("taskId", task.taskId())
                 .query(Integer.class).single();
         jdbc.sql("""
-                INSERT INTO task_note (app_id, user_id, task_id, seq, direction, kind, text, note_key, run_id, created_at)
-                VALUES (:appId, :userId, :taskId, :seq, :direction, :kind, :text, :noteKey, :runId, :now)
+                INSERT INTO task_note (app_id, user_id, task_id, seq, direction, kind, text, note_key, run_id, created_at,
+                                       ready_at)
+                VALUES (:appId, :userId, :taskId, :seq, :direction, :kind, :text, :noteKey, :runId, :now, :readyAt)
                 """)
                 .param("appId", task.appId()).param("userId", task.userId()).param("taskId", task.taskId()).param("seq", seq)
                 .param("direction", direction).param("kind", kind).param("text", text).param("noteKey", noteKey)
-                .param("runId", runId).param("now", Db.ts(now))
+                .param("runId", runId).param("now", Db.ts(now)).param("readyAt", Db.ts(readyAt))
                 .update();
         return new Written(new Note(task.taskId(), seq, direction, kind, text, runId, now, null), true);
     }

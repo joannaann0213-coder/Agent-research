@@ -341,7 +341,8 @@ your systems post events, as before. What changes is where those go.
 - A user's own client may list and close tasks. What a worker reported, and what the two agents
   wrote to each other, is returned to an API key only.
 - The user hears of a task from the main agent. A worker cannot notify or ask the user, but its tool
-  calls that need an approval appear among the [actions](#actions) as usual.
+  calls that need an approval appear among the [actions](#actions) as usual. The main agent is told
+  that the worker waits, and what was decided, so it can answer the user about it.
 - A worker is any agent of the application that is not a main agent. Of the user and the
   conversation it knows only what the main agent writes into the task, or what your event says.
 - The workers of one user run one at a time, unless the Inbox allows more (`inbox.lanes.batch.cap`).
@@ -349,7 +350,9 @@ your systems post events, as before. What changes is where those go.
 In demo mode the script hands on whatever the user writes after `task:`, and the worker answers that
 it is done; an event whose data has a text `task` makes the script propose that work by itself, and
 an event or a schedule that names the worker is handled by the worker, whose report the main agent
-passes on. `examples/agent-api/main-agent.sh` walks through all of these.
+passes on. A worker whose agent has a tool server calls it when the task's words say
+"needs approval", so that the wait for a person can be tried.
+`examples/agent-api/main-agent.sh` walks through all of these.
 
 ## Limits
 

@@ -5,7 +5,8 @@
 # the main agent take that work up by itself: it then waits for the user's confirmation, unless the
 # user has allowed the role to start unasked. An event that the application sends to the worker itself
 # becomes a task of the main agent, which hears of it at once; so does what the application schedules
-# for the worker, when it is due.
+# for the worker, when it is due. A task whose words say "needs approval" makes the worker call its
+# tool server, which waits for the user: the main agent is told at once, and tells the user.
 #
 #   API=http://localhost:8090 ADMIN=<an administration key> examples/agent-api/main-agent.sh
 #
@@ -50,8 +51,8 @@ echo "2. ... and gives its back end an API key, shown this once."
 KEY=$(call POST /v1/admin/apps/$APP/keys '{"label": "main-agent"}' "$ADMIN" | json "['api_key']")
 echo "   ${KEY:0:16}..."
 
-echo "3. A worker is an ordinary agent."
-call PUT /v1/agents/researcher '{"name": "Researcher", "instructions": "You look things up in the order system and report what you found."}'; echo
+echo "3. A worker is an ordinary agent. This one has a tool server whose calls the user has to approve."
+call PUT /v1/agents/researcher '{"name": "Researcher", "instructions": "You look things up in the order system and report what you found.", "mcp_servers": [{"name": "orders", "url": "https://mcp.example.com/orders", "approval": "always_ask", "approver": "user"}]}'; echo
 
 echo "4. The main agent names the workers it may hand work to."
 call PUT /v1/agents/default '{"name": "Assistant", "instructions": "You look after Acme customers.", "coordinator": {"workers": [{"role": "research", "agent": "researcher", "description": "Looks things up in the order system and reports what it found."}]}}'; echo
@@ -127,11 +128,23 @@ BEFORE=$(notifications)
 call POST /v1/users/$USER_ID/schedules "{\"name\": \"Returns check\", \"instructions\": \"See whether order 7777 has come back.\", \"at\": \"$AT\", \"agent\": \"researcher\", \"subject\": \"order-7777\"}"; echo
 echo "   notification: $(wait_for_notification "$BEFORE")"
 
-echo "18. With the API key, a task shows what was said about it: here by the application, to the worker and to the main agent, and by the worker."
-TASK=$(call GET "/v1/users/$USER_ID/tasks?status=all" | json "['tasks'][0]['task_id']")
-call GET "/v1/users/$USER_ID/tasks/$TASK" \
-  | python3 -c "import json,sys; [print('  ', n['seq'], n['from'], n['kind'] + ':', n['text']) for n in json.load(sys.stdin)['notes']]"
+echo "18. The user asks for something that the worker may not do without them. The worker waits; the main agent is told at once, and tells the user."
+BEFORE=$(notifications)
+call POST /v1/users/$USER_ID/messages '{"text": "task: refund order 7777, needs approval"}' "$TOKEN" > /dev/null
+echo "   notification: $(wait_for_notification "$BEFORE")"
 
-echo "19. Everything that happened for the user, in order:"
+echo "19. The user approves it in their own client, and the worker goes on."
+ACTION=$(call GET "/v1/users/$USER_ID/actions" '' "$TOKEN" | json "['actions'][0]['action_id']")
+BEFORE=$(notifications)
+echo "   the action is now: $(call POST "/v1/users/$USER_ID/actions/$ACTION/resolve" '{"decision": "approve"}' "$TOKEN" | json "['status']")"
+echo "   notification: $(wait_for_notification "$BEFORE")"
+
+echo "20. With the API key, a task shows what was said about it, and by whom. The two latest tasks:"
+for TASK in $(call GET "/v1/users/$USER_ID/tasks?status=all" | python3 -c "import json,sys; print(' '.join(t['task_id'] for t in json.load(sys.stdin)['tasks'][:2]))"); do
+  call GET "/v1/users/$USER_ID/tasks/$TASK" \
+    | python3 -c "import json,sys; t=json.load(sys.stdin); print('  ', t['title']); [print('    ', n['seq'], n['from'], n['kind'] + ':', n['text'][:160]) for n in t['notes']]"
+done
+
+echo "21. Everything that happened for the user, in order:"
 call GET "/v1/users/$USER_ID/updates?after=0" '' "$TOKEN" \
   | python3 -c "import json,sys; [print('  ', x['seq'], x['type'], x['data'].get('kind', x['data'].get('status', ''))) for x in json.load(sys.stdin)['updates']]"

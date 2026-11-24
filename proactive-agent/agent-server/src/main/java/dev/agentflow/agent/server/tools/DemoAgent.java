@@ -25,9 +25,11 @@ import tools.jackson.databind.node.ObjectNode;
  *       {@code "task"} makes it hand that on by itself, in the background: the task then waits for
  *       the user's confirmation, unless the role may start unasked. When the application hands
  *       work to one of its workers itself, an event or what it scheduled, it takes note and says
- *       nothing.
+ *       nothing. When a worker waits for somebody's approval, it tells the user. When the user
+ *       writes while there is news of its tasks, it reads the news first and says so.
  *   <li>As a worker it reads the task, or what the application handed it, and reports that it is
- *       done.
+ *       done. A worker whose agent has a tool server first calls that server's tool {@code demo}
+ *       when the task's words contain "needs approval", so that the wait for a person can be tried.
  * </ul>
  */
 public final class DemoAgent implements FakeBrain {
@@ -37,6 +39,12 @@ public final class DemoAgent implements FakeBrain {
 
     /** What the user writes to have a main agent hand the rest of the line to a worker. */
     private static final String HAND_ON = "task:";
+
+    /** What a task says to have a worker with a tool server call it first. */
+    private static final String NEEDS_APPROVAL = "needs approval";
+
+    /** The tool that a worker of demo mode calls on its agent's tool server. */
+    private static final String DEMO_TOOL = "demo";
 
     @Override
     public ModelStep next(ModelContext context) {
@@ -68,9 +76,24 @@ public final class DemoAgent implements FakeBrain {
             if (read == null) {
                 return ModelStep.say("You said: " + said);
             }
+            JsonNode since = Json.STORED.readTree(read.text());
             List<String> told = new ArrayList<>();
-            Json.STORED.readTree(read.text()).path("messages").forEach(one -> told.add(one.path("text").asString()));
-            return ModelStep.say("You said: " + said + " (Since we last spoke you were told: " + String.join(" / ", told) + ")");
+            since.path("messages").forEach(one -> told.add(one.path("text").asString()));
+            // What the main agent's tasks had for it that it had not seen: it answers knowing how they stand.
+            List<String> news = new ArrayList<>();
+            for (JsonNode report : since.path("reports")) {
+                String kind = report.path("kind").asString();
+                if ("waiting".equals(kind)) {
+                    news.add("the " + report.path("role").asString() + " worker waits for an approval on \""
+                            + report.path("title").asString() + "\"");
+                } else if (!"assigned".equals(kind) && !"decided".equals(kind)) {
+                    news.add("\"" + report.path("title").asString() + "\" is back from the " + report.path("role").asString()
+                            + ": " + report.path("text").asString());
+                }
+            }
+            return ModelStep.say("You said: " + said
+                    + (told.isEmpty() ? "" : " (Since we last spoke you were told: " + String.join(" / ", told) + ")")
+                    + (news.isEmpty() ? "" : " (News of your tasks: " + String.join(" / ", news) + ")"));
         }
         if (read == null) {
             ToolOutcome sent = context.resultOf(PlatformTools.NOTIFY_USER);
@@ -99,8 +122,15 @@ public final class DemoAgent implements FakeBrain {
             tell.add("[demo] Something happened that you should know about: " + String.join(", ", worthTelling) + ".");
         }
         for (JsonNode report : waiting.path("reports")) {
-            if ("assigned".equals(report.path("kind").asString())) {
-                // The application handed a worker an event itself. The main agent knows now; the worker's report will follow.
+            String kind = report.path("kind").asString();
+            if ("assigned".equals(kind) || "decided".equals(kind)) {
+                // The application handed a worker work itself, or somebody decided what a worker waited for. The main
+                // agent knows now; the worker's report will follow.
+                continue;
+            }
+            if ("waiting".equals(kind)) {
+                tell.add("[demo] Your " + report.path("role").asString() + " worker waits for an approval before it can go on "
+                        + "with \"" + report.path("title").asString() + "\".");
                 continue;
             }
             tell.add("[demo] Your task \"" + report.path("title").asString() + "\" is back from the "
@@ -131,6 +161,12 @@ public final class DemoAgent implements FakeBrain {
         }
         ToolOutcome read = context.resultOf(PlatformTools.READ_EVENTS);
         if (read == null) {
+            ToolOutcome called = context.resultOf(DEMO_TOOL);
+            if (called != null) {
+                return ModelStep.say(called.error() ? "[demo] Not done. The call of " + called.server() + "." + DEMO_TOOL
+                        + " was not made: " + called.text() : "[demo] Done. The call of " + called.server() + "." + DEMO_TOOL
+                        + " was approved and made.");
+            }
             return ModelStep.say("[demo] Nothing more to report.");
         }
         String asked = "";
@@ -147,6 +183,12 @@ public final class DemoAgent implements FakeBrain {
                 asked = message.path("text").asString();
                 handled = null;
             }
+        }
+        if (handled == null && !context.agent().mcpServers().isEmpty() && asked.toLowerCase().contains(NEEDS_APPROVAL)) {
+            // A call that waits for a person, if the server's calls need an approval.
+            ObjectNode input = Json.STORED.createObjectNode();
+            input.put("what", asked.length() <= 200 ? asked : asked.substring(0, 200));
+            return ModelStep.of(ModelStep.mcp(context.agent().mcpServers().getFirst().name(), DEMO_TOOL, input.toString()));
         }
         return ModelStep.say(handled != null ? "[demo] Done. " + handled : "[demo] Done. You asked for: " + asked);
     }

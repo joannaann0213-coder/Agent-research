@@ -13,8 +13,15 @@ sealed interface Work {
     /**
      * The user said something and waits for an answer. What the agent writes last is that answer.
      * The list is empty when the user stopped the reply before the turn began.
+     *
+     * @param news for a main agent: what its tasks have for it that no turn of it has been given yet.
+     *     It answers the user knowing how everything stands; empty on any other line
      */
-    record Chat(List<MessageView> messages) implements Work {
+    record Chat(List<MessageView> messages, List<Tasks.Report> news) implements Work {
+
+        Chat(List<MessageView> messages) {
+            this(messages, List.of());
+        }
     }
 
     /**
@@ -22,8 +29,9 @@ sealed interface Work {
      * follow-up is due, or, for a main agent, a worker has reported on a task. The user waits for
      * nothing and sees nothing of the turn; they hear of it only if the agent notifies them.
      *
-     * @param reports what workers, or the service about them, have for a main agent; empty on any
-     *     other line
+     * @param reports what the tasks of a main agent have for it: what workers report, and what tells
+     *     it how its tasks stand. Everything that no turn of it has been given yet, not only what woke
+     *     this one; empty on any other line
      */
     record Task(List<AppEvent> events, List<Due> due, List<Tasks.Report> reports) implements Work {
 

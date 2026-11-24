@@ -81,9 +81,21 @@ Claude Managed Agents 自己有多 agent session，目前是 beta：协调者把
 | 应用的定时计划，或者主 agent 给自己设的跟进 | 一段固定措辞的通知，里面带着指令或备注 | `background` |
 | worker 汇报了、worker 的回合失败了，或者别人关闭了任务 | 一段固定措辞的通知；内容通过 `read_events` 读取 | `background` |
 | 应用把活直接交给了它的某个 worker：一个事件，或者应用定时安排的事 | 一段固定措辞的通知；交了什么通过 `read_events` 读取 | `background` |
+| 某个 worker 要等人审批才能继续 | 一段固定措辞的通知；它在等什么通过 `read_events` 读取 | `background` |
 
-这五种都是同一条线 `conv:<conversation_id>` 上的 run，所以都进同一个 session，一次一个。相隔很近到达的会一起交给它，主 agent
+这六种都是同一条线 `conv:<conversation_id>` 上的 run，所以都进同一个 session，一次一个。相隔很近到达的会一起交给它，主 agent
 因此可以先把几件事放在一起权衡，再开口。
+
+### 掌握全局
+
+主 agent 随时为用户待命，所以它必须知道自己这个会话里每个任务的现状，而不只是结果。靠三件事保证。
+
+1. **任务的每一次变化都是给主 agent 的一条记录。** 应用把活交给了 worker、worker 在等人、那个人怎么决定的、worker 汇报了什么、它的回合失败了、任务被关闭了。
+2. **主 agent 的每一个回合都会拿到它还没看过的全部记录**，不管这一轮是被什么唤醒的。如果用户先开口，而主 agent
+   还没来得及看，服务会在用户的消息前面说明，主 agent 先用 `read_events` 读完再回答。
+3. **一条记录只给一次。** 本来要送这条记录的 run，如果发现主 agent 已经读过，就不再跑一个回合，所以早知道不会让后面多花一轮。
+
+不是每条记录都会唤醒主 agent。某个人怎么决定的，会随 worker 的下一次汇报一起到，或者随用户的下一条消息一起到，看哪个先来。
 
 服务会在主 agent 的指令后面加几句话：关于这个用户的一切都会来到这个 session；每一次是行动、告诉用户还是保持安静，由它自己判断，而用户的注意力是它手里最稀缺的东西；只有明显是用户想要、又容易撤回的事，才不等用户开口就动手，否则先提出建议。
 
@@ -185,7 +197,9 @@ worker 之后做的每一件事：需要审批的工具调用仍然要等审批�
 | 主 agent 问了用户一句，回答之前又发生了别的事 | 支持，新增 | 问题是顺带问的：只有用户自己的话能结束它，回答就是用户的下一条消息 |
 | 应用把活直接交给某个 worker | 支持，新增 | 事件成为主 agent 的任务，主 agent 立刻得知；worker 向主 agent 汇报 |
 | 应用让某个 worker 每天早上做一件事 | 支持，新增 | 定时计划每次到点都作为主 agent 的任务交给 worker，主 agent 立刻得知；`list_tasks` 会列出还没到点的 |
-| 用户向主 agent 问起某个 worker 在等的东西 | 支持，新增 | `list_tasks` 会显示每个 worker 在等谁批准 |
+| 用户向主 agent 问起某个 worker 在等的东西 | 支持，新增 | worker 开始等的时候主 agent 就被告知了，怎么决定的也会告诉它；`list_tasks` 会显示每个 worker 在等什么 |
+| worker 的汇报还在去主 agent 的路上，用户先发来了消息 | 支持，新增 | 主 agent 先读汇报，带着它回答；之后不会再为这条汇报多跑一轮 |
+| 用户在应用里确认了提议，而不是在对话里 | 支持，新增 | 主 agent 在下一个回合被告知任务已经开始 |
 | 用户想先看计划再确认 | 不支持 | 用户确认的是主 agent 的摘要；worker 不会先做计划 |
 | 用户想按比角色更细的粒度授权 | 不支持 | 授权针对的是角色；应用可以把角色分得更细 |
 
@@ -215,7 +229,7 @@ worker 之后做的每一件事：需要审批的工具调用仍然要等审批�
 关闭任务的可以是主 agent（`close_task`）、用户或应用（`POST /v1/users/{user_id}/tasks/{task_id}/close`），也可以是服务：它的清扫会关掉等确认等了
 3 天的任务；主 agent 再次委派时，已经闲置 7 天的任务也会被关掉。用户或应用关闭任务时，主 agent 会被唤醒并告知。服务关闭任务时不会专门唤醒它：下一次有别的事在后台唤醒它时，它一并得知。
 
-对应的表是 `delegated_task` 和 `task_note`。任务记着主 agent 的工作线、角色、worker 的 agent，以及创建它的那次调用；每条记录有方向、种类（`assignment`、`message`、`event`、`schedule`、`assigned`、`report`、`failure`
+对应的表是 `delegated_task` 和 `task_note`。任务记着主 agent 的工作线、角色、worker 的 agent，以及创建它的那次调用；每条记录有方向、种类（`assignment`、`message`、`event`、`schedule`、`assigned`、`waiting`、`decided`、`report`、`failure`
 或 `closed`）和正文。任务状态的每次变化都记录为一条更新：`task.created` 或 `task.updated`。
 
 ## 出了问题时

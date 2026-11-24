@@ -99,10 +99,28 @@ Two things would change the decision.
 | A schedule of the application, or a follow-up the main agent set itself | A notice in fixed words, with the instructions or the note | `background` |
 | A worker reports, a worker's turn fails, or somebody else closes a task | A notice in fixed words; the content through `read_events` | `background` |
 | The application hands work to one of its workers itself: an event, or what it scheduled | A notice in fixed words; what was handed over through `read_events` | `background` |
+| A worker waits for a person's approval before it can go on | A notice in fixed words; what it waits for through `read_events` | `background` |
 
-All five are runs of one line, `conv:<conversation_id>`, so they come to one session, one at a time.
+All six are runs of one line, `conv:<conversation_id>`, so they come to one session, one at a time.
 What arrives close together is handed over together, which is what lets the main agent weigh one
 thing against another before it speaks.
+
+### Knowing how everything stands
+
+The main agent stands by for the user, so it has to know how every task of its conversation stands,
+not only what came of it. Three things see to that.
+
+1. **Every change of a task is a note for the main agent.** That the application handed a worker
+   work, that a worker waits for a person, what the person decided, what the worker reports, that
+   its turn failed, that the task was closed.
+2. **Every turn of the main agent is given all the notes it has not seen**, whatever woke the turn.
+   When the user writes before the main agent got to them, the service says so ahead of the user's
+   message, and the main agent reads them with `read_events` before it answers.
+3. **A note is given once.** The run that was to bring a note the main agent has read already ends
+   without a turn, so being told sooner costs nothing later.
+
+Not every note wakes the main agent. What a person decided comes with the worker's next report, or
+with the user's next message, whichever is first.
 
 The service adds a few sentences to a main agent's instructions. They say that everything about the
 user comes to this session; that each time it is the agent's judgement whether to act, to tell the
@@ -249,7 +267,9 @@ The requirement was checked against the design case by case. "New" marks what th
 | The main agent asks the user something, and other things happen before the answer | Yes, new | The question is asked in passing: nothing but the user's word ends it, and the answer is the user's next message |
 | The application gives work straight to a worker | Yes, new | The event becomes a task of the main agent, which hears of it at once; the worker reports to the main agent |
 | The application has a worker do something every morning | Yes, new | Each run of the schedule is handed to the worker as a task of the main agent, which hears of it at once; `list_tasks` shows what is still to come |
-| The user asks the main agent about something a worker waits for | Yes, new | `list_tasks` shows what each worker waits for somebody to approve |
+| The user asks the main agent about something a worker waits for | Yes, new | The main agent was told when the worker began to wait, and is told what was decided; `list_tasks` shows what each worker waits for |
+| The user writes while a worker's report is on its way to the main agent | Yes, new | The main agent reads the report first and answers knowing it; no second turn follows for it |
+| The user confirms a proposal in the application, not in the conversation | Yes, new | The main agent is told with its next turn that the task has started |
 | The user wants to see a plan before confirming | No | The user confirms the main agent's summary; a worker does not plan first |
 | The user authorises more narrowly than a role | No | An authorisation names a role; the application can make its roles finer |
 
@@ -284,7 +304,7 @@ woken and told. When the service does, nothing wakes it: it is told the next tim
 wakes it in the background.
 
 The tables are `delegated_task` and `task_note`. A task names the main agent's line, the role, the
-worker's agent and the call that made it; a note has a direction, a kind (`assignment`, `message`, `event`, `schedule`, `assigned`,
+worker's agent and the call that made it; a note has a direction, a kind (`assignment`, `message`, `event`, `schedule`, `assigned`, `waiting`, `decided`,
 `report`, `failure` or `closed`) and its text. Every change of a task's state is recorded as an
 update, `task.created` or `task.updated`.
 

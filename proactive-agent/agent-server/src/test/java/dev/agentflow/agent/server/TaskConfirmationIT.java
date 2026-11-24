@@ -120,10 +120,12 @@ class TaskConfirmationIT extends AgentTestBase {
                 return ModelStep.of(custom("delegate_task", input.toString()));
             }
         }
-        JsonNode report = waiting.path("reports").path(0);
-        if (!report.isMissingNode()) {
-            return ModelStep.of(custom("notify_user", args("text", "About " + report.path("title").asString() + ": "
-                    + report.path("text").asString())));
+        for (JsonNode report : waiting.path("reports")) {
+            // That a person confirmed a task is something to know, not something to tell the user.
+            if (!"decided".equals(report.path("kind").asString())) {
+                return ModelStep.of(custom("notify_user", args("text", "About " + report.path("title").asString() + ": "
+                        + report.path("text").asString())));
+            }
         }
         return say("Nothing to tell.");
     }

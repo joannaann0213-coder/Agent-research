@@ -283,12 +283,14 @@ curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: B
 - 有了长期授权，用户就允许主 agent 不问自己而开始某个角色的任务：`PUT /v1/users/{user_id}/grants/{agent_key}/{role}` 给出授权，对同一路径调用
   `DELETE` 收回。角色的 `start` 决定规则：`ask` 是默认值，也就是上面说的做法；`always_ask` 要求这个角色的每个任务都确认；`always_allow` 一个都不用确认。
 - 用户自己的客户端可以列出和关闭任务。worker 汇报了什么、两个 agent 之间写了什么，只返回给 API key。
-- 用户是从主 agent 那里听说任务的。worker 不能通知用户，也不能向用户提问；但它需要审批的工具调用照常出现在[动作](#动作)里。
+- 用户是从主 agent 那里听说任务的。worker 不能通知用户，也不能向用户提问；但它需要审批的工具调用照常出现在[动作](#动作)里。主 agent
+  会被告知 worker 在等，以及最后怎么决定的，所以用户问起时它答得上来。
 - 应用里任何不是主 agent 的 agent 都可以当 worker。关于用户和会话，它只知道主 agent 写进任务里的内容，或者你的事件里说的内容。
 - 一个用户的 worker 一次只运行一个，除非收件箱放宽这个上限（`inbox.lanes.batch.cap`）。
 
 演示模式下，脚本会把用户写在 `task:` 后面的内容交出去，worker 回答说做完了；事件的数据里如果有一段文字 `task`，脚本会自己提出做这件事；指明 worker
-的事件或定时计划由 worker 处理，它的汇报由主 agent 转告用户。`examples/agent-api/main-agent.sh` 把这些情况都走一遍。
+的事件或定时计划由 worker 处理，它的汇报由主 agent 转告用户。任务的文字里有 "needs approval" 时，带工具服务器的 worker
+会去调用它，这样就能试一试等人审批的过程。`examples/agent-api/main-agent.sh` 把这些情况都走一遍。
 
 ## 限制
 
