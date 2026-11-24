@@ -12,6 +12,7 @@ import dev.agentflow.agent.cma.SessionInfo;
 import dev.agentflow.agent.cma.SessionSpec;
 import dev.agentflow.agent.server.actions.Actions;
 import dev.agentflow.agent.server.api.AgentException;
+import dev.agentflow.agent.server.app.Preferences;
 import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.bridge.TurnHooks.Point;
 import dev.agentflow.agent.server.bridge.Turns.StaleTurnException;
@@ -152,6 +153,7 @@ public class TurnRunner {
     private final Tasks tasks;
     private final TurnTools tools;
     private final AgentProfiles profiles;
+    private final Preferences preferences;
     private final TransactionTemplate tx;
     private final AgentClock clock;
     private final Patience patience;
@@ -163,8 +165,8 @@ public class TurnRunner {
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
             Schedules schedules, Actions actions, Users users, Outbound outbound, Credentials credentials, Memories memories,
-            Tasks tasks, TurnTools tools, AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, Patience patience,
-            TurnHooks hooks, AgentProperties properties) {
+            Tasks tasks, TurnTools tools, AgentProfiles profiles, Preferences preferences, TransactionTemplate tx,
+            AgentClock clock, Patience patience, TurnHooks hooks, AgentProperties properties) {
         this.cma = cma;
         this.inbox = inbox;
         this.turns = turns;
@@ -180,6 +182,7 @@ public class TurnRunner {
         this.tasks = tasks;
         this.tools = tools;
         this.profiles = profiles;
+        this.preferences = preferences;
         this.tx = tx;
         this.clock = clock;
         this.patience = patience;
@@ -689,7 +692,7 @@ public class TurnRunner {
      * and the agent's notes to itself, are read with read_events. The instructions of a schedule the
      * application set up are the application's, and are given here.
      */
-    private static String background(Work.Task task) {
+    private static String background(Work.Task task, String howForward) {
         StringBuilder text = new StringBuilder("[From the service that runs you, not from the user. The user is not here and "
                 + "sees nothing of what you write in this turn.]\n");
         int events = task.events().size();
@@ -732,8 +735,19 @@ public class TurnRunner {
                             : "")
                     .append(". The application's instructions for it: ").append(item.schedule().instructions());
         }
+        if (howForward != null) {
+            text.append('\n').append(howForward);
+        }
         return text.append("\nIf the user needs to know or to do something, tell them with notify_user. If not, end the turn "
                 + "without it.").toString();
+    }
+
+    /** For a main agent: what it is told about how much its user wants to hear from it; {@code null} for any other agent. */
+    private String howForward(Threads.Thread thread) {
+        if (!thread.chat() || profiles.config(thread.appId(), thread.agentKey()).coordinator() == null) {
+            return null;
+        }
+        return Wording.howForward(preferences.proactivity(thread.appId(), thread.userId(), thread.agentKey()));
     }
 
     /**
@@ -868,7 +882,7 @@ public class TurnRunner {
     private String input(Threads.Thread thread, Work work) {
         return switch (work) {
             case Work.Chat chat -> said(thread, chat.messages(), chat.news());
-            case Work.Task task -> recalled(thread) + background(task);
+            case Work.Task task -> recalled(thread) + background(task, howForward(thread));
             case Work.Job job -> assigned(job);
         };
     }
@@ -1169,7 +1183,7 @@ public class TurnRunner {
                 Instant since = clock.now().minus(TurnTools.QUOTA_WINDOW);
                 long sent = messages.notificationsSince(thread.appId(), thread.userId(), since)
                         + actions.unaskedSince(thread.appId(), thread.userId(), since);
-                if (sent >= notify.getPerUserPerDay()) {
+                if (sent >= preferences.notificationsPerDay(thread.appId(), thread.userId(), thread.agentKey())) {
                     return "Not asked: this user has been sent " + sent + " notifications and questions in the last 24 "
                             + "hours, which is the limit. Do not try again in this turn.";
                 }

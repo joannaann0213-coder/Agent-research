@@ -120,7 +120,8 @@ not only what came of it. Three things see to that.
    without a turn, so being told sooner costs nothing later.
 
 Not every note wakes the main agent. What a person decided comes with the worker's next report, or
-with the user's next message, whichever is first.
+with the user's next message, whichever is first. Which of the others wake it is a matter of
+[how forward the user wants it](#how-forward-the-main-agent-is).
 
 The service adds a few sentences to a main agent's instructions. They say that everything about the
 user comes to this session; that each time it is the agent's judgement whether to act, to tell the
@@ -245,6 +246,33 @@ asks one. In the background a question counts against what the user may be sent 
 notification does. What the user answers is the user's word, so a task that the main agent delegates
 in that turn starts without a confirmation, like anything else the user asks for.
 
+## How forward the main agent is
+
+An assistant that is keen at first is right for most people and too much for some. How much a user
+hears from their main agent without having asked is therefore the user's to say, and there is one
+place where it is set: the user's `proactivity`.
+
+| | `proactive` | `balanced` | `quiet` |
+| --- | --- | --- | --- |
+| The main agent is woken at once | Whenever anything happens to a task | When a worker reports or fails, a task is closed, or a worker waits for the user | When a worker reports or fails, or a task is closed |
+| It is asked to tell the user | What has started, what waits for them, what came of it | What needs them, and what came of it | Only what needs their decision, and the outcome of what they asked for |
+| Work of its own initiative | Offered, or started where it may | Offered, or started where it may | Not offered; started only where the user or the application allowed it |
+| Notifications in 24 hours | 20 | 20 | 5, not counting what came of work the user asked for |
+
+Whatever the level, the main agent knows of everything: what does not wake it is given to its next
+turn. The level changes how often it works and how much it says, never what it knows.
+
+- **Where it starts.** At `proactive`, unless the main agent's `coordinator.proactivity` says
+  otherwise, or the service's `agent.tasks.proactivity`.
+- **Who sets it.** The user, with their own client (`PUT /v1/users/{user_id}/preferences`) or by
+  telling the main agent in the conversation, which records it with `set_proactivity`. The
+  application can set it for them. The main agent cannot set it on what it reads in the background.
+- **How the main agent knows.** The service says it in one sentence with every turn in the
+  background, so a change holds from the next turn on.
+- **What the service sees to itself.** Which notes wake the main agent, how many notifications a day
+  brings, and that a user who wants it quiet is offered nothing. How it words what it tells the user
+  is the model's.
+
 ## Use cases
 
 The requirement was checked against the design case by case. "New" marks what the check added.
@@ -270,6 +298,8 @@ The requirement was checked against the design case by case. "New" marks what th
 | The user asks the main agent about something a worker waits for | Yes, new | The main agent was told when the worker began to wait, and is told what was decided; `list_tasks` shows what each worker waits for |
 | The user writes while a worker's report is on its way to the main agent | Yes, new | The main agent reads the report first and answers knowing it; no second turn follows for it |
 | The user confirms a proposal in the application, not in the conversation | Yes, new | The main agent is told with its next turn that the task has started |
+| A user finds the main agent too forward, or not forward enough | Yes, new | The user's `proactivity`: set in their own client, or by telling the main agent |
+| An application wants its assistant restrained for everybody | Yes, new | `proactivity` of the main agent's `coordinator`; a user's own setting goes first |
 | The user wants to see a plan before confirming | No | The user confirms the main agent's summary; a worker does not plan first |
 | The user authorises more narrowly than a role | No | An authorisation names a role; the application can make its roles finer |
 
@@ -282,6 +312,7 @@ The requirement was checked against the design case by case. "New" marks what th
 | `message_worker` | Sends the worker of an open task more: an answer, a correction, a next step | Not there |
 | `list_tasks` | The open tasks, its own and the application's: their state, who started each, what its worker waits for, and the latest word from each. Also what the application has scheduled for the workers | Not there |
 | `close_task` | Ends a task. A turn of the worker that is under way stops, and what it waits for is withdrawn | Not there |
+| `set_proactivity` | Records how forward the user wants it, when the user says so in the conversation | Not there |
 | `read_events` | Events, due follow-ups and what workers have for it | What the main agent sent, and its own due follow-ups |
 | `notify_user`, `ask_user` | `notify_user` as for every agent; `ask_user` asks without waiting, see [Asking the user](#asking-the-user) | Refused: a worker reports to the main agent, which decides what the user hears |
 | `schedule_followup` | As for every agent | Wakes the worker later, on the same task |
@@ -367,6 +398,8 @@ update, `task.created` or `task.updated`.
 | The Inbox lane on which workers run | `batch` | `agent.tasks.lane`: `batch` or `background` |
 | Workers of one user that run at the same time | 1 | The Inbox's `inbox.lanes.batch.cap`; `docker-compose.yml` sets 4 |
 | How long a turn of a worker may take | 20 minutes; a conversation's turn has 10 | `agent.tasks.turn-deadline`, below the Inbox's `inbox.lease.max-duration` |
+| How forward a main agent is with a user who has not said | `proactive` | `proactivity` of the agent's `coordinator`, else `agent.tasks.proactivity` |
+| Notifications in 24 hours for a user who wants it quiet | 5, not counting what came of work they asked for | `agent.notify.quiet-per-user-per-day` |
 
 Workers have a lane of their own so that a worker's long turn never holds up what wakes the main
 agent, and the main agent's turns never wait for a free slot behind workers.
@@ -382,6 +415,7 @@ percentages are estimates of the author, made in November 2026 for the following
 | One session for everything about a user is affordable | 70% | A turn of the main agent that only sorts and delegates is short; long work is the workers' | A user's message often waits behind a turn in the background; the input tokens of the main agent's turns grow with every event |
 | The platform's threads are the right tool inside a worker | 65% | They start without a new session and share files, which is what several steps of one task need | The official SDK does not carry them, or their cost per thread is close to a session's |
 | The main agent should hear of the application's work for a worker at once, not at the report | 75% | The user may ask about it at any moment, and only the main agent knows what the user said | Nearly all of the turns it costs end with nothing done, or the cost of them is what applications complain about |
+| `proactive` is the level to start with | 60% | An assistant has to show what it can do before a user can say how much of it they want, and tokens are not what limits a product at first | Turning it down is the first thing most users do, or applications set a lower default for everybody |
 | Confirmation belongs to the task, and standing authorisation to the role | 85% | A role is what the application bounds with tools and approvals, so it can be authorised without knowing the task | Users ask to authorise by kind of event or up to an amount instead, or want a plan to confirm and not a summary |
 
 The strongest argument against the decision is cost and delay. A main agent that hears everything
@@ -390,8 +424,8 @@ while such a turn runs, because a line runs one turn at a time. Anthropic
 [reports](https://www.anthropic.com/engineering/multi-agent-research-system) that its own multi-agent
 research system used about 15 times the tokens of a chat. The answer built here is
 structural, not complete: turns of the main agent are kept short by delegating, events that arrive
-together become one turn, and events that never need the main agent can still be sent to an ordinary
-agent on its subject's line.
+together become one turn, and how often the main agent is woken for what only says how a task
+stands is the user's, or the application's, to turn down.
 
 What to measure once the service runs with a model:
 

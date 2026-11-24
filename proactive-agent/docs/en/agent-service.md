@@ -91,6 +91,11 @@ whichever that is: a turn in the background, or the user's next message, ahead o
 then says that there is news to read. The run that was to bring a note that has been read ends
 without a turn.
 
+Which notes wake the main agent, and how much it is asked to tell the user, depends on how forward
+the user wants it: `proactive`, `balanced` or `quiet`. The level is the user's own setting, else the
+agent's default, else the service's, and is said to the main agent with every turn in the
+background. [Main agent and workers](main-agent.md#how-forward-the-main-agent-is) has the table.
+
 A task that the main agent begins on its own initiative does not start by itself. It waits, as
 `proposed`, for the user's confirmation, unless the rule of its role (`start`) or the user's
 standing authorisation lets it start. A task that waits has no session and no event in the Inbox;
@@ -216,6 +221,8 @@ Every setting is under `agent.*` and can be set by environment variable.
 | `agent.tasks.lane` | `batch` | The Inbox lane on which the workers of a main agent run: `batch` or `background` |
 | `agent.tasks.max-open`, `idle-ttl` | `20`, `7d` | Open tasks per main agent's conversation, and how long an idle task is kept before it is closed to make room |
 | `agent.tasks.max-proposed`, `proposal-ttl` | `5`, `3d` | Tasks per main agent's conversation that may wait for the user's confirmation, and for how long one waits |
+| `agent.tasks.proactivity` | `proactive` | How forward a main agent is with a user who has not said, where the agent's own configuration does not say either: `proactive`, `balanced` or `quiet` |
+| `agent.notify.quiet-per-user-per-day` | `5` | Notifications in 24 hours for a user who wants their main agent quiet, not counting what came of work they asked for |
 | `AGENT_CORS_ALLOWEDORIGINS` | none | Origins of web pages that may call the API from the browser, comma-separated |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`, `false` | Webhooks to private addresses and over plain http; only to try them on one machine |
 

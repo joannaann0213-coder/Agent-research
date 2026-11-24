@@ -1,6 +1,7 @@
 package dev.agentflow.agent.server.tasks;
 
 import dev.agentflow.agent.api.AgentProfileRequest;
+import dev.agentflow.agent.api.Proactivity;
 import dev.agentflow.agent.api.TaskNoteView;
 import dev.agentflow.agent.api.TaskPage;
 import dev.agentflow.agent.api.TaskView;
@@ -8,6 +9,7 @@ import dev.agentflow.agent.api.Update;
 import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.server.actions.Actions;
 import dev.agentflow.agent.server.api.AgentException;
+import dev.agentflow.agent.server.app.Preferences;
 import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.chat.Messages;
 import dev.agentflow.agent.server.chat.Threads;
@@ -214,6 +216,7 @@ public class Tasks {
     private final Schedules schedules;
     private final Grants grants;
     private final AgentProfiles profiles;
+    private final Preferences preferences;
     private final InboxRelay relay;
     private final Outbound outbound;
     private final AgentClock clock;
@@ -222,8 +225,8 @@ public class Tasks {
     private final Lane lane;
 
     public Tasks(JdbcClient jdbc, TransactionTemplate tx, Users users, Threads threads, Messages messages, Actions actions,
-            Schedules schedules, Grants grants, AgentProfiles profiles, InboxRelay relay, Outbound outbound, AgentClock clock,
-            Ids ids, AgentProperties properties) {
+            Schedules schedules, Grants grants, AgentProfiles profiles, Preferences preferences, InboxRelay relay,
+            Outbound outbound, AgentClock clock, Ids ids, AgentProperties properties) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
@@ -233,6 +236,7 @@ public class Tasks {
         this.schedules = schedules;
         this.grants = grants;
         this.profiles = profiles;
+        this.preferences = preferences;
         this.relay = relay;
         this.outbound = outbound;
         this.clock = clock;
@@ -294,6 +298,12 @@ public class Tasks {
             }
         }
         if (authorizedBy == null) {
+            if (!userTurn && Proactivity.QUIET.equals(preferences.proactivity(hub.appId(), hub.userId(), hub.agentKey()))) {
+                // An offer is something the user has to look at and decide. This user asked not to be offered anything.
+                return new Delegated(null, false, "Not delegated, and not offered to the user: they have asked to hear from "
+                        + "you only what is key, and to be offered nothing that they did not ask for. Leave it. If it matters "
+                        + "to them, they will ask.");
+            }
             if (summary == null) {
                 return new Delegated(null, false, "Not delegated: the user has to confirm this task before it starts, and is "
                         + "shown your summary of it to decide. Call again with `summary`: what you want to do and why, in a "
@@ -446,7 +456,9 @@ public class Tasks {
                 + "nothing you have to do. If what you know from the user changes what the worker should do, tell it with "
                 + "message_worker, or close the task. What the event says: " + Json.STORED.writeValueAsString(data),
                 "assigned:" + eventId, null, readyAt);
-        wakeMain(task, told.note(), readyAt);
+        if (wakesMain(task, ASSIGNED, null)) {
+            wakeMain(task, told.note(), readyAt);
+        }
         return find(task).orElseThrow();
     }
 
@@ -485,7 +497,9 @@ public class Tasks {
                 + "do, tell it with message_worker, or close the task; that does not cancel the schedule, which is the "
                 + "application's. The application's instructions for it: " + schedule.instructions(),
                 "assigned-due:" + firing, null);
-        wakeMain(task, told.note());
+        if (wakesMain(task, ASSIGNED, null)) {
+            wakeMain(task, told.note());
+        }
         return true;
     }
 
@@ -510,9 +524,26 @@ public class Tasks {
                         : "The application decides it; the user has nothing to do.")
                 + " What the call would be given: " + (input.length() <= INPUT_EXCERPT ? input : input.substring(0, INPUT_EXCERPT) + "…"),
                 "waiting:" + action.actionId(), null);
-        if (written.created()) {
+        if (written.created() && wakesMain(task, WAITING, action)) {
             wakeMain(task, written.note());
         }
+    }
+
+    /**
+     * Whether a note that only says how a task stands wakes the main agent, or waits for its next
+     * turn. That is a matter of how forward the user wants their main agent: one that keeps the user
+     * up to date is woken for everything, the others only for what may need the user. What a worker
+     * reports, a failure and a task closed from outside wake it at every level.
+     */
+    private boolean wakesMain(Task task, String kind, Actions.Action action) {
+        String hubAgent = threads.find(task.appId(), task.userId(), task.hubKey()).map(Threads.Thread::agentKey).orElse(null);
+        String level = hubAgent == null ? Proactivity.PROACTIVE : preferences.proactivity(task.appId(), task.userId(), hubAgent);
+        return switch (level) {
+            case Proactivity.PROACTIVE -> true;
+            // The user is the one who is waited for: that is theirs to know.
+            case Proactivity.BALANCED -> WAITING.equals(kind) && action != null && Actions.BY_USER.equals(action.approver());
+            default -> false;
+        };
     }
 
     /**

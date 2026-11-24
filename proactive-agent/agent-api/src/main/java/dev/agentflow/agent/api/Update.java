@@ -21,4 +21,5 @@ public record Update(String id, long seq, String userId, String type, Instant cr
     public static final String RUN_FAILED = "run.failed";
     public static final String TASK_CREATED = "task.created";
     public static final String TASK_UPDATED = "task.updated";
+    public static final String PREFERENCES_UPDATED = "preferences.updated";
 }

@@ -2,9 +2,11 @@ package dev.agentflow.agent.server.bridge;
 
 import dev.agentflow.agent.api.CoordinatorConfig;
 import dev.agentflow.agent.api.MessageView;
+import dev.agentflow.agent.api.Proactivity;
 import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.cma.CmaEvent;
 import dev.agentflow.agent.server.actions.Actions;
+import dev.agentflow.agent.server.app.Preferences;
 import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.bridge.Turns.Turn;
 import dev.agentflow.agent.server.chat.Messages;
@@ -75,9 +77,11 @@ class TurnTools {
     private final Tasks tasks;
     private final Actions actions;
     private final AgentProfiles profiles;
+    private final Preferences preferences;
 
     TurnTools(Messages messages, Threads threads, Users users, Turns turns, Schedules schedules, Tasks tasks, Actions actions,
-            AgentProfiles profiles, TransactionTemplate tx, AgentClock clock, AgentProperties properties) {
+            AgentProfiles profiles, Preferences preferences, TransactionTemplate tx, AgentClock clock,
+            AgentProperties properties) {
         this.messages = messages;
         this.threads = threads;
         this.users = users;
@@ -91,6 +95,7 @@ class TurnTools {
         this.tasks = tasks;
         this.actions = actions;
         this.profiles = profiles;
+        this.preferences = preferences;
     }
 
     /** @param ordinal the call's place among the turn's calls of the same tool, from 1 */
@@ -104,6 +109,7 @@ class TurnTools {
             case PlatformTools.MESSAGE_WORKER -> messageWorker(run, turn, line, call.input(), ordinal);
             case PlatformTools.LIST_TASKS -> listTasks(line);
             case PlatformTools.CLOSE_TASK -> closeTask(turn, line, call.input());
+            case PlatformTools.SET_PROACTIVITY -> setProactivity(turn, line, work, call.input());
             default -> Answer.failed("This tool is not available.");
         };
     }
@@ -428,6 +434,38 @@ class TurnTools {
         });
     }
 
+    /**
+     * Records how forward the user wants their main agent. Only in a turn that the user started: it is
+     * the user's to say, and what the agent reads in the background is not the user's word.
+     */
+    private Answer setProactivity(Turn turn, Threads.Thread line, Work work, JsonNode input) {
+        if (!line.chat() || profiles.config(line.appId(), line.agentKey()).coordinator() == null) {
+            return Answer.failed("Not set: this is a tool of a main agent, in the conversation it serves.");
+        }
+        if (!(work instanceof Work.Chat)) {
+            return Answer.failed("Not set: how much the user hears from you is theirs to say. Set it when they tell you "
+                    + "so in the conversation, not on what you read in the background.");
+        }
+        String level = input == null ? null : input.path("level").asString(null);
+        if (level == null || !Proactivity.LEVELS.contains(level)) {
+            return Answer.failed("Not set: level is one of " + String.join(", ", Proactivity.LEVELS) + ".");
+        }
+        return tx.execute(status -> {
+            users.lock(line.appId(), line.userId());
+            turns.stillHeld(turn);
+            preferences.setIn(line.appId(), line.userId(), level, Preferences.BY_AGENT);
+            return Answer.ok("Set to " + level + ". " + Wording.howForward(level));
+        });
+    }
+
+    /** Whether the turn brings what came of work that the user asked for, or confirmed, themselves. */
+    private static boolean asked(Work.Task task) {
+        return task.reports().stream().anyMatch(report ->
+                (Tasks.REPORT.equals(report.note().kind()) || Tasks.FAILURE.equals(report.note().kind()))
+                        && (Tasks.BY_CONVERSATION.equals(report.task().authorizedBy())
+                                || Tasks.BY_USER.equals(report.task().authorizedBy())));
+    }
+
     private Answer listTasks(Threads.Thread line) {
         String refusal = notAMainAgent(line);
         if (refusal != null) {
@@ -615,7 +653,11 @@ class TurnTools {
             Instant since = clock.now().minus(QUOTA_WINDOW);
             long recent = messages.notificationsSince(line.appId(), line.userId(), since)
                     + actions.unaskedSince(line.appId(), line.userId(), since);
-            if (recent >= limits.getPerUserPerDay()) {
+            // A user who wants it quiet is sent less in a day. What came of work they asked for themselves is not
+            // held back by that: it is what they are waiting for.
+            int limit = asked(task) ? limits.getPerUserPerDay()
+                    : preferences.notificationsPerDay(line.appId(), line.userId(), line.agentKey());
+            if (recent >= limit) {
                 return Answer.failed("Not sent: this user has been sent " + recent + " notifications in the last 24 hours, "
                         + "which is the limit. Do not try again in this turn.");
             }

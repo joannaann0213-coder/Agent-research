@@ -480,6 +480,17 @@ curl -s -X POST $API/v1/users/u-1001/events -H "Authorization: Bearer $KEY" \
 
 The worker's report goes back to the main agent, which decides what to tell the user. Your
 application follows a task through the updates `task.created` and `task.updated`.
+
+A main agent starts out keen: it keeps the user up to date. How much a user wants to hear from it is
+theirs to say, so give them a setting for it, or let them tell the agent in the conversation.
+`proactive` is where it starts, `balanced` tells them what needs them and what came of the work, and
+`quiet` only what is key. Whatever the level, the main agent still knows of everything.
+
+```bash
+curl -s -X PUT $API/v1/users/u-1001/preferences -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{"proactivity": "balanced"}'
+```
+
 `examples/agent-api/main-agent.sh` runs all of this, step by step.
 
 ## 11. Switch to live mode

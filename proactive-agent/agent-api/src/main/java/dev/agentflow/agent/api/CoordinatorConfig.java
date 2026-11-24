@@ -15,6 +15,13 @@ import java.util.List;
  *     everything itself
  * @param maxActiveTasks how many delegated tasks may be queued or being worked on at a time, for
  *     one conversation; 4 when absent
+ * @param proactivity how forward the main agent is with a user who has not said how they want it:
+ *     {@code proactive}, {@code balanced} or {@code quiet}, see {@link Proactivity}; the service's
+ *     default when absent, which is {@code proactive} unless it was configured otherwise
  */
-public record CoordinatorConfig(List<WorkerConfig> workers, Integer maxActiveTasks) {
+public record CoordinatorConfig(List<WorkerConfig> workers, Integer maxActiveTasks, String proactivity) {
+
+    public CoordinatorConfig(List<WorkerConfig> workers, Integer maxActiveTasks) {
+        this(workers, maxActiveTasks, null);
+    }
 }

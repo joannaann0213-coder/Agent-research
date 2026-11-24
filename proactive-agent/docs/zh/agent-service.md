@@ -63,6 +63,9 @@ agent 没有通过收件箱得知的。
 主 agent 还知道它的任务各自的现状。worker 要等人审批时有一条记录告诉它，怎么决定的又有一条。它没看过的记录都会交给它的下一个回合，不管那是后台的回合，还是用户的下一条消息；是后者时，服务会在消息前面说明有新情况要读。本来要送某条记录的
 run，发现记录已经读过，就不跑回合直接结束。
 
+哪些记录会唤醒主 agent、要求它告诉用户多少，取决于用户想要的主动程度：`proactive`、`balanced` 或 `quiet`。档位先看用户自己的设置，没有就用 agent
+的默认值，再没有就用服务的默认值；服务在每个后台回合里把它告诉主 agent。对照表见[主 agent 与 worker](main-agent.md#主动程度)。
+
 主 agent 自己起意的任务不会自己开始。它以 `proposed` 状态等用户确认，除非它那个角色的规则（`start`）或者用户的长期授权允许它直接开始。在等的任务没有 session，收件箱里也没有它的事件；确认之后才排上唤醒
 worker 的事件。规则见[主 agent 与 worker](main-agent.md#谁让任务开始)，设计、工具和理由见那份文档的其余部分。
 
@@ -150,6 +153,8 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 | `agent.tasks.lane` | `batch` | 主 agent 的 worker 运行所在的收件箱 lane：`batch` 或 `background` |
 | `agent.tasks.max-open`, `idle-ttl` | `20`、`7d` | 每个主 agent 会话里开着的任务数，以及闲置的任务保留多久之后会被关闭以腾出位置 |
 | `agent.tasks.max-proposed`, `proposal-ttl` | `5`、`3d` | 每个主 agent 会话里可以等用户确认的任务数，以及一个任务等多久 |
+| `agent.tasks.proactivity` | `proactive` | 用户没说过、agent 自己的配置里也没写时，主 agent 的主动程度：`proactive`、`balanced` 或 `quiet` |
+| `agent.notify.quiet-per-user-per-day` | `5` | 想让主 agent 安静的用户 24 小时内收到的通知数，用户自己要的事的结果不计在内 |
 | `AGENT_CORS_ALLOWEDORIGINS` | 无 | 可以从浏览器调用 API 的网页的源，用逗号分隔 |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`、`false` | 允许 webhook 投递到内网地址、使用明文 http；只用于在一台机器上试用 |
 

@@ -4,6 +4,7 @@ import dev.agentflow.agent.api.AgentProfileRequest;
 import dev.agentflow.agent.api.AgentProfileView;
 import dev.agentflow.agent.api.CoordinatorConfig;
 import dev.agentflow.agent.api.McpServerConfig;
+import dev.agentflow.agent.api.Proactivity;
 import dev.agentflow.agent.api.SandboxConfig;
 import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.cma.AgentRef;
@@ -333,7 +334,11 @@ public class AgentProfiles {
         if (active != null && (active < 1 || active > MAX_ACTIVE_TASKS)) {
             throw AgentException.invalid("coordinator.max_active_tasks is between 1 and " + MAX_ACTIVE_TASKS);
         }
-        return new CoordinatorConfig(List.copyOf(normalised), active == null ? DEFAULT_ACTIVE_TASKS : active);
+        if (coordinator.proactivity() != null && !Proactivity.LEVELS.contains(coordinator.proactivity())) {
+            throw AgentException.invalid("coordinator.proactivity is one of " + String.join(", ", Proactivity.LEVELS));
+        }
+        return new CoordinatorConfig(List.copyOf(normalised), active == null ? DEFAULT_ACTIVE_TASKS : active,
+                coordinator.proactivity());
     }
 
     private static SandboxConfig sandbox(SandboxConfig sandbox) {

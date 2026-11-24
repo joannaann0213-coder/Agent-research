@@ -36,6 +36,7 @@ curl -s http://localhost:8090/openapi.yaml -o agent-api.yaml
 | Schedule | What the agent is to do at a given time: set up by the application, or a follow-up the agent set itself |
 | Task | A piece of work that a worker does under a main agent: another agent of the application, in a session of its own. The main agent hands it on, or the application does, with an event or a schedule for that agent; either way the main agent knows of it. What the main agent begins on its own initiative waits for the user's confirmation first |
 | Grant | A user's standing authorisation: their main agent may start the tasks of one role on its own initiative, without asking each time |
+| Proactivity | How much a user wants to hear from their main agent without having asked: `proactive`, `balanced` or `quiet`. The user's to set; until they do, the main agent's own default applies |
 | Update | What happened for a user that the application may want to know: a message, an action, a failure. Read by polling, by a stream, or at a webhook |
 | Credential | What an MCP server needs to let the agent in. Kept in vaults on the agent platform, never by this service |
 
@@ -202,7 +203,8 @@ told at once, and tells the user what the worker reports if they need to hear it
 ## Updates
 
 Everything that happens for a user is recorded as an update: `message.created`, `action.created`,
-`action.resolved`, `run.failed`, and for the tasks of a main agent `task.created` and `task.updated`.
+`action.resolved`, `run.failed`, for the tasks of a main agent `task.created` and `task.updated`, and
+`preferences.updated` when a user's settings change.
 Each has a `seq` that only grows, so a reader that resumes after the last one it got misses nothing.
 There are three ways to read them.
 
@@ -275,11 +277,11 @@ from the next call on. With a refresh token, the platform renews the access toke
 | `sandbox` | A container with built-in tools (shell, files, web search and fetch) and its network: `none`, `limited` to `allowed_hosts`, or `unrestricted` |
 | `session_budget_usd` | What one session may spend at most; a conversation whose session has spent it goes on in a new one |
 | `memory` | `per_user`: the agent keeps notes about each user across sessions, in files of its sandbox, which must be enabled. It writes them in conversations and only reads them in the background |
-| `coordinator` | Makes the agent a main agent. `workers` lists who it may hand work to: each with a `role`, the key of the `agent` that plays it, a `description` that tells the main agent what the role is for, and if wanted `start`, the rule for when a task of the role may start |
+| `coordinator` | Makes the agent a main agent. `workers` lists who it may hand work to: each with a `role`, the key of the `agent` that plays it, a `description` that tells the main agent what the role is for, and if wanted `start`, the rule for when a task of the role may start. `proactivity` says how forward the main agent is with a user who has not said how they want it: `proactive` unless set |
 
 The service gives every agent four tools of its own: `read_events`, `notify_user`, `ask_user` and
 `schedule_followup`; a main agent gets five more to hand work on, `delegate_task`, `start_task`,
-`message_worker`, `list_tasks` and `close_task`. A conversation that is under way takes a changed
+`message_worker`, `list_tasks` and `close_task`, and `set_proactivity`. A conversation that is under way takes a changed
 configuration on at its next turn, in a new session that is told what was said before.
 
 ## A main agent and its tasks
@@ -313,6 +315,11 @@ curl -s -X POST $API/v1/users/u42/tasks/task_01EXAMPLE/start -H "Authorization: 
 # The user's standing authorisation for a role, and taking it back.
 curl -s -X PUT $API/v1/users/u42/grants/default/research -H "Authorization: Bearer $KEY"
 curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: Bearer $KEY"
+
+# How forward the user wants their main agent: reading it, and setting it.
+curl -s $API/v1/users/u42/preferences -H "Authorization: Bearer $KEY"
+curl -s -X PUT $API/v1/users/u42/preferences -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{"proactivity": "balanced"}'
 ```
 
 Nothing else changes in how you call the API: users write to `POST /v1/users/{user_id}/messages` and
@@ -346,6 +353,12 @@ your systems post events, as before. What changes is where those go.
 - A worker is any agent of the application that is not a main agent. Of the user and the
   conversation it knows only what the main agent writes into the task, or what your event says.
 - The workers of one user run one at a time, unless the Inbox allows more (`inbox.lanes.batch.cap`).
+- `PUT /v1/users/{user_id}/preferences` sets how forward the user wants their main agent, with
+  `proactivity`: `proactive`, where it starts, keeps them up to date; `balanced` tells them what
+  needs them and what came of the work; `quiet` tells them only what is key, and offers nothing. A
+  user's client may set it, the user can tell the main agent, and a change is a
+  `preferences.updated` update. [Main agent and workers](main-agent.md#how-forward-the-main-agent-is)
+  has what each level changes.
 
 In demo mode the script hands on whatever the user writes after `task:`, and the worker answers that
 it is done; an event whose data has a text `task` makes the script propose that work by itself, and
@@ -362,6 +375,7 @@ passes on. A worker whose agent has a tool server calls it when the task's words
 | Requests of one user's tokens | 20 at once, then 5 a second | `agent.limits.user-burst`, `user-per-second` |
 | Notifications of one turn in the background | 3 | `agent.notify.per-run` |
 | Notifications of one user | 20 in 24 hours | `agent.notify.per-user-per-day` |
+| Notifications of one user who wants their main agent quiet | 5 in 24 hours, not counting what came of work they asked for | `agent.notify.quiet-per-user-per-day` |
 | Follow-ups in a row, and waiting on one line | 5 and 5 | `agent.followups.max-chain`, `max-pending` |
 | How long an action waits | 24 hours | `agent.actions.ttl` |
 | How long a turn may work | 10 minutes | `agent.turn.deadline` |

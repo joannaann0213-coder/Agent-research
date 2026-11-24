@@ -6,7 +6,8 @@
 # user has allowed the role to start unasked. An event that the application sends to the worker itself
 # becomes a task of the main agent, which hears of it at once; so does what the application schedules
 # for the worker, when it is due. A task whose words say "needs approval" makes the worker call its
-# tool server, which waits for the user: the main agent is told at once, and tells the user.
+# tool server, which waits for the user: the main agent is told at once, and tells the user. And
+# "proactivity:" with a level tells the main agent how much the user wants to hear from it.
 #
 #   API=http://localhost:8090 ADMIN=<an administration key> examples/agent-api/main-agent.sh
 #
@@ -139,12 +140,39 @@ BEFORE=$(notifications)
 echo "   the action is now: $(call POST "/v1/users/$USER_ID/actions/$ACTION/resolve" '{"decision": "approve"}' "$TOKEN" | json "['status']")"
 echo "   notification: $(wait_for_notification "$BEFORE")"
 
-echo "20. With the API key, a task shows what was said about it, and by whom. The two latest tasks:"
+echo "20. The user finds that too much, and tells the main agent to be quiet. It is on record, and the user's client can read and set it too."
+SEQ=$(call POST /v1/users/$USER_ID/messages '{"text": "proactivity: quiet"}' "$TOKEN" | json "['seq']")
+for _ in $(seq 1 30); do
+  REPLY=$(call GET "/v1/users/$USER_ID/messages?after=$SEQ" '' "$TOKEN" \
+    | python3 -c "import json,sys; m=[x for x in json.load(sys.stdin)['messages'] if x['kind']=='reply']; print(m[0]['text'] if m else '')")
+  [[ -n $REPLY ]] && break
+  sleep 1
+done
+echo "   agent: ${REPLY:-(no reply within 30 seconds)}"
+echo "   preferences: $(call GET /v1/users/$USER_ID/preferences '' "$TOKEN")"
+
+echo "21. The same kind of request again. Now the user hears nothing while the worker waits: only what came of it."
+BEFORE=$(notifications)
+call POST /v1/users/$USER_ID/messages '{"text": "task: refund order 8888, needs approval"}' "$TOKEN" > /dev/null
+for _ in $(seq 1 30); do
+  ACTION=$(call GET "/v1/users/$USER_ID/actions" '' "$TOKEN" | python3 -c "import json,sys; a=json.load(sys.stdin)['actions']; print(a[0]['action_id'] if a else '')")
+  [[ -n $ACTION ]] && break
+  sleep 1
+done
+sleep 3
+echo "   the worker waits for the user, and the main agent has sent $(( $(notifications) - BEFORE )) notifications about it"
+echo "   the action is now: $(call POST "/v1/users/$USER_ID/actions/$ACTION/resolve" '{"decision": "approve"}' "$TOKEN" | json "['status']")"
+echo "   notification: $(wait_for_notification "$BEFORE")"
+
+echo "22. In their own client the user turns it up again."
+call PUT /v1/users/$USER_ID/preferences '{"proactivity": "proactive"}' "$TOKEN"; echo
+
+echo "23. With the API key, a task shows what was said about it, and by whom. The two latest tasks:"
 for TASK in $(call GET "/v1/users/$USER_ID/tasks?status=all" | python3 -c "import json,sys; print(' '.join(t['task_id'] for t in json.load(sys.stdin)['tasks'][:2]))"); do
   call GET "/v1/users/$USER_ID/tasks/$TASK" \
     | python3 -c "import json,sys; t=json.load(sys.stdin); print('  ', t['title']); [print('    ', n['seq'], n['from'], n['kind'] + ':', n['text'][:160]) for n in t['notes']]"
 done
 
-echo "21. Everything that happened for the user, in order:"
+echo "24. Everything that happened for the user, in order:"
 call GET "/v1/users/$USER_ID/updates?after=0" '' "$TOKEN" \
   | python3 -c "import json,sys; [print('  ', x['seq'], x['type'], x['data'].get('kind', x['data'].get('status', ''))) for x in json.load(sys.stdin)['updates']]"

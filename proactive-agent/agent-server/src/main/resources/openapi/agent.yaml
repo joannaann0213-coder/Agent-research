@@ -1042,6 +1042,82 @@ paths:
         default:
           $ref: '#/components/responses/Error'
 
+  /v1/users/{user_id}/preferences:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Tasks]
+      operationId: getPreferences
+      summary: What the user wants of their agents
+      description: |
+        Returns the user's own settings. For now there is one: `proactivity`, how much the user
+        wants to hear from their main agent without having asked. It is absent while the user has
+        none; the default of the main agent then applies (`coordinator.proactivity`), and where
+        that has none, the service's, which is `proactive` unless configured otherwise. An API key
+        or the user's own token may call this.
+      responses:
+        '200':
+          description: The user's settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreferencesView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+    put:
+      tags: [Tasks]
+      operationId: setPreferences
+      summary: Set what the user wants of their agents
+      description: |
+        Sets how forward the user wants their main agent, from now on.
+
+        | `proactivity` | The main agent is woken at once | It tells the user | Work of its own initiative |
+        | --- | --- | --- | --- |
+        | `proactive` | Whenever anything happens to a task | What has started, what waits for them, what came of it | Offered, or started where it may |
+        | `balanced` | When a worker reports or fails, a task is closed, or a worker waits for the user | What needs them, and what came of it | Offered, or started where it may |
+        | `quiet` | When a worker reports or fails, or a task is closed | Only what needs their decision, and the outcome of what they asked for | Not offered; started only where the user or the application allowed it |
+
+        Whatever the level, the main agent knows of everything: what does not wake it is given to
+        its next turn. A user who wants it `quiet` is also sent fewer notifications in a day.
+
+        The request holds all of the user's settings: a `proactivity` that is left out or `null`
+        takes the user's own setting away, and the agent's default applies again. An API key or the
+        user's own token may call this; the main agent sets it too, when the user tells it so in
+        the conversation. A change is recorded as a `preferences.updated` update.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreferencesRequest'
+            example:
+              proactivity: balanced
+      responses:
+        '200':
+          description: The user's settings as they are now.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreferencesView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
   /v1/users/{user_id}/updates:
     parameters:
       - $ref: '#/components/parameters/UserId'
@@ -1905,6 +1981,13 @@ components:
           description: |
             How many tasks of one conversation may be queued or being worked on at a time. 4 when
             absent.
+        proactivity:
+          type: string
+          enum: [proactive, balanced, quiet]
+          description: |
+            How forward the main agent is with a user who has not said how they want it; see
+            `PUT /v1/users/{user_id}/preferences` for what each level means. The service's default
+            when absent, which is `proactive` unless configured otherwise.
 
     AgentProfileRequest:
       type: object
@@ -2189,7 +2272,7 @@ components:
           type: string
         type:
           type: string
-          enum: [message.created, action.created, action.resolved, run.failed, task.created, task.updated]
+          enum: [message.created, action.created, action.resolved, run.failed, task.created, task.updated, preferences.updated]
         created_at:
           type: string
           format: date-time
@@ -2199,8 +2282,9 @@ components:
           description: |
             For `message.created`, the message (a MessageView). For `action.created` and
             `action.resolved`, the action (an ActionView). For `task.created` and `task.updated`,
-            the task (a TaskView, without its notes). For `run.failed`: `run_id`, then
-            `conversation_id`, `subject` or `task_id`, and `error`.
+            the task (a TaskView, without its notes). For `preferences.updated`, the user's settings
+            (a PreferencesView). For `run.failed`: `run_id`, then `conversation_id`, `subject` or
+            `task_id`, and `error`.
 
     UpdatePage:
       type: object
@@ -2238,7 +2322,7 @@ components:
           type: array
           items:
             type: string
-            enum: [message.created, action.created, action.resolved, run.failed, task.created, task.updated]
+            enum: [message.created, action.created, action.resolved, run.failed, task.created, task.updated, preferences.updated]
           description: The types to deliver. All when absent.
         enabled:
           type: boolean
@@ -2533,6 +2617,36 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/GrantView'
+
+    PreferencesRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        proactivity:
+          type: string
+          nullable: true
+          enum: [proactive, balanced, quiet, null]
+          description: |
+            How much the user wants to hear from their main agent without having asked. Left out or
+            `null`: the user has no setting of their own, and the agent's default applies.
+
+    PreferencesView:
+      type: object
+      properties:
+        proactivity:
+          type: string
+          enum: [proactive, balanced, quiet]
+          description: The user's own setting. Absent when they have none, and the agent's default applies.
+        set_by:
+          type: string
+          enum: [user, app, agent]
+          description: |
+            Who set it last: `user`, `app`, or `agent` when the user told the main agent in the
+            conversation. Absent when it was never set.
+        updated_at:
+          type: string
+          format: date-time
+          description: When it was set last. Absent when it was never set.
 
     OAuthTokens:
       type: object

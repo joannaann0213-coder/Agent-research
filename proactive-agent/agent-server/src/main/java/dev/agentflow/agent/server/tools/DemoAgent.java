@@ -26,7 +26,8 @@ import tools.jackson.databind.node.ObjectNode;
  *       the user's confirmation, unless the role may start unasked. When the application hands
  *       work to one of its workers itself, an event or what it scheduled, it takes note and says
  *       nothing. When a worker waits for somebody's approval, it tells the user. When the user
- *       writes while there is news of its tasks, it reads the news first and says so.
+ *       writes while there is news of its tasks, it reads the news first and says so. When the user
+ *       writes {@code proactivity:} and a level, it records how forward they want it.
  *   <li>As a worker it reads the task, or what the application handed it, and reports that it is
  *       done. A worker whose agent has a tool server first calls that server's tool {@code demo}
  *       when the task's words contain "needs approval", so that the wait for a person can be tried.
@@ -39,6 +40,9 @@ public final class DemoAgent implements FakeBrain {
 
     /** What the user writes to have a main agent hand the rest of the line to a worker. */
     private static final String HAND_ON = "task:";
+
+    /** What the user writes to tell a main agent how much they want to hear from it. */
+    private static final String HOW_FORWARD = "proactivity:";
 
     /** What a task says to have a worker with a tool server call it first. */
     private static final String NEEDS_APPROVAL = "needs approval";
@@ -65,6 +69,16 @@ public final class DemoAgent implements FakeBrain {
                 return ModelStep.say(handedOn.error() ? "I could not hand that on. " + handedOn.text()
                         : "I have handed that to a worker (" + Json.STORED.readTree(handedOn.text()).path("task_id").asString()
                                 + "). I will tell you what comes of it.");
+            }
+            ToolOutcome set = context.resultOf(PlatformTools.SET_PROACTIVITY);
+            if (set != null) {
+                return ModelStep.say(set.error() ? "I could not set that. " + set.text() : "[demo] " + set.text());
+            }
+            if (read == null && context.step() == 0 && said.regionMatches(true, 0, HOW_FORWARD, 0, HOW_FORWARD.length())
+                    && context.agent().customTools().stream().anyMatch(tool -> tool.name().equals(PlatformTools.SET_PROACTIVITY))) {
+                ObjectNode input = Json.STORED.createObjectNode();
+                input.put("level", said.substring(HOW_FORWARD.length()).strip().toLowerCase());
+                return ModelStep.of(ModelStep.custom(PlatformTools.SET_PROACTIVITY, input.toString()));
             }
             String role = firstRole(context.agent());
             if (read == null && context.step() == 0 && role != null && said.regionMatches(true, 0, HAND_ON, 0, HAND_ON.length())) {
@@ -121,6 +135,13 @@ public final class DemoAgent implements FakeBrain {
         if (!worthTelling.isEmpty()) {
             tell.add("[demo] Something happened that you should know about: " + String.join(", ", worthTelling) + ".");
         }
+        // A wait that is over by the time the main agent hears of it is nothing to tell the user.
+        List<String> movedOn = new ArrayList<>();
+        for (JsonNode report : waiting.path("reports")) {
+            if (!"waiting".equals(report.path("kind").asString()) && !"assigned".equals(report.path("kind").asString())) {
+                movedOn.add(report.path("task_id").asString());
+            }
+        }
         for (JsonNode report : waiting.path("reports")) {
             String kind = report.path("kind").asString();
             if ("assigned".equals(kind) || "decided".equals(kind)) {
@@ -129,8 +150,10 @@ public final class DemoAgent implements FakeBrain {
                 continue;
             }
             if ("waiting".equals(kind)) {
-                tell.add("[demo] Your " + report.path("role").asString() + " worker waits for an approval before it can go on "
-                        + "with \"" + report.path("title").asString() + "\".");
+                if (!movedOn.contains(report.path("task_id").asString())) {
+                    tell.add("[demo] Your " + report.path("role").asString() + " worker waits for an approval before it can "
+                            + "go on with \"" + report.path("title").asString() + "\".");
+                }
                 continue;
             }
             tell.add("[demo] Your task \"" + report.path("title").asString() + "\" is back from the "

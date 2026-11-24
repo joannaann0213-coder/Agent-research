@@ -769,6 +769,12 @@ public class AgentProperties {
         private int maxUnaskedPerDay = 10;
 
         /**
+         * How forward a main agent is with a user who has not said how they want it, when the agent's
+         * own configuration does not say either: {@code proactive}, {@code balanced} or {@code quiet}.
+         */
+        private String proactivity = "proactive";
+
+        /**
          * The longest turn of a worker on a task. Longer than a conversation's turn, because nobody
          * waits for it; keep it below the Inbox's {@code inbox.lease.max-duration}. Work that takes
          * longer goes on in a further turn, which the worker sets itself a follow-up for.
@@ -785,6 +791,14 @@ public class AgentProperties {
 
         public void setMaxUnaskedPerDay(int maxUnaskedPerDay) {
             this.maxUnaskedPerDay = maxUnaskedPerDay;
+        }
+
+        public String getProactivity() {
+            return proactivity;
+        }
+
+        public void setProactivity(String proactivity) {
+            this.proactivity = proactivity;
         }
 
         public Duration getTurnDeadline() {
@@ -857,6 +871,9 @@ public class AgentProperties {
         /** How many notifications a user gets within 24 hours, from all agents of the application together. */
         private int perUserPerDay = 20;
 
+        /** The same, for a user who has asked their main agent to be quiet. Never more than {@code perUserPerDay}. */
+        private int quietPerUserPerDay = 5;
+
         /** The longest text of one notification, in characters. */
         private int maxText = 4000;
 
@@ -874,6 +891,14 @@ public class AgentProperties {
 
         public void setPerUserPerDay(int perUserPerDay) {
             this.perUserPerDay = perUserPerDay;
+        }
+
+        public int getQuietPerUserPerDay() {
+            return quietPerUserPerDay;
+        }
+
+        public void setQuietPerUserPerDay(int quietPerUserPerDay) {
+            this.quietPerUserPerDay = quietPerUserPerDay;
         }
 
         public int getMaxText() {

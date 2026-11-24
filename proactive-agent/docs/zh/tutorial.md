@@ -434,6 +434,15 @@ curl -s -X POST $API/v1/users/u-1001/events -H "Authorization: Bearer $KEY" \
 ```
 
 worker 的汇报回到主 agent，由它决定告诉用户什么。你的应用通过 `task.created` 和 `task.updated` 这两种更新跟踪任务。
+
+主 agent 一开始是积极的：它随时向用户通报进展。用户想听到多少由用户自己说了算，所以给他们一个设置项，或者让他们在对话里直接告诉 agent。`proactive`
+是起始档，`balanced` 只说需要用户做的事和结果，`quiet` 只说关键的。不管哪一档，主 agent 仍然知道一切。
+
+```bash
+curl -s -X PUT $API/v1/users/u-1001/preferences -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{"proactivity": "balanced"}'
+```
+
 `examples/agent-api/main-agent.sh` 会一步步把这些都跑一遍。
 
 ## 11. 切换到真实模式

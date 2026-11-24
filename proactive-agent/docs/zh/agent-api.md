@@ -31,6 +31,7 @@ curl -s http://localhost:8090/openapi.yaml -o agent-api.yaml
 | 定时计划 | agent 在某个时间要做的事：由应用设置，或者是 agent 给自己设的跟进 |
 | 任务 | worker 在主 agent 名下做的一件工作；worker 是应用的另一个 agent，有自己的 session。任务由主 agent 交出，或者由应用用发给那个 agent 的事件或定时计划交出；两种情况主 agent 都知道。主 agent 自己起意的任务先要等用户确认 |
 | 长期授权 | 用户给出的长期授权：他的主 agent 可以自己开始某个角色的任务，不用每次都问 |
+| 主动程度 | 用户在没开口的情况下想从主 agent 那里听到多少：`proactive`、`balanced` 或 `quiet`。由用户自己设；用户没设时，用主 agent 自己的默认值 |
 | 更新 | 用户身上发生的、应用可能想知道的事：一条消息、一个动作、一次失败。可以轮询、订阅流，或者推送到 webhook |
 | 凭据 | MCP 服务器放行 agent 所需的东西。保存在 agent 平台的 vault 里，本服务从不保存 |
 
@@ -171,7 +172,8 @@ agent 也会用自己的 `schedule_followup` 工具给自己设跟进：会话�
 ## 更新
 
 用户身上发生的每件事都记录为一条更新：`message.created`、`action.created`、`action.resolved`、`run.failed`，以及主 agent
-的任务对应的 `task.created` 和 `task.updated`。每条都有一个只增不减的 `seq`，读取方从拿到的最后一条之后接着读，就什么都不会漏。有三种读法。
+的任务对应的 `task.created` 和 `task.updated`，还有用户的设置变化时的
+`preferences.updated`。每条都有一个只增不减的 `seq`，读取方从拿到的最后一条之后接着读，就什么都不会漏。有三种读法。
 
 | 方式 | 接口 | 适合 |
 | --- | --- | --- |
@@ -233,10 +235,10 @@ curl -s -X PUT $API/v1/users/u42/credentials/notes -H "Authorization: Bearer $KE
 | `sandbox` | 带内置工具（shell、文件、网页搜索与抓取）的容器及其网络：`none`、`limited` 到 `allowed_hosts`，或 `unrestricted` |
 | `session_budget_usd` | 一个 session 最多能花多少钱；花完的会话在新的 session 里继续 |
 | `memory` | `per_user`：agent 跨 session 记住每个用户，笔记存在沙箱的文件里，因此必须开启沙箱。会话里写，后台只读 |
-| `coordinator` | 让这个 agent 成为主 agent。`workers` 列出它可以把工作交给谁：每一项有 `role`、扮演这个角色的 `agent` 的 key、告诉主 agent 这个角色用来做什么的 `description`，需要时还有 `start`，规定这个角色的任务何时可以开始 |
+| `coordinator` | 让这个 agent 成为主 agent。`workers` 列出它可以把工作交给谁：每一项有 `role`、扮演这个角色的 `agent` 的 key、告诉主 agent 这个角色用来做什么的 `description`，需要时还有 `start`，规定这个角色的任务何时可以开始。`proactivity` 规定用户没说过时主 agent 的主动程度：不设就是 `proactive` |
 
 服务给每个 agent 四个自带工具：`read_events`、`notify_user`、`ask_user` 和 `schedule_followup`；主 agent 另有五个用来交出工作的工具：`delegate_task`、`start_task`、`message_worker`、`list_tasks`
-和 `close_task`。正在进行的会话在下一轮采用改过的配置，换到一个新的 session，并被告知之前说过的内容。
+和 `close_task`，另外还有 `set_proactivity`。正在进行的会话在下一轮采用改过的配置，换到一个新的 session，并被告知之前说过的内容。
 
 ## 主 agent 和它的任务
 
@@ -267,6 +269,11 @@ curl -s -X POST $API/v1/users/u42/tasks/task_01EXAMPLE/start -H "Authorization: 
 # 用户给某个角色的长期授权，以及收回它。
 curl -s -X PUT $API/v1/users/u42/grants/default/research -H "Authorization: Bearer $KEY"
 curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: Bearer $KEY"
+
+# 用户想要主 agent 多主动：读取，以及设置。
+curl -s $API/v1/users/u42/preferences -H "Authorization: Bearer $KEY"
+curl -s -X PUT $API/v1/users/u42/preferences -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' -d '{"proactivity": "balanced"}'
 ```
 
 调用 API 的方式没有别的变化：用户照旧写到 `POST /v1/users/{user_id}/messages`，你的系统照旧提交事件。变的是它们去哪里。
@@ -287,6 +294,9 @@ curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: B
   会被告知 worker 在等，以及最后怎么决定的，所以用户问起时它答得上来。
 - 应用里任何不是主 agent 的 agent 都可以当 worker。关于用户和会话，它只知道主 agent 写进任务里的内容，或者你的事件里说的内容。
 - 一个用户的 worker 一次只运行一个，除非收件箱放宽这个上限（`inbox.lanes.batch.cap`）。
+- `PUT /v1/users/{user_id}/preferences` 用 `proactivity` 设置用户想要主 agent 多主动：`proactive`
+  是起始档，随时向用户通报进展；`balanced` 只说需要用户做的事和结果；`quiet` 只说关键的，而且不提任何建议。用户的客户端可以设，用户也可以直接告诉主
+  agent；每次变化是一条 `preferences.updated` 更新。每一档具体改变什么，见[主 agent 与 worker](main-agent.md#主动程度)。
 
 演示模式下，脚本会把用户写在 `task:` 后面的内容交出去，worker 回答说做完了；事件的数据里如果有一段文字 `task`，脚本会自己提出做这件事；指明 worker
 的事件或定时计划由 worker 处理，它的汇报由主 agent 转告用户。任务的文字里有 "needs approval" 时，带工具服务器的 worker
@@ -300,6 +310,7 @@ curl -s -X DELETE $API/v1/users/u42/grants/default/research -H "Authorization: B
 | 单个用户 token 的请求 | 先 20 个，之后每秒 5 个 | `agent.limits.user-burst`、`user-per-second` |
 | 后台一轮的通知 | 3 条 | `agent.notify.per-run` |
 | 单个用户的通知 | 24 小时内 20 条 | `agent.notify.per-user-per-day` |
+| 想让主 agent 安静的用户收到的通知 | 24 小时内 5 条，用户自己要的事的结果不计在内 | `agent.notify.quiet-per-user-per-day` |
 | 连续跟进的次数，和一条工作线上等待的跟进 | 5 和 5 | `agent.followups.max-chain`、`max-pending` |
 | 动作的等待时长 | 24 小时 | `agent.actions.ttl` |
 | 一轮最长的工作时间 | 10 分钟 | `agent.turn.deadline` |
