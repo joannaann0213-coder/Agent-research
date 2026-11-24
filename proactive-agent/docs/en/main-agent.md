@@ -399,5 +399,6 @@ What to measure once the service runs with a model:
 - What was set up before a main agent served the conversation stays where it was: a schedule keeps
   running on its subject's line. Cancel it and set it up again to bring it under the main agent.
 - A main agent hears of the tasks of its conversation. What happens in another conversation of the
-  same user, it does not.
+  same user, it does not: an application that wants one agent that knows everything about a user
+  gives each user one conversation.
 - Nothing here ran against a model or the platform: the tests use the scripted stand-in.
