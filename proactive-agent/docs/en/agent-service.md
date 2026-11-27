@@ -167,7 +167,8 @@ event of the line, and the turn that gets it ignores it.
 
 New input on a line withdraws what the line waits for: the waiting turn finishes, and the new input
 comes in the next one. A turn that holds the line's session keeps it until it ends; a later run of
-the line waits for it rather than touching the session. A message to a conversation that has a
+the line waits for it rather than touching the session, and the waiting costs it no attempt in the
+Inbox. A message to a conversation that has a
 question waiting is taken as the answer to the latest one. An action that nobody decides expires
 after 24 hours, when the Inbox wakes the run. The turn's own deadline does not count the waiting.
 
@@ -276,7 +277,8 @@ else: live mode starts with new applications.
   [the tutorial](tutorial.md) shows how, and what to check before going live.
 - Run several instances behind a load balancer; they coordinate through the Inbox and the database.
 - An instance that stops lets the claims it has under way finish and gives back at once what they
-  bring, so that no run waits for a lease to run out.
+  bring, so that no run waits for a lease to run out. The run goes back deferred, which costs it no
+  attempt, however many of the instance's waiting claims are handed it in turn.
 - The background loops (relay, workers, sweep, webhook deliveries) run in every instance.
 - Rate limits and CMA limits count per instance.
 - Back up the database: it holds the conversations; CMA holds the sessions' history until they are

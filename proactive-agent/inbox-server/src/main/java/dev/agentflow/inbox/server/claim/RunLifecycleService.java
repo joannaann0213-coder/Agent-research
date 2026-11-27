@@ -46,7 +46,7 @@ public class RunLifecycleService {
     public record LockedRun(String runId, String tenantId, String inboxId, Lane lane, String mergeKey,
             RunStatus status, int epoch, int attempt, int maxAttempts, int nextRunSeq, boolean acceptsSteer,
             String leaseOwner, Instant leaseExpiresAt, Instant leaseDeadlineAt, String resumeKey,
-            Instant suspendDeadlineAt, String onTimeout, Instant nextAttemptAt) {
+            Instant suspendDeadlineAt, String onTimeout, Instant nextAttemptAt, Instant createdAt) {
 
         /** Name recorded in the event history for what this run's worker did. */
         public String workerActor() {
@@ -174,7 +174,12 @@ public class RunLifecycleService {
             Duration delay = request.retryAfterMs() != null
                     ? bounded(Duration.ofMillis(request.retryAfterMs()))
                     : backoff(run.attempt());
-            return requeueOrKill(run, "nack", run.workerActor(), request.reason(), now.plus(delay), now);
+            // Handed back for a reason that is not the run's: the attempt is not counted, so that waiting cannot
+            // kill a run. Only for so long after the run was made, so that one put off for ever is seen in the end.
+            boolean deferred = Boolean.TRUE.equals(request.deferred())
+                    && now.isBefore(run.createdAt().plus(properties.getRetry().getMaxDefer()));
+            return requeueOrKill(run, deferred ? "defer" : "nack", run.workerActor(), request.reason(), now.plus(delay), now,
+                    !deferred);
         });
         publishWake();
         return outcome;
@@ -358,7 +363,7 @@ public class RunLifecycleService {
             if (run.status() != RunStatus.ACTIVE || run.epoch() != epoch || run.leaseExpiresAt().isAfter(now)) {
                 return false;
             }
-            requeueOrKill(run, "lease_expired", "system:lease-sweeper", "lease expired", now, now);
+            requeueOrKill(run, "lease_expired", "system:lease-sweeper", "lease expired", now, now, true);
             metrics.leaseReclaimed(run.tenantId(), run.lane());
             return true;
         });
@@ -371,10 +376,14 @@ public class RunLifecycleService {
     /**
      * Shared by nack and lease expiry. Below the attempt limit the run is queued and keeps its events
      * (they return to {@code pending} but stay bound to it). At the limit the run and its events are dead.
+     *
+     * @param counts whether this spends an attempt. A run that its worker defers is queued again
+     *     with the attempt it had, and is never made dead by that
      */
     private RunOutcome requeueOrKill(LockedRun run, String reason, String actor, String error, Instant nextAttemptAt,
-            Instant now) {
-        if (run.attempt() >= run.maxAttempts()) {
+            Instant now, boolean counts) {
+        int spent = counts ? 1 : 0;
+        if (counts && run.attempt() >= run.maxAttempts()) {
             jdbc.sql("""
                     WITH moved AS (
                         UPDATE event SET status = 'dead', finished_at = :now, last_error = CAST(:error AS text)
@@ -406,14 +415,14 @@ public class RunLifecycleService {
         jdbc.sql("""
                 UPDATE run
                    SET status = 'queued', slot_no = NULL, lease_expires_at = NULL, lease_deadline_at = NULL,
-                       attempt = attempt + 1, next_attempt_at = :nextAttemptAt, queued_reason = :reason,
+                       attempt = attempt + :spent, next_attempt_at = :nextAttemptAt, queued_reason = :reason,
                        last_error = CAST(:error AS text), updated_at = :now
                  WHERE run_id = :run
                 """)
-                .param("nextAttemptAt", Db.ts(nextAttemptAt)).param("reason", reason).param("error", error)
+                .param("spent", spent).param("nextAttemptAt", Db.ts(nextAttemptAt)).param("reason", reason).param("error", error)
                 .param("now", Db.ts(now)).param("run", run.runId())
                 .update();
-        return new RunOutcome(run.runId(), "queued", run.epoch(), run.attempt() + 1, nextAttemptAt);
+        return new RunOutcome(run.runId(), "queued", run.epoch(), run.attempt() + spent, nextAttemptAt);
     }
 
     // ---- shared pieces --------------------------------------------------------------------------
@@ -432,7 +441,7 @@ public class RunLifecycleService {
             LockedRun run = jdbc.sql("""
                     SELECT run_id, tenant_id, inbox_id, lane, merge_key, status, epoch, attempt, max_attempts,
                            next_run_seq, accepts_steer, lease_owner, lease_expires_at, lease_deadline_at,
-                           resume_key, suspend_deadline_at, on_timeout, next_attempt_at
+                           resume_key, suspend_deadline_at, on_timeout, next_attempt_at, created_at
                       FROM run
                      WHERE run_id = :run
                        FOR UPDATE
@@ -445,7 +454,8 @@ public class RunLifecycleService {
                             rs.getString("lease_owner"), Db.instant(rs, "lease_expires_at"),
                             Db.instant(rs, "lease_deadline_at"),
                             rs.getString("resume_key"), Db.instant(rs, "suspend_deadline_at"),
-                            rs.getString("on_timeout"), Db.instant(rs, "next_attempt_at")))
+                            rs.getString("on_timeout"), Db.instant(rs, "next_attempt_at"),
+                            Db.instant(rs, "created_at")))
                     .single();
             return action.apply(run);
         });

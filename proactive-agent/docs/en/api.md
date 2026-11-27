@@ -331,6 +331,10 @@ Every run ends with exactly one of these calls. Each answers with the run's stat
   queue. Absent means every event.
 - `retry_after_ms` overrides the exponential backoff and is capped at 5 minutes. The answer to a nack
   carries `next_attempt_at`.
+- `"deferred": true` on a nack says that the worker hands the run back for a reason that is not the
+  run's: something else has to finish first, or the worker is stopping. The attempt is then not
+  counted, so that waiting cannot make a run `dead`. It is honoured for 30 minutes after the run was
+  made (`inbox.retry.max-defer`); after that it counts like any nack.
 - `resume_key` and `timeout_seconds` are required for a suspend. `on_timeout` is `finish` (default) or
   `resume`. The timeout is capped at 30 days.
 - Repeating the same call with the same epoch returns the earlier outcome.

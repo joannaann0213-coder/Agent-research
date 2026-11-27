@@ -1057,7 +1057,7 @@ components:
         reason:
           type: string
           description: |
-            `accepted`, `claim`, `redelivery`, `steer`, `resume`, `ack`, `fail`, `nack`,
+            `accepted`, `claim`, `redelivery`, `steer`, `resume`, `ack`, `fail`, `nack`, `defer`,
             `lease_expired`, `attempts_exhausted`, `suspended`, `suspend_timeout`, `released`,
             `replay` or `manual_dead`.
         actor:
@@ -1349,6 +1349,13 @@ components:
           type: integer
           format: int64
           description: Overrides the exponential backoff; capped at 5 minutes.
+        deferred:
+          type: boolean
+          description: >-
+            True when the worker hands the run back for a reason that is not the run's: something
+            else has to finish first, or the worker is stopping. The attempt is then not counted.
+            Honoured for a limited time after the run was made (inbox.retry.max-defer, 30 minutes);
+            after that it counts like any nack.
 
     SuspendRequest:
       type: object
@@ -1428,7 +1435,7 @@ components:
           format: date-time
         queued_reason:
           type: string
-          enum: [nack, lease_expired, suspend_timeout]
+          enum: [nack, defer, lease_expired, suspend_timeout]
         accepts_steer:
           type: boolean
         resume_key:

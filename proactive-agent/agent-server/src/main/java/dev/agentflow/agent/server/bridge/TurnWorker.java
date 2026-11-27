@@ -63,9 +63,11 @@ public class TurnWorker {
             return false;
         }
         if (stopping) {
-            // This instance is stopping: the run goes back at once, to another instance or the next start.
+            // This instance is stopping: the run goes back at once, to another instance or the next start. It
+            // goes back deferred, which costs it no attempt: the claims of this instance that still wait at the
+            // Inbox may each be handed the same run in turn, and that must not use up what is there for failures.
             ClaimedRun run = claimed.body();
-            inbox.nack(run.runId(), new NackRequest(run.epoch(), "the agent service is stopping", 0L));
+            inbox.nack(run.runId(), NackRequest.deferred(run.epoch(), "the agent service is stopping", 0L));
             return true;
         }
         runner.run(claimed.body());

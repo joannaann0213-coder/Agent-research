@@ -191,7 +191,7 @@ stateDiagram-v2
     pending --> claimed: claim, redelivery, steer, resume
     claimed --> done: ack, suspend_timeout
     claimed --> failed: fail
-    claimed --> pending: nack, lease_expired, released, suspend_timeout
+    claimed --> pending: nack, defer, lease_expired, released, suspend_timeout
     claimed --> dead: attempts_exhausted
     pending --> dead: manual_dead
     done --> pending: replay (force)
@@ -225,6 +225,7 @@ stateDiagram-v2
 | `ack` | `claimed` → `done` | Run 正常结束 |
 | `fail` | `claimed` → `failed` | Run 以 `ack(failed)` 结束 |
 | `nack` | `claimed` → `pending` | Worker 要求重试 |
+| `defer` | `claimed` → `pending` | Worker 退回 run 的原因不在 run 本身；不计尝试次数 |
 | `lease_expired` | `claimed` → `pending` | 清扫器把 run 收回 |
 | `attempts_exhausted` | `claimed` → `dead` | 达到尝试次数上限 |
 | `suspended` | `claimed` → `claimed` | Run 挂起；事件留在它名下 |
@@ -245,6 +246,7 @@ stateDiagram-v2
 | `ack(done)` | Run 及其消费的事件变为 `done` |
 | `ack(failed)` | 终态失败。Run 及其事件变为 `failed`，不再重试 |
 | `nack` | Run 进入排队，退避依次为 2、4、8、16 秒（底数 2，封顶 5 分钟），或者 worker 指定的延迟 |
+| 带 `deferred` 的 `nack` | 同上，但不计尝试次数：worker 退回 run 的原因不在 run 本身。在 run 创建后的 30 分钟内有效 |
 | 租约过期 | 认定 worker 已死。Run 进入排队并立即可以重新下发，同时计一次尝试 |
 | 第五次尝试失败 | Run 及其事件变为 `dead` |
 

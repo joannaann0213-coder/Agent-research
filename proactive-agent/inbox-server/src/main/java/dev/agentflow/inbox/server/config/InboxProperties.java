@@ -254,6 +254,20 @@ public class InboxProperties {
         /** Backoff after attempt n is base^n, capped. */
         private Duration backoffBase = Duration.ofSeconds(2);
         private Duration backoffCap = Duration.ofMinutes(5);
+        /**
+         * For how long after a run was made a worker can hand it back without the attempt being
+         * counted ({@code deferred}). After that such a nack counts like any other, so that a run
+         * which is put off for ever ends as dead and is seen.
+         */
+        private Duration maxDefer = Duration.ofMinutes(30);
+
+        public Duration getMaxDefer() {
+            return maxDefer;
+        }
+
+        public void setMaxDefer(Duration maxDefer) {
+            this.maxDefer = maxDefer;
+        }
 
         public int getMaxAttempts() {
             return maxAttempts;

@@ -150,6 +150,7 @@ examples/agent-api/quickstart.sh
 | `inbox.lease.duration` / `max-duration` | `60s` / `30m` | 一次心跳续出的租约时长；单次授予租约的上限 |
 | `inbox.retry.max-attempts` | `5` | 尝试多少次之后 run 进入 `dead` |
 | `inbox.retry.backoff-base` / `backoff-cap` | `2s` / `5m` | 第 n 次尝试之后的退避为 base^n，有封顶 |
+| `inbox.retry.max-defer` | `30m` | run 创建后多长时间内，worker 可以退回它而不计尝试次数 |
 | `inbox.batch.max-events` / `max-bytes` | `20` / `262144` | 合批上限 |
 | `inbox.lanes.<lane>.cap` | 1 / 2 / 1 | 每个收件箱在 `interactive` / `background` / `batch` 上的并发 run 数 |
 | `inbox.lanes.<lane>.quiet-window` / `max-wait` | `1500ms` / 4 倍窗口 | 合批的静默窗口及其上界 |

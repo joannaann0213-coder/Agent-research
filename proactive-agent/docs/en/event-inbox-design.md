@@ -223,7 +223,7 @@ stateDiagram-v2
     pending --> claimed: claim, redelivery, steer, resume
     claimed --> done: ack, suspend_timeout
     claimed --> failed: fail
-    claimed --> pending: nack, lease_expired, released, suspend_timeout
+    claimed --> pending: nack, defer, lease_expired, released, suspend_timeout
     claimed --> dead: attempts_exhausted
     pending --> dead: manual_dead
     done --> pending: replay (force)
@@ -258,6 +258,7 @@ stateDiagram-v2
 | `ack` | `claimed` → `done` | The run ends well |
 | `fail` | `claimed` → `failed` | The run ends with `ack(failed)` |
 | `nack` | `claimed` → `pending` | The worker asks for a retry |
+| `defer` | `claimed` → `pending` | The worker hands the run back for a reason that is not the run's; the attempt is not counted |
 | `lease_expired` | `claimed` → `pending` | The sweeper takes the run back |
 | `attempts_exhausted` | `claimed` → `dead` | The attempt limit is reached |
 | `suspended` | `claimed` → `claimed` | The run suspends; the event stays with it |
@@ -279,6 +280,7 @@ single guarded update of the run row and takes no other lock.
 | `ack(done)` | The run and the events it consumed are `done` |
 | `ack(failed)` | A final failure. The run and its events are `failed` and are not retried |
 | `nack` | The run is queued with a backoff of 2, 4, 8, 16 seconds (base 2, cap 5 minutes), or the delay the worker asks for |
+| `nack` with `deferred` | The same, but the attempt is not counted: the worker hands the run back for a reason that is not the run's. Honoured for 30 minutes after the run was made |
 | Lease expiry | The worker is presumed dead. The run is queued for immediate re-issue and the attempt is charged |
 | Fifth failed attempt | The run and its events are `dead` |
 

@@ -161,6 +161,7 @@ Everything is under `inbox.*` and can be set by environment variable (`inbox.lea
 | `inbox.lease.duration` / `max-duration` | `60s` / `30m` | One heartbeat's worth of lease; the cap per lease grant |
 | `inbox.retry.max-attempts` | `5` | Attempts before a run is `dead` |
 | `inbox.retry.backoff-base` / `backoff-cap` | `2s` / `5m` | Backoff after attempt n is base^n, capped |
+| `inbox.retry.max-defer` | `30m` | For how long after a run was made a worker can hand it back without the attempt being counted |
 | `inbox.batch.max-events` / `max-bytes` | `20` / `262144` | Batch caps |
 | `inbox.lanes.<lane>.cap` | 1 / 2 / 1 | Concurrent runs per inbox for `interactive` / `background` / `batch` |
 | `inbox.lanes.<lane>.quiet-window` / `max-wait` | `1500ms` / 4 × window | Batching window and its upper bound |

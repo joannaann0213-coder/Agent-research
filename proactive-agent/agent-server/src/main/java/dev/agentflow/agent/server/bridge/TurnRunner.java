@@ -129,8 +129,17 @@ public class TurnRunner {
         record Failed(String error) implements Settlement {
         }
 
-        /** @param delay how long the Inbox holds the run back; {@code null} for its own growing delay */
-        record Retry(String reason, Duration delay) implements Settlement {
+        /**
+         * @param delay how long the Inbox holds the run back; {@code null} for its own growing delay
+         * @param deferred whether the run goes back for a reason that is not its own, such as an
+         *     earlier turn of its line that has to finish first. It then keeps its attempt: waiting
+         *     must not use up what is there for failures
+         */
+        record Retry(String reason, Duration delay, boolean deferred) implements Settlement {
+
+            Retry(String reason, Duration delay) {
+                this(reason, delay, false);
+            }
         }
 
         /** The run is suspended in the Inbox, waiting for people. Nothing more to tell it. */
@@ -370,7 +379,7 @@ public class TurnRunner {
                 delay = untilItsTurn.compareTo(delay) > 0 ? untilItsTurn : delay;
             }
             log.info("run {} waits for run {} of its line to finish", run.runId(), earlier.runId());
-            return Optional.of(new Settlement.Retry("run " + earlier.runId() + " of the line finishes first", delay));
+            return Optional.of(new Settlement.Retry("run " + earlier.runId() + " of the line finishes first", delay, true));
         }
         return Optional.empty();
     }
@@ -1750,7 +1759,7 @@ public class TurnRunner {
                 case Settlement.Failed failed ->
                         inbox.ack(run.runId(), AckRequest.failed(run.epoch(), run.lastRunSeq(), shorten(failed.error())));
                 case Settlement.Retry retry -> inbox.nack(run.runId(), new NackRequest(run.epoch(), shorten(retry.reason()),
-                        retry.delay() == null ? null : retry.delay().toMillis()));
+                        retry.delay() == null ? null : retry.delay().toMillis(), retry.deferred() ? Boolean.TRUE : null));
                 case Settlement.Parked parked -> throw new IllegalStateException("a parked run is settled already");
             };
             if (!result.ok()) {

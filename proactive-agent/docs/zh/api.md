@@ -308,6 +308,8 @@ run，并返回该 run 在 `after_run_seq` 之后的全部事件。所以响应�
 
 - `last_run_seq` 是 worker 消费过的最大 `run_seq`。该 run 里在它之后的事件回到队列。不填表示全部事件。
 - `retry_after_ms` 覆盖指数退避，并以 5 分钟封顶。对 nack 的回答里带有 `next_attempt_at`。
+- nack 里带 `"deferred": true`，表示 worker 退回这个 run 的原因不在 run 本身：要等别的事先结束，或者 worker 正在停止。这时不计尝试次数，所以等待不会让
+  run 变成 `dead`。它在 run 创建后的 30 分钟内有效（`inbox.retry.max-defer`），之后和普通 nack 一样计数。
 - Suspend 必须带 `resume_key` 和 `timeout_seconds`。`on_timeout` 是 `finish`（默认）或 `resume`。超时以 30 天封顶。
 - 用同一个 epoch 重复同一个调用，返回的是先前的结果。
 

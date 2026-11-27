@@ -484,6 +484,8 @@ class ActionsIT extends AgentTestBase {
         settle();
         assertThat(repliesTo(acme, USER)).as("the turn that waited finishes first")
                 .containsExactly("Not closed: Not approved: the user wrote a new message before this was decided; it comes in the next turn.");
+        assertThat(runs()).as("the run of the message waited for its line, which cost it no attempt")
+                .containsExactly("done attempt 1", "queued attempt 1");
         clock.advance(Duration.ofSeconds(2));
         settle();
 

@@ -144,6 +144,47 @@ class F3StateMachineIT extends IntegrationTestBase {
     }
 
     @Test
+    void aRunThatItsWorkerDefersKeepsItsAttempt_soThatWaitingCannotKillIt() {
+        String eventId = write("u42", webhook("order-1", "{}"));
+        ClaimedRun run = claim("worker-1", "u42").require();
+        String runId = run.runId();
+
+        // The worker cannot take the run now, for a reason that is not the run's: more often than a run has attempts.
+        for (int round = 1; round <= 8; round++) {
+            assertThat(run.attempt()).as("round %d", round).isEqualTo(1);
+            assertThat(run.epoch()).as("each lease has its own epoch").isEqualTo(round);
+            RunOutcome deferred = runtime.nack(runId, NackRequest.deferred(run.epoch(), "something else finishes first", 0L)).require();
+            assertThat(deferred.status()).isEqualTo("queued");
+            assertThat(deferred.attempt()).isEqualTo(1);
+            run = claim("worker-1", "u42").require();
+            assertThat(run.runId()).as("the same run is issued again, at once").isEqualTo(runId);
+            assertThat(run.kind()).isEqualTo(ClaimedRun.KIND_REDELIVERY);
+        }
+        runtime.ack(runId, AckRequest.done(run.epoch(), run.lastRunSeq())).require();
+
+        EventDetail detail = acme.getEvent("u42", eventId).require();
+        assertThat(detail.event().status()).isEqualTo("done");
+        assertThat(detail.event().attempt()).isEqualTo(1);
+        assertThat(detail.transitions()).filteredOn(t -> t.reason().equals("defer")).hasSize(8);
+        assertThat(runtime.getRun(runId).require().queuedReason()).as("what the run was last queued for").isEqualTo("defer");
+    }
+
+    @Test
+    void aRunCanBeDeferredOnlyForSoLong_afterThatItCountsLikeAnyNack() {
+        write("u42", webhook("order-1", "{}"));
+        ClaimedRun run = claim("worker-1", "u42").require();
+
+        clock.advance(Duration.ofMinutes(31));
+        // The lease ran out meanwhile; the run is issued again, as attempt 2.
+        assertThat(leaseSweeper.runOnce()).isEqualTo(1);
+        run = claim("worker-1", "u42").require();
+        assertThat(run.attempt()).isEqualTo(2);
+
+        RunOutcome late = runtime.nack(run.runId(), NackRequest.deferred(run.epoch(), "something else finishes first", 0L)).require();
+        assertThat(late.attempt()).as("a run that is put off for ever must end, and be seen").isEqualTo(3);
+    }
+
+    @Test
     void nackMayAskForItsOwnRetryDelay() {
         write("u42", webhook("order-1", "{}"));
         ClaimedRun run = claim("worker-1", "u42").require();
