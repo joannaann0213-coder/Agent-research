@@ -14,6 +14,8 @@ public interface TurnHooks {
         HANDED_OVER,
         /** A turn in the background has given way to a message of the user and let go of the session; the Inbox has not suspended its run yet. */
         YIELDED,
+        /** A reply that the user overtook by writing again has been stopped in its session; the turn is not ended yet. */
+        SUPERSEDED,
         /** A session exists on the platform; the line does not know it yet. */
         SESSION_CREATED,
         /** The turn knows where the session stood before its input. */

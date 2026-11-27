@@ -6,8 +6,10 @@
 # user has allowed the role to start unasked. An event that the application sends to the worker itself
 # becomes a task of the main agent, which hears of it at once; so does what the application schedules
 # for the worker, when it is due. A task whose words say "needs approval" makes the worker call its
-# tool server, which waits for the user: the main agent is told at once, and tells the user. And
-# "proactivity:" with a level tells the main agent how much the user wants to hear from it.
+# tool server, which waits for the user: the main agent is told at once, and tells the user.
+# "proactivity:" with a level tells the main agent how much the user wants to hear from it. And
+# "slow:" makes it take a few seconds over its answer, so that writing again before the answer is
+# there can be tried: the reply under way is ended, and one reply answers everything.
 #
 #   API=http://localhost:8090 ADMIN=<an administration key> examples/agent-api/main-agent.sh
 #
@@ -167,12 +169,26 @@ echo "   notification: $(wait_for_notification "$BEFORE")"
 echo "22. In their own client the user turns it up again."
 call PUT /v1/users/$USER_ID/preferences '{"proactivity": "proactive"}' "$TOKEN"; echo
 
-echo "23. With the API key, a task shows what was said about it, and by whom. The two latest tasks:"
+echo "23. The user writes, and writes the rest before the answer is there. The reply under way is ended, and one reply answers both."
+SEQ=$(call POST /v1/users/$USER_ID/messages '{"text": "slow: book a table for tonight"}' "$TOKEN" | json "['seq']")
+sleep 3.5
+call POST /v1/users/$USER_ID/messages '{"text": "for four, at seven"}' "$TOKEN" > /dev/null
+for _ in $(seq 1 30); do
+  REPLIES=$(call GET "/v1/users/$USER_ID/messages?after=$SEQ" '' "$TOKEN" \
+    | python3 -c "import json,sys; print('\n'.join('   agent: ' + x['text'] for x in json.load(sys.stdin)['messages'] if x['kind']=='reply'))")
+  [[ -n $REPLIES ]] && break
+  sleep 1
+done
+sleep 2
+call GET "/v1/users/$USER_ID/messages?after=$SEQ" '' "$TOKEN" \
+  | python3 -c "import json,sys; m=[x for x in json.load(sys.stdin)['messages'] if x['kind']=='reply']; print('\n'.join('   agent: ' + x['text'] for x in m) if m else '   (no reply within 30 seconds)')"
+
+echo "24. With the API key, a task shows what was said about it, and by whom. The two latest tasks:"
 for TASK in $(call GET "/v1/users/$USER_ID/tasks?status=all" | python3 -c "import json,sys; print(' '.join(t['task_id'] for t in json.load(sys.stdin)['tasks'][:2]))"); do
   call GET "/v1/users/$USER_ID/tasks/$TASK" \
     | python3 -c "import json,sys; t=json.load(sys.stdin); print('  ', t['title']); [print('    ', n['seq'], n['from'], n['kind'] + ':', n['text'][:160]) for n in t['notes']]"
 done
 
-echo "24. Everything that happened for the user, in order:"
+echo "25. Everything that happened for the user, in order:"
 call GET "/v1/users/$USER_ID/updates?after=0" '' "$TOKEN" \
   | python3 -c "import json,sys; [print('  ', x['seq'], x['type'], x['data'].get('kind', x['data'].get('status', ''))) for x in json.load(sys.stdin)['updates']]"

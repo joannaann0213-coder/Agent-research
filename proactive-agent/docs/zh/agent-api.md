@@ -96,7 +96,9 @@ curl -s "$API/v1/users/u42/messages?after=0" -H "Authorization: Bearer $KEY"
 `GET /v1/users/{user_id}/messages` 读取，`after` 填上一次的 `next_after`；或者订阅[更新](#更新)。
 
 - `message_id` 让重试无害：同一个 id、同样的文本返回之前的回执，带 `deduped: true`；同一个 id、不同的文本返回 409。
-- 相隔很近（大约一秒半以内）的几条消息会合在一起，用一条回复回答。agent 正在回答时到达的消息不会插进这次回答，而是由下一次回答处理。
+- 相隔很近（大约一秒半以内）的几条消息会合在一起，用一条回复回答；在 agent 拿到输入之前用户写的内容也一样。agent 正在回答时到达的消息由下一条回复处理。对主
+  agent 还不止于此：正在生成的回复会被结束，不会展示给用户，下一条回复回答用户写过的全部内容。客户端不用为此做任何事，把收到的回复展示出来即可。规则见[主
+  agent 与 worker](main-agent.md#用户又发来一条时)。
 - 每个 `conversation_id` 是一个独立的会话，在平台上有自己的 session。会话由哪个 agent 服务，由它的第一条消息决定（`agent`）。
 - `POST /v1/users/{user_id}/conversations/{conversation_id}/stop` 停止正在进行的回复：用户到此为止的消息不再回答。之后发的消息照常回答。
 
@@ -300,7 +302,8 @@ curl -s -X PUT $API/v1/users/u42/preferences -H "Authorization: Bearer $KEY" \
 
 演示模式下，脚本会把用户写在 `task:` 后面的内容交出去，worker 回答说做完了；事件的数据里如果有一段文字 `task`，脚本会自己提出做这件事；指明 worker
 的事件或定时计划由 worker 处理，它的汇报由主 agent 转告用户。任务的文字里有 "needs approval" 时，带工具服务器的 worker
-会去调用它，这样就能试一试等人审批的过程。`examples/agent-api/main-agent.sh` 把这些情况都走一遍。
+会去调用它，这样就能试一试等人审批的过程。以 `slow:` 开头的消息会让脚本花四秒钟才回答，这样就能试一试在回答到来之前再发一条。`examples/agent-api/main-agent.sh`
+把这些情况都走一遍。
 
 ## 限制
 

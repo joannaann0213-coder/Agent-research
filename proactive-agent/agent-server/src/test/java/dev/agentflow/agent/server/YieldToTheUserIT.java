@@ -13,6 +13,7 @@ import dev.agentflow.agent.api.CoordinatorConfig;
 import dev.agentflow.agent.api.EventAccepted;
 import dev.agentflow.agent.api.MessageView;
 import dev.agentflow.agent.api.PostEventRequest;
+import dev.agentflow.agent.api.StopResult;
 import dev.agentflow.agent.api.WorkerConfig;
 import dev.agentflow.agent.cma.fake.ModelContext;
 import dev.agentflow.agent.cma.fake.ModelStep;
@@ -235,6 +236,24 @@ class YieldToTheUserIT extends AgentTestBase {
 
         assertThat(repliesTo(acme, USER)).containsExactly("You said: one", "You said: two", "Event: order.delayed", "You said: three");
         assertThat(jdbc.sql("SELECT max(yields) FROM turn").query(Integer.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    void aMessageThatTheUserStoppedIsNotSomebodyWaiting() {
+        event("order.delayed", "order-1", null, "{}");
+        deliver();
+        // The user writes while the main agent is in the middle of the event, and takes it back at once.
+        hooks.once(Point.INPUT_RECORDED, run -> {
+            userSays(acme, USER, "hello");
+            acme.post("/v1/users/" + USER + "/conversations/default/stop", null).as(StopResult.class);
+        });
+
+        assertThat(worker.runOnce()).isTrue();
+
+        assertThat(jdbc.sql("SELECT outcome || ' ' || yields FROM turn").query(String.class).single())
+                .as("the turn went on to its end").isEqualTo("notified 0");
+        untilQuiet();
+        assertThat(repliesTo(acme, USER)).as("and the message that was stopped is not answered").containsExactly("Event: order.delayed");
     }
 
     @Test

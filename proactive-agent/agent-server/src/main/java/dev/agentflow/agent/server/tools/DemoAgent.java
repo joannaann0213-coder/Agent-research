@@ -17,7 +17,10 @@ import tools.jackson.databind.node.ObjectNode;
  *
  * <ul>
  *   <li>In a conversation it repeats what the user said. If the service says that the user was sent
- *       notifications, it reads them first and says so.
+ *       notifications, it reads them first and says so. When the user writes {@code slow:} and
+ *       something, it takes a few seconds over its answer, so that writing again before the answer
+ *       is there can be tried; and when its turn was ended because the user did, it answers all
+ *       they wrote in one reply.
  *   <li>In the background it reads the events and tells the user about each one, in fixed words,
  *       except those whose data has {@code "silent": true}.
  *   <li>As a main agent it hands on whatever the user writes after {@code task:} to the first of its
@@ -44,6 +47,15 @@ public final class DemoAgent implements FakeBrain {
     /** What the user writes to tell a main agent how much they want to hear from it. */
     private static final String HOW_FORWARD = "proactivity:";
 
+    /** What the user writes to have the agent take its time over the answer. */
+    private static final String SLOWLY = "slow:";
+
+    /** How long the agent then takes. */
+    private static final long SLOW_MILLIS = 4000;
+
+    /** What the service's note says when the turn before was ended because the user wrote again. */
+    private static final String WROTE_AGAIN = "the user wrote again before you had answered";
+
     /** What a task says to have a worker with a tool server call it first. */
     private static final String NEEDS_APPROVAL = "needs approval";
 
@@ -64,6 +76,10 @@ public final class DemoAgent implements FakeBrain {
         }
         if (!background) {
             String said = context.userMessage().lines().reduce((first, second) -> second).orElse("");
+            String all = everythingSaid(context.userMessage(), said);
+            if (context.step() == 0 && said.regionMatches(true, 0, SLOWLY, 0, SLOWLY.length())) {
+                takeTime();
+            }
             ToolOutcome handedOn = context.resultOf(PlatformTools.DELEGATE_TASK);
             if (handedOn != null) {
                 return ModelStep.say(handedOn.error() ? "I could not hand that on. " + handedOn.text()
@@ -88,7 +104,7 @@ public final class DemoAgent implements FakeBrain {
                 return ModelStep.of(ModelStep.custom(PlatformTools.DELEGATE_TASK, input.toString()));
             }
             if (read == null) {
-                return ModelStep.say("You said: " + said);
+                return ModelStep.say("You said: " + all);
             }
             JsonNode since = Json.STORED.readTree(read.text());
             List<String> told = new ArrayList<>();
@@ -105,7 +121,7 @@ public final class DemoAgent implements FakeBrain {
                             + ": " + report.path("text").asString());
                 }
             }
-            return ModelStep.say("You said: " + said
+            return ModelStep.say("You said: " + all
                     + (told.isEmpty() ? "" : " (Since we last spoke you were told: " + String.join(" / ", told) + ")")
                     + (news.isEmpty() ? "" : " (News of your tasks: " + String.join(" / ", news) + ")"));
         }
@@ -214,6 +230,26 @@ public final class DemoAgent implements FakeBrain {
             return ModelStep.of(ModelStep.mcp(context.agent().mcpServers().getFirst().name(), DEMO_TOOL, input.toString()));
         }
         return ModelStep.say(handled != null ? "[demo] Done. " + handled : "[demo] Done. You asked for: " + asked);
+    }
+
+    /**
+     * What the user wrote that this turn answers. As a rule that is the last line of the input. When
+     * the turn before was ended because the user wrote again, the service gives everything that has
+     * no answer yet, after its note, and the demo answers all of it.
+     */
+    private static String everythingSaid(String input, String lastLine) {
+        int note = input.indexOf(WROTE_AGAIN);
+        int end = note < 0 ? -1 : input.indexOf("]\n\n", note);
+        return end < 0 ? lastLine : String.join(" / ", input.substring(end + 3).split("\n\n"));
+    }
+
+    /** Keeps the answer back for a few seconds, as a model does that thinks about it. */
+    private static void takeTime() {
+        try {
+            Thread.sleep(SLOW_MILLIS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /** The first role a main agent can delegate to, as its delegation tool names them; {@code null} for an agent without workers. */

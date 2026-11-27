@@ -441,6 +441,47 @@ public class AgentProperties {
         /** A turn gives way only to a message of the user that is this recent: an older one is not somebody waiting. */
         private Duration yieldWindow = Duration.ofMinutes(2);
 
+        /**
+         * Whose reply is ended when the user writes again before it is there, so that the next turn
+         * answers everything they have written in one reply: {@code main} for the conversations that
+         * a main agent serves, {@code all} for every conversation, {@code none} for no reply, so that
+         * each is finished and the new message answered after it.
+         */
+        private String supersedeReplies = "main";
+
+        /**
+         * How many replies in a row the user's new messages end in one conversation. The reply after
+         * them is finished whatever comes, so that the user gets an answer in the end.
+         */
+        private int maxSuperseded = 5;
+
+        /** How many messages of the user one turn answers at most. What waits beyond that is answered by the next turn. */
+        private int maxMessages = 50;
+
+        public String getSupersedeReplies() {
+            return supersedeReplies;
+        }
+
+        public void setSupersedeReplies(String supersedeReplies) {
+            this.supersedeReplies = supersedeReplies;
+        }
+
+        public int getMaxSuperseded() {
+            return maxSuperseded;
+        }
+
+        public void setMaxSuperseded(int maxSuperseded) {
+            this.maxSuperseded = maxSuperseded;
+        }
+
+        public int getMaxMessages() {
+            return maxMessages;
+        }
+
+        public void setMaxMessages(int maxMessages) {
+            this.maxMessages = maxMessages;
+        }
+
         public Duration getLineBusyDelay() {
             return lineBusyDelay;
         }

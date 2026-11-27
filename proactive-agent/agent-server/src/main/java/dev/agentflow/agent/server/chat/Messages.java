@@ -22,8 +22,10 @@ import dev.agentflow.inbox.api.WriteEventRequest;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.TreeMap;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -33,6 +35,11 @@ import tools.jackson.databind.node.ObjectNode;
  * What users and agents say to each other. A user's message is stored here and announced to the
  * Event Inbox in the same transaction; the Inbox turns it into a run, and the run's result comes
  * back here as the agent's reply.
+ *
+ * <p>A message that is to get a turn waits until a turn takes it. A turn takes everything that
+ * waits in its conversation, whichever run announced it, so that the agent answers knowing all the
+ * user has written; and a turn that is ended because the user wrote again gives its messages back,
+ * for the next turn to answer with the new one.
  */
 @Service
 public class Messages {
@@ -110,8 +117,9 @@ public class Messages {
             if (question.isPresent() && !question.get().inPassing()) {
                 Instant now = clock.now();
                 long seq = users.nextSeq(appId, userId);
+                // The turn that asked goes on with it: it is not to get a turn of its own.
                 insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now,
-                        question.get().mergeKey(), question.get().actionId(), null);
+                        question.get().mergeKey(), question.get().actionId(), null, false);
                 actions.settle(question.get(), Actions.ANSWERED, text, null, Actions.BY_USER);
                 actions.ring(appId, userId, question.get().mergeKey(), question.get().runId());
                 return new MessageAccepted(messageId, conversationId, seq, now, false, question.get().actionId());
@@ -136,10 +144,10 @@ public class Messages {
             String line = Threads.chatKey(conversationId);
             // What a main agent asked in passing is answered by this message, which is a turn of its own all the same.
             String answered = question.map(Actions.Action::actionId).orElse(null);
-            insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, answered, null);
+            insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, answered, null, true);
             question.ifPresent(asked -> actions.settle(asked, Actions.ANSWERED, text, null, Actions.BY_USER));
             actions.supersede(appId, userId, line, Actions.supersededNote(line));
-            announce(appId, userId, conversationId, messageId, seq, now);
+            announce(appId, userId, conversationId, messageId, now);
             return new MessageAccepted(messageId, conversationId, seq, now, false, answered);
         });
     }
@@ -157,17 +165,17 @@ public class Messages {
         Instant now = clock.now();
         String line = Threads.chatKey(conversationId);
         long seq = users.nextSeq(appId, userId);
-        insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, actionId, null);
+        insert(appId, userId, seq, conversationId, messageId, "user", "message", text, null, now, line, actionId, null, true);
         actions.supersede(appId, userId, line, Actions.supersededNote(line));
-        announce(appId, userId, conversationId, messageId, seq, now);
+        announce(appId, userId, conversationId, messageId, now);
     }
 
     /**
-     * Queues the Inbox event that gets a user's message answered, and notes on the conversation's line
-     * that somebody waits: a turn in the background that holds the line gives way to it.
+     * Queues the Inbox event that gets a user's message answered. The message itself is stored as
+     * waiting for a turn: a turn in the background that holds the conversation's line gives way to
+     * it, and for a reply that is under way it is the user writing again.
      */
-    private void announce(String appId, String userId, String conversationId, String messageId, long seq, Instant now) {
-        threads.posted(appId, userId, Threads.chatKey(conversationId), seq);
+    private void announce(String appId, String userId, String conversationId, String messageId, Instant now) {
         ObjectNode payload = InboxJson.mapper().createObjectNode();
         payload.put("conversation_id", conversationId).put("message_id", messageId);
         relay.enqueue(appId, userId, WriteEventRequest.builder(EventSource.CONVERSATION, EVENT_TYPE)
@@ -196,7 +204,7 @@ public class Messages {
             return false;
         }
         insert(appId, userId, users.nextSeq(appId, userId), conversationId, messageId, "agent", kind, text, runId, clock.now(),
-                mergeKey, actionId, null);
+                mergeKey, actionId, null, false);
         return true;
     }
 
@@ -212,7 +220,7 @@ public class Messages {
         String messageId = "proposal:" + taskId;
         if (find(appId, userId, conversationId, messageId).isEmpty()) {
             insert(appId, userId, users.nextSeq(appId, userId), conversationId, messageId, "agent", "proposal", text, runId,
-                    clock.now(), mergeKey, null, taskId);
+                    clock.now(), mergeKey, null, taskId, false);
         }
     }
 
@@ -224,9 +232,127 @@ public class Messages {
             String mergeKey, String actionId) {
         if (find(appId, userId, conversationId, messageId).isEmpty()) {
             insert(appId, userId, users.nextSeq(appId, userId), conversationId, messageId, "user", "message", text, null,
-                    clock.now(), mergeKey, actionId, null);
+                    clock.now(), mergeKey, actionId, null, false);
         }
     }
+
+    // ================================================================ what waits for a turn
+
+    /**
+     * Gives the turn of a run what the user has written to a conversation and no turn has yet. The
+     * messages that the run announces are its own unless another turn has them; whatever else waits
+     * in the conversation is added, oldest first, while it fits. A turn that has messages keeps
+     * them, so this can be asked again for what came since. In the caller's transaction, under the
+     * user's lock.
+     *
+     * @param announced the positions of the messages that the run announces
+     * @param stoppedThrough the user's messages up to this position are not answered any more: the
+     *     turn takes its own of them, so that they wait for nobody, and is not given them
+     * @param limit how many messages a turn has at most; its own are taken whatever their number
+     * @param chars how much text a turn has at most; its own are taken whatever their length
+     * @return what the turn has to answer, oldest first; empty when nothing is left for it
+     */
+    public List<MessageView> take(String appId, String userId, String conversationId, String runId, List<Long> announced,
+            long stoppedThrough, int limit, int chars) {
+        List<MessageView> own = jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND conversation_id = :conversationId AND role = 'user'
+                   AND (taken_by = :runId OR (taken_by IS NULL AND seq IN (:announced)))
+                 ORDER BY seq
+                """)
+                .param("appId", appId).param("userId", userId).param("conversationId", conversationId).param("runId", runId)
+                .param("announced", announced.isEmpty() ? List.of(-1L) : announced)
+                .query(Messages::view)
+                .list();
+        List<MessageView> waiting = jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND conversation_id = :conversationId
+                   AND announced AND taken_by IS NULL AND seq > :stoppedThrough
+                 ORDER BY seq
+                 LIMIT :limit
+                """)
+                .param("appId", appId).param("userId", userId).param("conversationId", conversationId)
+                .param("stoppedThrough", stoppedThrough).param("limit", limit)
+                .query(Messages::view)
+                .list();
+        TreeMap<Long, MessageView> taken = new TreeMap<>();
+        int size = 0;
+        for (MessageView message : own) {
+            taken.put(message.seq(), message);
+            size += message.seq() > stoppedThrough ? message.text().length() : 0;
+        }
+        for (MessageView message : waiting) {
+            if (taken.containsKey(message.seq())) {
+                continue;
+            }
+            if (taken.size() >= limit || (size > 0 && size + message.text().length() > chars)) {
+                // The rest waits for the next turn, in order: nothing newer is taken past it.
+                break;
+            }
+            taken.put(message.seq(), message);
+            size += message.text().length();
+        }
+        if (!taken.isEmpty()) {
+            jdbc.sql("""
+                    UPDATE message SET taken_by = :runId, announced = true
+                     WHERE app_id = :appId AND user_id = :userId AND seq IN (:seqs) AND (taken_by IS NULL OR taken_by = :runId)
+                    """)
+                    .param("runId", runId).param("appId", appId).param("userId", userId)
+                    .param("seqs", new ArrayList<>(taken.keySet()))
+                    .update();
+        }
+        return taken.values().stream().filter(message -> message.seq() > stoppedThrough).toList();
+    }
+
+    /**
+     * Gives back the messages of a turn that was ended because the user wrote again: they wait for a
+     * turn once more, and the next one answers them with what came since. In the caller's
+     * transaction, under the user's lock.
+     */
+    public void release(String appId, String userId, List<MessageView> messages) {
+        if (messages.isEmpty()) {
+            return;
+        }
+        jdbc.sql("""
+                UPDATE message SET taken_by = NULL, announced = true
+                 WHERE app_id = :appId AND user_id = :userId AND seq IN (:seqs) AND role = 'user'
+                """)
+                .param("appId", appId).param("userId", userId)
+                .param("seqs", messages.stream().map(MessageView::seq).toList())
+                .update();
+    }
+
+    /**
+     * Whether the user wrote to a conversation since {@code since} and no turn has taken the
+     * message yet: somebody is waiting for an answer.
+     */
+    public boolean userWaits(String appId, String userId, String conversationId, Instant since) {
+        return waits(appId, userId, conversationId, 0, since);
+    }
+
+    /**
+     * Whether the user has written to a conversation after position {@code afterSeq} and no turn has
+     * taken the message: for a turn that took its messages when that was the user's latest, they
+     * have written again.
+     */
+    public boolean wroteAgain(String appId, String userId, String conversationId, long afterSeq) {
+        return waits(appId, userId, conversationId, afterSeq, Instant.EPOCH);
+    }
+
+    /** Messages that the user stopped wait for nobody. */
+    private boolean waits(String appId, String userId, String conversationId, long afterSeq, Instant since) {
+        return jdbc.sql("""
+                SELECT EXISTS (
+                    SELECT 1 FROM message m
+                     WHERE m.app_id = :appId AND m.user_id = :userId AND m.conversation_id = :conversationId
+                       AND m.announced AND m.taken_by IS NULL AND m.seq > :afterSeq AND m.created_at > :since
+                       AND m.seq > COALESCE((SELECT t.stopped_through FROM thread t
+                                              WHERE t.app_id = m.app_id AND t.user_id = m.user_id AND t.merge_key = :mergeKey), 0))
+                """)
+                .param("appId", appId).param("userId", userId).param("conversationId", conversationId)
+                .param("afterSeq", afterSeq).param("since", Db.ts(since)).param("mergeKey", Threads.chatKey(conversationId))
+                .query(Boolean.class).single();
+    }
+
+    // ================================================================ reading
 
     /**
      * @param conversationId only this conversation; {@code null} for all of the user's
@@ -319,18 +445,20 @@ public class Messages {
                 .optional();
     }
 
+    /** @param announced whether the message is the user's and is to get a turn: it waits until a turn takes it */
     private void insert(String appId, String userId, long seq, String conversationId, String messageId, String role,
-            String kind, String text, String runId, Instant now, String mergeKey, String actionId, String taskId) {
+            String kind, String text, String runId, Instant now, String mergeKey, String actionId, String taskId,
+            boolean announced) {
         jdbc.sql("""
                 INSERT INTO message (app_id, user_id, seq, conversation_id, message_id, role, kind, text, run_id, created_at,
-                                     merge_key, action_id, task_id)
+                                     merge_key, action_id, task_id, announced)
                 VALUES (:appId, :userId, :seq, :conversationId, :messageId, :role, :kind, :text, :runId, :now, :mergeKey,
-                        :actionId, :taskId)
+                        :actionId, :taskId, :announced)
                 """)
                 .param("appId", appId).param("userId", userId).param("seq", seq).param("conversationId", conversationId)
                 .param("messageId", messageId).param("role", role).param("kind", kind).param("text", text)
                 .param("runId", runId).param("now", Db.ts(now)).param("mergeKey", mergeKey).param("actionId", actionId)
-                .param("taskId", taskId)
+                .param("taskId", taskId).param("announced", announced)
                 .update();
         outbound.record(appId, userId, Update.MESSAGE_CREATED,
                 new MessageView(seq, messageId, conversationId, role, kind, text, now, actionId, taskId));

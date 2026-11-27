@@ -12,16 +12,15 @@ sealed interface Work {
 
     /**
      * The user said something and waits for an answer. What the agent writes last is that answer.
-     * The list is empty when the user stopped the reply before the turn began.
      *
+     * @param messages what the user has written and this turn answers: what its run announces, and
+     *     whatever else waited in the conversation when the turn took its messages
      * @param news for a main agent: what its tasks have for it that no turn of it has been given yet.
      *     It answers the user knowing how everything stands; empty on any other line
+     * @param through the position of the user's latest message when the turn took its messages. What
+     *     they write after it, the turn does not know; 0 before the turn has taken anything
      */
-    record Chat(List<MessageView> messages, List<Tasks.Report> news) implements Work {
-
-        Chat(List<MessageView> messages) {
-            this(messages, List.of());
-        }
+    record Chat(List<MessageView> messages, List<Tasks.Report> news, long through) implements Work {
     }
 
     /**

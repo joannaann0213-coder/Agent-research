@@ -35,10 +35,12 @@ public class Threads {
      * @param stoppedThrough for a conversation: the user's messages up to this position are not answered any more
      * @param vaultIds the vaults the session was created with, joined by commas
      * @param memory how the session has the user's memory: {@code ""}, {@code rw} or {@code ro}
+     * @param superseded for a conversation: how many replies in a row were ended because the user wrote
+     *     again before they were there; 0 once a reply has reached the user
      */
     public record Thread(String appId, String userId, String mergeKey, String kind, String conversationId,
             String agentKey, int generation, String sessionId, AgentRef sessionAgent, String lastEventId,
-            Instant lastEventAt, long syncedSeq, long stoppedThrough, String vaultIds, String memory) {
+            Instant lastEventAt, long syncedSeq, long stoppedThrough, String vaultIds, String memory, int superseded) {
 
         public boolean chat() {
             return CHAT.equals(kind);
@@ -121,7 +123,7 @@ public class Threads {
         return jdbc.sql("""
                 SELECT app_id, user_id, merge_key, kind, conversation_id, agent_key, generation, cma_session_id,
                        cma_agent_id, cma_agent_version, last_event_id, last_event_at, synced_seq, stopped_through, cma_vault_ids,
-                       cma_memory
+                       cma_memory, superseded
                   FROM thread WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
                 """)
                 .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
@@ -192,40 +194,28 @@ public class Threads {
     }
 
     /**
-     * Notes that a message of the user has come in that is to get a turn of its own. In the caller's
-     * transaction.
+     * Notes that a reply of the conversation was ended because the user wrote again before it was
+     * there. In the transaction that ends the turn.
      */
-    public void posted(String appId, String userId, String mergeKey, long seq) {
+    public void countSuperseded(Thread thread) {
         jdbc.sql("""
-                UPDATE thread SET posted_seq = GREATEST(posted_seq, :seq), posted_at = :now
+                UPDATE thread SET superseded = superseded + 1, updated_at = :now
                  WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
                 """)
-                .param("seq", seq).param("now", Db.ts(clock.now())).param("appId", appId).param("userId", userId)
-                .param("mergeKey", mergeKey)
+                .param("now", Db.ts(clock.now())).param("appId", thread.appId()).param("userId", thread.userId())
+                .param("mergeKey", thread.mergeKey())
                 .update();
     }
 
-    /** Notes that a turn of the conversation has taken the user's messages up to position {@code seq}. */
-    public void took(String appId, String userId, String mergeKey, long seq) {
+    /** Notes that a turn of the conversation ended as the user wanted it: the count of replies that were ended starts again. */
+    public void clearSuperseded(Thread thread) {
         jdbc.sql("""
-                UPDATE thread SET taken_seq = GREATEST(taken_seq, :seq)
-                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
+                UPDATE thread SET superseded = 0, updated_at = :now
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey AND superseded > 0
                 """)
-                .param("seq", seq).param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
+                .param("now", Db.ts(clock.now())).param("appId", thread.appId()).param("userId", thread.userId())
+                .param("mergeKey", thread.mergeKey())
                 .update();
-    }
-
-    /**
-     * Whether the user wrote to the conversation since {@code since} and no turn has taken the
-     * message yet: somebody is waiting for an answer.
-     */
-    public boolean userWaits(String appId, String userId, String mergeKey, Instant since) {
-        return jdbc.sql("""
-                SELECT posted_seq > GREATEST(taken_seq, stopped_through) AND posted_at > :since FROM thread
-                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
-                """)
-                .param("since", Db.ts(since)).param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
-                .query(Boolean.class).optional().orElse(false);
     }
 
     /** How far the conversation's messages are stopped, as it stands now. */
@@ -266,6 +256,7 @@ public class Threads {
                 rs.getString("conversation_id"), rs.getString("agent_key"), rs.getInt("generation"),
                 rs.getString("cma_session_id"), agentId == null ? null : new AgentRef(agentId, rs.getInt("cma_agent_version")),
                 rs.getString("last_event_id"), Db.instant(rs, "last_event_at"), rs.getLong("synced_seq"),
-                rs.getLong("stopped_through"), rs.getString("cma_vault_ids"), rs.getString("cma_memory"));
+                rs.getLong("stopped_through"), rs.getString("cma_vault_ids"), rs.getString("cma_memory"),
+                rs.getInt("superseded"));
     }
 }

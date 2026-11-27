@@ -304,6 +304,7 @@ The requirement was checked against the design case by case. "New" marks what th
 | The user writes while a worker's report is on its way to the main agent | Yes, new | The main agent reads the report first and answers knowing it; no second turn follows for it |
 | The user confirms a proposal in the application, not in the conversation | Yes, new | The main agent is told with its next turn that the task has started |
 | The user writes while the main agent is busy with an event or a report | Yes, new | The turn in the background gives way, the user is answered, and the turn starts over without doing anything twice |
+| The user writes half of what they mean, and the rest before the answer is there | Yes, new | The reply under way is ended and never shown; the next turn answers everything they wrote, in one reply |
 | Many workers are at work for a user, and the user writes | Yes | Workers run in sessions and on a lane of their own; the main agent answers at once |
 | A user finds the main agent too forward, or not forward enough | Yes, new | The user's `proactivity`: set in their own client, or by telling the main agent |
 | An application wants its assistant restrained for everybody | Yes, new | `proactivity` of the main agent's `coordinator`; a user's own setting goes first |
@@ -363,8 +364,10 @@ update, `task.created` or `task.updated`.
 | What the application scheduled for a worker cannot be handed to it, because its agent has become a main agent or no task can make room | A `run.failed` update tells the application; the schedule counts as having been due |
 | The service stops between handing a schedule to the worker and telling the Inbox | The run is delivered again and hands nothing over twice: a firing is one note of the task |
 | The service stops while a turn gives way to the user | The run's lease runs out, the user's message is handed out first, and the turn starts over after it |
+| The service stops while a reply is ended because the user wrote again | The run is delivered again, finds its session stopped and the new message still waiting, and ends the same way; the next turn answers all of it |
 
-`CoordinatorIT` and `TaskConfirmationIT` have a test for each row.
+`CoordinatorIT`, `TaskConfirmationIT`, `AssignedTasksIT`, `YieldToTheUserIT` and `TheUserWritesAgainIT`
+have a test for each row.
 
 ## Trust
 
@@ -408,6 +411,9 @@ update, `task.created` or `task.updated`.
 | How long a turn of a worker may take | 20 minutes; a conversation's turn has 10 | `agent.tasks.turn-deadline`, below the Inbox's `inbox.lease.max-duration` |
 | How forward a main agent is with a user who has not said | `proactive` | `proactivity` of the agent's `coordinator`, else `agent.tasks.proactivity` |
 | How often a turn in the background gives way to the user, and for how long it stays out of the way | 2 times, 5 seconds | `agent.turn.max-yields` (0 turns it off), `agent.turn.yield-delay` |
+| Whose reply is ended when the user writes again before it is there | A main agent's | `agent.turn.supersede-replies`: `main`, `all` or `none` |
+| Replies in a row that are ended in one conversation, before one is finished whatever comes | 5 | `agent.turn.max-superseded` |
+| Messages of the user that one turn answers | 50; what waits beyond that is the next turn's | `agent.turn.max-messages` |
 | Notifications in 24 hours for a user who wants it quiet | 5, not counting what came of work they asked for | `agent.notify.quiet-per-user-per-day` |
 
 Workers have a lane of their own so that a worker's long turn never holds up what wakes the main
@@ -439,6 +445,52 @@ to that.
 A turn gives way twice at most, and only to a message of the last two minutes, so that a user who
 keeps writing cannot keep the main agent from its work for good.
 
+### When the user writes again
+
+People write the way they talk: a sentence, then the rest of it, then a correction. An agent that
+answers each message by itself answers the first before it knows what the user means, and the user
+then reads an answer to half of it. So the main agent answers the latest state of what the user
+wrote, not message by message.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant S as Agent service
+    participant M as Main agent's session
+    U->>S: "book a table"
+    S->>M: turn 1: "book a table"
+    U->>S: "for four, at seven"
+    S->>M: interrupt
+    Note over S: turn 1 ends as superseded:<br/>its reply is dropped,<br/>its message waits again
+    S->>M: turn 2: a note of what happened,<br/>"book a table", "for four, at seven"
+    M->>S: one answer to both
+    S->>U: the reply
+```
+
+1. **A turn answers everything that waits.** A message of the user waits until a turn takes it. A
+   turn takes all that wait in its conversation, whichever run of the Inbox announced them, and
+   goes on taking until its input is sent to the session. The run of a message that another turn
+   has answered finds nothing left and ends without the model.
+2. **A reply that the user overtakes is ended.** When the user writes again after that and before
+   the answer is there, the session is stopped, what the agent had written of its answer is
+   dropped, and the turn gives its messages back. The turn of the new message is given all of them,
+   and is told first what happened: that its answer was not shown, and that what it did stands.
+3. **What was done stands.** A task that the ended turn delegated, a question it asked, a setting it
+   changed: none of it is undone, and the agent is told not to do it again. News of its tasks that
+   the ended turn had read is given to the next turn once more, because the reply that would have
+   told the user of it was dropped.
+
+The service looks for a new message while it reads the session, and once more in the transaction
+that stores the reply, under the lock that every message of the user takes. A reply that reaches the
+user was therefore written knowing everything they had written by then.
+
+Four things bound it. Five replies in a row are ended in one conversation at most; the one after
+them is finished whatever comes, so that a user who keeps writing gets an answer. A reply that the
+user stops is not answered later: a stop is a stop. Workers are not touched: what takes long is
+theirs, which is why ending the main agent's own reply costs little. And an agent without workers
+finishes its reply as before, because its long work happens in the turn itself; the new message is
+answered after it. `agent.turn.supersede-replies` changes that for all agents, or turns it off.
+
 ## Why this, and what would show it wrong
 
 This section records the judgement behind the decision, so that it can be checked later. The
@@ -451,6 +503,7 @@ percentages are estimates of the author, made in November 2026 for the following
 | The platform's threads are the right tool inside a worker | 65% | They start without a new session and share files, which is what several steps of one task need | The official SDK does not carry them, or their cost per thread is close to a session's |
 | The main agent should hear of the application's work for a worker at once, not at the report | 75% | The user may ask about it at any moment, and only the main agent knows what the user said | Nearly all of the turns it costs end with nothing done, or the cost of them is what applications complain about |
 | `proactive` is the level to start with | 60% | An assistant has to show what it can do before a user can say how much of it they want, and tokens are not what limits a product at first | Turning it down is the first thing most users do, or applications set a lower default for everybody |
+| A reply that the user overtakes should be dropped and written anew, not finished | 70% | An answer to half of what the user meant has to be read, and then corrected; the main agent's turns are short, so little is thrown away | Most ended replies were nearly finished and the new message did not change them; or users wait noticeably longer for an answer than before |
 | Confirmation belongs to the task, and standing authorisation to the role | 85% | A role is what the application bounds with tools and approvals, so it can be authorised without knowing the task | Users ask to authorise by kind of event or up to an amount instead, or want a plan to confirm and not a summary |
 
 The strongest argument against the decision is cost and delay. A main agent that hears everything
@@ -466,6 +519,8 @@ What to measure once the service runs with a model:
 
 - How long a user's message waits behind a turn in the background on the same line, at the 95th
   percentile, and how often a turn gives way and starts over.
+- How often a reply is ended because the user wrote again, how long the user then waits for the
+  answer, and how often the limit of replies ended in a row is reached.
 - The input tokens of the main agent's turns per user and day, and how many of those turns end
   without a message or a task.
 - How many tasks end with a failure note, and how many are closed by the user.
@@ -476,8 +531,8 @@ What to measure once the service runs with a model:
 - The third tier: several agents under one task, in the platform's threads inside a worker's
   session.
 - Writing to a worker directly as the user. The user talks to the main agent, which passes it on.
-- Steering a reply that is under way: a second message of the user waits for the reply to the
-  first. A turn in the background, by contrast, gives way to the user.
+- Taking a new message into a reply that is under way. The platform does not take a message into a
+  turn that runs, so the reply is ended and written anew, which costs the work of the ended turn.
 - A worker does not have the main agent's memory of the user. What it needs to know is written into
   the task.
 - A plan to confirm. The user confirms the main agent's summary of a task; the worker does not draft

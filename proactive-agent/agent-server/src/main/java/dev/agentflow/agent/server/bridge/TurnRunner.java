@@ -98,6 +98,13 @@ import tools.jackson.databind.node.ObjectNode;
  * and is woken when somebody decides, when the first action expires, or when new input arrives on
  * the line. A turn that has taken its session keeps it until it ends: a later run of the line waits
  * for it, and withdraws what it waits for, so that it finishes.
+ *
+ * <p>People write the way they talk: a sentence, then the rest of it. A conversation's turn
+ * therefore answers everything the user has written that no turn has yet, whichever run announced
+ * it, and takes in what comes until its input is sent. When the user writes again after that and
+ * before the answer is there, the reply is ended where the settings say so: the session is stopped,
+ * what the agent had written is dropped, and the turn of the new message answers all of it. A reply
+ * that reaches the user was thus written knowing everything they had written by then.
  */
 @Component
 public class TurnRunner {
@@ -108,6 +115,12 @@ public class TurnRunner {
     private static final int NOTE_CHARS = 2000;
     /** How much news of its tasks a main agent is given with a message of the user, in characters. */
     private static final int CHAT_NEWS_CHARS = 32_000;
+    /** How much of what the user wrote one turn answers at most, in characters. What waits beyond that is the next turn's. */
+    private static final int MESSAGE_CHARS = 64_000;
+
+    private static final String SUPERSEDE_MAIN = "main";
+    private static final String SUPERSEDE_ALL = "all";
+    private static final String SUPERSEDE_NONE = "none";
 
     private sealed interface Settlement {
         record Done() implements Settlement {
@@ -127,6 +140,10 @@ public class TurnRunner {
 
     /** What putting a call before a person came to: its action, or, on a closing turn, why it was not put. */
     private record Put(Actions.Action action, String closing) {
+    }
+
+    /** A conversation's turn with the messages of the user that it has taken, as put on record. */
+    private record Taken(Turn turn, Work.Chat work) {
     }
 
     /** The line's session cannot carry this turn. The line gets a new one. */
@@ -194,6 +211,10 @@ public class TurnRunner {
         this.notify = properties.getNotify();
         this.workerDeadline = properties.getTasks().getTurnDeadline();
         this.actionTtl = properties.getActions().getTtl();
+        if (!Set.of(SUPERSEDE_MAIN, SUPERSEDE_ALL, SUPERSEDE_NONE).contains(config.getSupersedeReplies())) {
+            throw new IllegalStateException("agent.turn.supersede-replies is one of " + SUPERSEDE_MAIN + ", " + SUPERSEDE_ALL
+                    + ", " + SUPERSEDE_NONE + ", not " + config.getSupersedeReplies());
+        }
     }
 
     /** Works on a claimed run to its end and settles it with the Inbox. Never throws. */
@@ -255,22 +276,21 @@ public class TurnRunner {
                 || threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).isEmpty()) {
             return fail(run, "the run holds nothing this service can work on");
         }
-        if (work instanceof Work.Chat chat && chat.messages().isEmpty()) {
-            // The user stopped the reply before the turn began.
-            turns.finish(turn, Turns.DONE, "stopped", null);
-            return new Settlement.Done();
-        }
         if (work instanceof Work.Job job && !turn.boundarySet()
                 && tasks.closed(run.tenantId(), run.inboxId(), job.task().taskId())) {
             // The task was closed before the worker got to this. Its session is not touched, or not even made.
             turns.finish(turn, Turns.DONE, "closed", null);
             return new Settlement.Done();
         }
-        if (turn.work() == null) {
-            if (work instanceof Work.Chat chat) {
-                // From here on the user's messages have their turn: nothing has to give way to them any more.
-                threads.took(run.tenantId(), run.inboxId(), run.mergeKey(), chat.messages().getLast().seq());
+        if (turn.work() == null && work instanceof Work.Chat announced) {
+            // From here on the user's messages have their turn: nothing has to give way to them any more.
+            Optional<Taken> taken = take(run, turn, announced);
+            if (taken.isEmpty()) {
+                return new Settlement.Done();
             }
+            turn = taken.get().turn();
+            work = taken.get().work();
+        } else if (turn.work() == null) {
             turn = turns.work(turn, stored(work));
         }
         Optional<Settlement> earlierFirst = waitForTheLine(run, turn);
@@ -355,9 +375,10 @@ public class TurnRunner {
         return Optional.empty();
     }
 
-    private Settlement inSession(ClaimedRun run, RunLease lease, Turn opened, Threads.Thread line, Work work) {
+    private Settlement inSession(ClaimedRun run, RunLease lease, Turn opened, Threads.Thread line, Work given) {
         Threads.Thread thread = withSession(run, line);
         Turn turn = turns.inSession(opened, thread.generation(), thread.sessionId());
+        Work work = given;
         try {
             if (!turn.boundarySet()) {
                 turn = fixBoundary(turn, thread);
@@ -367,6 +388,8 @@ public class TurnRunner {
             Instant from = since(turn.boundaryAt());
             // Whether the session has this turn's input, when the turn gives way: it then has to be stopped first.
             boolean begun;
+            // The user wrote again before the reply was there: the reply is ended, and the next turn answers all of it.
+            boolean overtaken = false;
             try (EventTail tail = platform(() -> EventTail.open(cma, thread.sessionId(), from))) {
                 Reading reading = new Reading(turn.inputEventId());
                 after(tail.stored(), turn.boundaryEventId(), turn.boundaryAt()).forEach(event -> see(thread, reading, event));
@@ -376,6 +399,15 @@ public class TurnRunner {
                     if (stopped(thread, work)) {
                         turns.finish(turn, Turns.DONE, work instanceof Work.Job ? "closed" : "stopped", null);
                         return new Settlement.Done();
+                    }
+                    if (work instanceof Work.Chat chat) {
+                        // What the user wrote since the turn was first delivered goes into the same input.
+                        Optional<Taken> all = take(run, turn, chat);
+                        if (all.isEmpty()) {
+                            return new Settlement.Done();
+                        }
+                        turn = all.get().turn();
+                        work = all.get().work();
                     }
                     String inputId = sendInput(turn, thread, input(thread, work, turn));
                     hooks.at(Point.INPUT_SENT, run);
@@ -389,6 +421,7 @@ public class TurnRunner {
                         tasks.working(job.task());
                     }
                 }
+                boolean supersedable = supersedable(thread, work);
                 while (!givesWay && reading.end == null) {
                     if (lease.lost()) {
                         throw new StaleTurnException(run.runId(), run.epoch());
@@ -404,16 +437,20 @@ public class TurnRunner {
                         givesWay = true;
                         break;
                     }
+                    if (!reading.stopping && supersedable && wroteAgain(thread, work)) {
+                        overtaken = true;
+                        break;
+                    }
                     if (!reading.stopping && answerWaitingCalls(run, turn, thread, work, reading)) {
                         return park(run, turn);
                     }
                     patience.next(tail, config.getPoll()).ifPresent(event -> see(thread, reading, event));
                 }
-                if (!givesWay) {
-                    return finish(run, turn, thread, work, reading);
+                if (!givesWay && !overtaken) {
+                    return finish(run, turn, thread, work, reading, supersedable);
                 }
             }
-            return giveWay(run, turn, thread, begun);
+            return overtaken ? supersede(run, turn, thread, (Work.Chat) work) : giveWay(run, turn, thread, begun);
         } catch (CmaException e) {
             if (e.kind() == CmaException.Kind.NOT_FOUND) {
                 throw new SessionLost(thread, "the platform does not know it");
@@ -432,7 +469,8 @@ public class TurnRunner {
      */
     private boolean givesWay(Turn turn, Threads.Thread thread, Work work) {
         return work instanceof Work.Task && thread.chat() && turn.yields() < config.getMaxYields()
-                && threads.userWaits(thread.appId(), thread.userId(), thread.mergeKey(), clock.now().minus(config.getYieldWindow()));
+                && messages.userWaits(thread.appId(), thread.userId(), thread.conversationId(),
+                        clock.now().minus(config.getYieldWindow()));
     }
 
     /**
@@ -472,6 +510,102 @@ public class TurnRunner {
         List<Tasks.Report> unread = task.reports().stream().filter(report -> report.note().readAt() == null).toList();
         return task.events().isEmpty() && task.due().isEmpty() && unread.isEmpty() ? null
                 : new Work.Task(task.events(), task.due(), unread);
+    }
+
+    // ================================================================ the user writes again
+
+    /**
+     * Gives a conversation's turn what the user has written and no turn has taken yet: the messages
+     * that its run announces, and whatever else waits in the conversation, so that the agent answers
+     * knowing everything the user has said. It is asked when the turn is first delivered, and again
+     * right before the turn's input is sent, for what came in between. What the turn works on is put
+     * on record in the same transaction, so a run that is delivered again finds the same messages.
+     *
+     * @return empty when nothing is left for the turn, which is ended here: the user stopped the
+     *     reply before it began, or another turn has taken the run's messages and answers them
+     */
+    private Optional<Taken> take(ClaimedRun run, Turn turn, Work.Chat chat) {
+        String appId = run.tenantId();
+        String userId = run.inboxId();
+        String conversationId = chat.messages().getFirst().conversationId();
+        return tx.execute(status -> {
+            users.lock(appId, userId);
+            long stoppedThrough = threads.stoppedThrough(appId, userId, run.mergeKey());
+            long through = users.lastSeq(appId, userId);
+            List<MessageView> has = messages.take(appId, userId, conversationId, run.runId(),
+                    chat.messages().stream().map(MessageView::seq).toList(), stoppedThrough, config.getMaxMessages(), MESSAGE_CHARS);
+            if (has.isEmpty()) {
+                // The last write of the transaction, and conditional on the lease, like every end of a turn.
+                boolean stopped = chat.messages().stream().allMatch(message -> message.seq() <= stoppedThrough);
+                turns.finish(turn, Turns.DONE, stopped ? "stopped" : "absorbed", null);
+                return Optional.<Taken>empty();
+            }
+            if (turn.work() != null && seqs(has).equals(seqs(chat.messages()))) {
+                // Nothing came since the turn took its messages.
+                return Optional.of(new Taken(turn, chat));
+            }
+            Work.Chat work = new Work.Chat(has, fitting(tasks.news(appId, userId, run.mergeKey())), through);
+            return Optional.of(new Taken(turns.work(turn, stored(work)), work));
+        });
+    }
+
+    private static List<Long> seqs(List<MessageView> messages) {
+        return messages.stream().map(MessageView::seq).toList();
+    }
+
+    /**
+     * Whether the reply of this turn is ended when the user writes again before it is there. It is so
+     * for a main agent unless the settings say otherwise: a main agent hands what takes long to its
+     * workers, which nothing here touches, so little is lost with its reply, and the user gets one
+     * answer to all they wrote instead of an answer to half of it. Only so many replies in a row are
+     * ended on a line, so that the user gets an answer whatever they do.
+     */
+    private boolean supersedable(Threads.Thread thread, Work work) {
+        if (!(work instanceof Work.Chat) || !thread.chat() || thread.superseded() >= config.getMaxSuperseded()) {
+            return false;
+        }
+        return switch (config.getSupersedeReplies()) {
+            case SUPERSEDE_ALL -> true;
+            case SUPERSEDE_NONE -> false;
+            default -> profiles.config(thread.appId(), thread.agentKey()).coordinator() != null;
+        };
+    }
+
+    /** Whether the user has written to the conversation since the turn took its messages. */
+    private boolean wroteAgain(Threads.Thread thread, Work work) {
+        return work instanceof Work.Chat chat
+                && messages.wroteAgain(thread.appId(), thread.userId(), thread.conversationId(), chat.through());
+    }
+
+    /**
+     * Ends a reply that the user has overtaken by writing again. The session is stopped, what the
+     * agent had written of its answer is dropped, and the turn gives its messages back: the turn of
+     * the new message answers all of them. What the agent did with tools up to here is done and
+     * stays done; its next turn is told so.
+     *
+     * <p>A worker that dies in the middle of this loses nothing: the run that is delivered again
+     * finds the session stopped and the user's new message still waiting, and ends the same way.
+     */
+    private Settlement supersede(ClaimedRun run, Turn turn, Threads.Thread thread, Work.Chat chat) {
+        bringToRest(thread);
+        hooks.at(Point.SUPERSEDED, run);
+        tx.executeWithoutResult(status -> {
+            users.lock(thread.appId(), thread.userId());
+            giveBack(thread, chat);
+            turns.finish(turn, Turns.DONE, "superseded", null);
+        });
+        log.info("run {}: the user wrote again on line {} before the reply was there; the next turn answers all of it",
+                run.runId(), thread.mergeKey());
+        return new Settlement.Done();
+    }
+
+    /**
+     * In the transaction that ends a turn as superseded: its messages wait for a turn again, and the
+     * line counts one more reply that was ended.
+     */
+    private void giveBack(Threads.Thread thread, Work.Chat chat) {
+        messages.release(thread.appId(), thread.userId(), chat.messages());
+        threads.countSuperseded(thread);
     }
 
     // ================================================================ the session
@@ -669,11 +803,8 @@ public class TurnRunner {
         // that is and whatever woke it, so that it never works on a picture that is behind.
         boolean conversation = run.mergeKey() != null && run.mergeKey().startsWith(Threads.CHAT_PREFIX);
         if (!said.isEmpty()) {
-            // Messages the user stopped before this turn began are not answered.
-            long stoppedThrough = run.mergeKey() == null ? 0 : threads.stoppedThrough(run.tenantId(), run.inboxId(), run.mergeKey());
-            return new Work.Chat(said.stream().filter(message -> message.seq() > stoppedThrough)
-                    .sorted(Comparator.comparingLong(MessageView::seq)).toList(),
-                    conversation ? fitting(tasks.news(run.tenantId(), run.inboxId(), run.mergeKey())) : List.of());
+            // What the run announces. Which of it the turn answers, and what else with it, is settled when the turn takes its messages.
+            return new Work.Chat(said.stream().sorted(Comparator.comparingLong(MessageView::seq)).toList(), List.of(), 0);
         }
         if (happened.isEmpty() && due.isEmpty() && reported.isEmpty()) {
             return null;
@@ -927,6 +1058,7 @@ public class TurnRunner {
                 ArrayNode news = stored.putArray("reports");
                 chat.news().forEach(report -> news.addObject().put("task_id", report.task().taskId())
                         .put("seq", report.note().seq()));
+                stored.put("through", chat.through());
             }
             case Work.Task task -> {
                 stored.put("kind", "task");
@@ -961,7 +1093,7 @@ public class TurnRunner {
                 messages.find(run.tenantId(), run.inboxId(), message.path("conversation_id").asString(),
                         message.path("message_id").asString()).ifPresent(said::add);
             }
-            return said.isEmpty() ? null : new Work.Chat(said, reportsOf(run, stored));
+            return said.isEmpty() ? null : new Work.Chat(said, reportsOf(run, stored), stored.path("through").asLong(0));
         }
         List<Work.Due> due = new ArrayList<>();
         for (JsonNode item : stored.path("due")) {
@@ -1153,11 +1285,24 @@ public class TurnRunner {
                     + "you have not seen yet: ").append(newsInWords(news)).append(". Call read_events to get it before you "
                     + "answer, and tell the user what they should know of it.]\n\n");
         }
+        if (thread.superseded() > 0) {
+            text.append(WROTE_AGAIN);
+        }
         for (int i = 0; i < inputs.size(); i++) {
             text.append(i == 0 ? "" : "\n\n").append(inputs.get(i).text());
         }
         return text.toString();
     }
+
+    /**
+     * What a conversation's turn is told first when the turn before it was ended because the user
+     * wrote again. The session has that turn in it, cut short; the messages it was about are given
+     * once more, with the new one, so that the input says all there is to answer.
+     */
+    private static final String WROTE_AGAIN = "[From the service that runs you, not from the user: the user wrote again "
+            + "before you had answered, so your turn was ended there. The answer you had begun was not shown to them. What "
+            + "you did with tools in that turn is done and stands: do not do it again. Below is everything the user has "
+            + "written that has no answer yet, in order. Answer all of it in one reply.]\n\n";
 
     /**
      * Sends the input and returns its id on the platform. When the answer to a send is lost, the
@@ -1473,7 +1618,8 @@ public class TurnRunner {
         return new Settlement.Parked();
     }
 
-    private Settlement finish(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, Reading reading) {
+    private Settlement finish(ClaimedRun run, Turn turn, Threads.Thread thread, Work work, Reading reading,
+            boolean supersedable) {
         switch (reading.end) {
             case TERMINATED, RETRIES_EXHAUSTED, BUDGET_REACHED ->
                     throw new SessionLost(thread, "the turn ended with " + reading.end.name().toLowerCase());
@@ -1488,12 +1634,23 @@ public class TurnRunner {
             users.lock(thread.appId(), thread.userId());
             String outcome;
             String note = null;
+            // Under the user's lock, what the user did either came before this or comes after it. A reply that is
+            // stored here was written knowing everything the user had written by now, and was not stopped by them.
+            boolean stopped = work instanceof Work.Chat && (reading.stopping || stopped(thread, work));
+            boolean overtaken = !stopped && supersedable && wroteAgain(thread, work);
             switch (work) {
-                case Work.Chat chat when reading.stopping -> {
+                case Work.Chat chat when stopped -> {
                     // The user stopped the reply: what the agent wrote is not given to them.
                     outcome = "stopped";
+                    threads.clearSuperseded(thread);
+                }
+                case Work.Chat chat when overtaken -> {
+                    // The user wrote again while the agent wrote this. It is dropped; the next turn answers all of it.
+                    outcome = "superseded";
+                    giveBack(thread, chat);
                 }
                 case Work.Chat chat -> {
+                    threads.clearSuperseded(thread);
                     // What the agent wrote last is its answer to the user.
                     if (wrote) {
                         messages.storeFromAgent(thread.appId(), thread.userId(), thread.conversationId(), thread.mergeKey(),

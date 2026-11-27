@@ -103,6 +103,18 @@ for `agent.turn.yield-delay`. The user's message, which the Inbox hands out firs
 the run that comes back starts its turn over in the same session. Side effects are keyed by the run
 and the call's place in the turn, so nothing happens twice.
 
+The user's messages are answered the way people write: a sentence, then the rest of it. A message
+that is to get a turn waits until a turn takes it, and says so itself (`message.taken_by`). A
+conversation's turn takes everything that waits, whichever run announced it, up to the moment its
+input is sent; the run of a message that another turn has answered ends without a turn, as
+`absorbed`. When the user writes again after that and before the answer is there, the reply of a
+main agent is ended: the session is brought to rest, what the agent wrote is dropped, the turn ends
+as `superseded` and gives its messages back, and the turn of the new message is given all of them,
+with a note of what happened. The same check is made in the transaction that stores a reply, under
+the user's lock, so a reply that reaches the user was written knowing everything they had written
+by then. `agent.turn.supersede-replies` says whose replies are ended, and
+`agent.turn.max-superseded` how many in a row.
+
 A task that the main agent begins on its own initiative does not start by itself. It waits, as
 `proposed`, for the user's confirmation, unless the rule of its role (`start`) or the user's
 standing authorisation lets it start. A task that waits has no session and no event in the Inbox;
@@ -231,6 +243,8 @@ Every setting is under `agent.*` and can be set by environment variable.
 | `agent.tasks.proactivity` | `proactive` | How forward a main agent is with a user who has not said, where the agent's own configuration does not say either: `proactive`, `balanced` or `quiet` |
 | `agent.notify.quiet-per-user-per-day` | `5` | Notifications in 24 hours for a user who wants their main agent quiet, not counting what came of work they asked for |
 | `agent.turn.max-yields`, `yield-delay` | `2`, `5s` | How often a turn in the background gives way to a message of the user on its line, and for how long it stays out of the way; `0` turns it off |
+| `agent.turn.supersede-replies`, `max-superseded` | `main`, `5` | Whose reply is ended when the user writes again before it is there, so that one reply answers everything: `main` for the conversations of a main agent, `all`, or `none`; and how many replies in a row are ended before one is finished whatever comes |
+| `agent.turn.max-messages` | `50` | How many messages of the user one turn answers; what waits beyond that is the next turn's |
 | `AGENT_CORS_ALLOWEDORIGINS` | none | Origins of web pages that may call the API from the browser, comma-separated |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`, `false` | Webhooks to private addresses and over plain http; only to try them on one machine |
 
@@ -280,13 +294,16 @@ else: live mode starts with new applications.
 
 ## Limits of this build
 
-- Streaming the reply word by word, and steering a turn with a message that arrives during it, are
-  not built: a message waits for the next turn.
+- Streaming the reply word by word is not built: a product built on this shows messages, as a
+  messenger does. A message that arrives during a turn is not taken into that turn. It gets the next
+  one, and for a main agent the reply under way is ended for it, so that the next one answers
+  everything.
 - Memory is per user and agent, and only for agents with a sandbox. A conversation's new session is
   also told the recent dialogue.
 - The rate limits and the stream's wake-ups are per instance.
 - Notifications are not sent to other channels (push, e-mail); applications do that from the updates.
 - A main agent takes one thing at a time. A turn in the background gives way to a message of the
-  user and starts over afterwards, so the user does not wait for it; a second message of the user
-  still waits for the reply to the first. Several agents under one task, and writing to a worker
+  user and starts over afterwards, so the user does not wait for it; a reply that the user overtakes
+  by writing again is ended and written anew, which costs the work of the ended turn. Several agents
+  under one task, and writing to a worker
   directly as the user, are not built; see [Main agent and workers](main-agent.md#what-is-not-built).

@@ -108,8 +108,11 @@ passing `after` set to the last `next_after`, or follow the [updates](#updates).
 - `message_id` makes a retry harmless: the same id and text return the earlier receipt with
   `deduped: true`; the same id with another text is a 409.
 - Messages that arrive close together (within about a second and a half) are answered together, in
-  one reply. A message that arrives while the agent answers is not pushed into that answer; it gets
-  the next one.
+  one reply, and so is whatever the user writes until the agent has been given its input. A message
+  that arrives while the agent answers gets the next reply. With a main agent it does more: the
+  reply under way is ended and never shown, and the next one answers everything the user wrote. A
+  client need do nothing for this; it shows the replies that come.
+  [Main agent and workers](main-agent.md#when-the-user-writes-again) has the rules.
 - Each `conversation_id` is a conversation of its own, with a session of its own on the platform.
   The agent of a conversation is fixed by its first message (`agent`).
 - `POST /v1/users/{user_id}/conversations/{conversation_id}/stop` stops the reply under way: the
@@ -364,7 +367,9 @@ In demo mode the script hands on whatever the user writes after `task:`, and the
 it is done; an event whose data has a text `task` makes the script propose that work by itself, and
 an event or a schedule that names the worker is handled by the worker, whose report the main agent
 passes on. A worker whose agent has a tool server calls it when the task's words say
-"needs approval", so that the wait for a person can be tried.
+"needs approval", so that the wait for a person can be tried. And a message that begins with `slow:`
+makes the script take four seconds over its answer, so that writing again before the answer is
+there can be tried.
 `examples/agent-api/main-agent.sh` walks through all of these.
 
 ## Limits

@@ -443,6 +443,19 @@ curl -s -X PUT $API/v1/users/u-1001/preferences -H "Authorization: Bearer $KEY" 
   -H 'Content-Type: application/json' -d '{"proactivity": "balanced"}'
 ```
 
+人是一段一段打字的：先说一句，再补后半句。主 agent 还没回答时用户又发了一条，正在生成的回复会被结束，不会展示给用户，然后用一条回复回答用户写过的全部内容。你的客户端只需要把收到的回复展示出来，别的什么都不用做。演示模式下，`slow:`
+会让脚本花四秒钟才回答，方便你试一试：
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"conversation_id": "support", "text": "slow: book a table for tonight"}'
+sleep 3.5
+curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"conversation_id": "support", "text": "for four, at seven"}'
+```
+
 `examples/agent-api/main-agent.sh` 会一步步把这些都跑一遍。
 
 ## 11. 切换到真实模式

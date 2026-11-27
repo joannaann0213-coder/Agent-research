@@ -491,6 +491,21 @@ curl -s -X PUT $API/v1/users/u-1001/preferences -H "Authorization: Bearer $KEY" 
   -H 'Content-Type: application/json' -d '{"proactivity": "balanced"}'
 ```
 
+People write in pieces: a sentence, then the rest of it. When your user writes again before the main
+agent has answered, the reply under way is ended and never shown, and one reply answers everything
+they wrote. Your client shows the replies that come and does nothing else for it. In demo mode
+`slow:` makes the script take four seconds over its answer, so that you can try it:
+
+```bash
+curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"conversation_id": "support", "text": "slow: book a table for tonight"}'
+sleep 3.5
+curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"conversation_id": "support", "text": "for four, at seven"}'
+```
+
 `examples/agent-api/main-agent.sh` runs all of this, step by step.
 
 ## 11. Switch to live mode
