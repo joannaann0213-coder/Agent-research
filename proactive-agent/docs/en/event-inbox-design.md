@@ -161,7 +161,7 @@ inbox looks for inboxes with claimable work, oldest work first, and skips rows t
 
 | Limit | Default | Purpose |
 | --- | --- | --- |
-| Lane slots | `interactive` 1, `background` 2, `batch` 1 | A user's background work does not block their own new message |
+| Lane slots | `interactive` 1, `background` 2, `batch` 4 | A user's background work does not block their own new message; work that takes long runs on `batch`, several pieces side by side |
 | Key exclusivity | Always on | At most one active run per `merge_key` in an inbox, across lanes |
 | Inbox-wide cap | Off | `max_active_runs = 1` gives the strict "one run per inbox" reading of the source |
 

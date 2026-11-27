@@ -155,7 +155,7 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 | `AGENT_TOKENS_SECRETS_0` | 无 | 派生用户 token 密钥的 secret；轮换时新的放第一个，旧的放第二个 |
 | `AGENT_INBOX_URL`, `AGENT_INBOX_SECRET` | `http://127.0.0.1:8080`、无 | 收件箱地址，以及本服务在那里的 client `agent-server` 的 secret |
 | `AGENT_CMA_MODE` | `live` | `live` 用 `ANTHROPIC_API_KEY` 调用 CMA；`demo` 用脚本代替模型 |
-| `agent.worker.concurrency` | `8` | 一个实例同时处理的回合数 |
+| `agent.worker.concurrency`, `kept-for-users` | `8`、`2` | 一个实例同时处理的回合数，以及其中有多少个位置只处理用户在等的东西，这样 worker 的回合和其他后台工作即使要跑很多分钟，也不会占满所有位置 |
 | `agent.turn.deadline` | `10m` | 一轮的最长时间；要小于收件箱的 `inbox.lease.max-duration` |
 | `agent.cma.creations-per-minute`, `requests-per-minute` | `300`、`600` | CMA 的限流；多个实例时按份分给每个实例 |
 | `agent.worker.claim-wait` | `5s` | 一次领取在收件箱里等待工作的最长时间 |
@@ -170,8 +170,8 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 | `AGENT_CORS_ALLOWEDORIGINS` | 无 | 可以从浏览器调用 API 的网页的源，用逗号分隔 |
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`、`false` | 允许 webhook 投递到内网地址、使用明文 http；只用于在一台机器上试用 |
 
-收件箱需要为本服务配置一个 client，角色为 `RUNTIME` 和 `PRODUCER`，不属于任何租户；为了扛住较长的故障，应把最大尝试次数调得比默认值高（`inbox.retry.max-attempts`）。要让主 agent 的 worker 并行运行，把 `batch` lane
-的上限调高（`inbox.lanes.batch.cap`，默认是 1；`docker-compose.yml` 里设为 4）。
+收件箱需要为本服务配置一个 client，角色为 `RUNTIME` 和 `PRODUCER`，不属于任何租户；为了扛住较长的故障，应把最大尝试次数调得比默认值高（`inbox.retry.max-attempts`）。主 agent 的 worker 在 `batch` lane
+上并行运行，一个用户同时 4 个（`inbox.lanes.batch.cap`）；调高主 agent 的 `max_active_tasks` 时要一并调高它。
 
 ### 演示模式与真实模式
 

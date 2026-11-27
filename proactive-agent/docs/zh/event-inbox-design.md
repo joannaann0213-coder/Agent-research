@@ -139,7 +139,7 @@ resume key 一个挂起的 run。检查约束把 run 的状态和该状态下必
 
 | 限制 | 默认值 | 目的 |
 | --- | --- | --- |
-| Lane 槽位 | `interactive` 1，`background` 2，`batch` 1 | 用户的后台工作不会挡住他自己的新消息 |
+| Lane 槽位 | `interactive` 1，`background` 2，`batch` 4 | 用户的后台工作不会挡住他自己的新消息；耗时的工作走 `batch`，可以几件同时进行 |
 | 键互斥 | 始终生效 | 同一个收件箱里，每个 `merge_key` 最多一个 active run，跨 lane 也是如此 |
 | 收件箱总上限 | 关闭 | `max_active_runs = 1` 就是原设计里“一个收件箱一个 run”的严格读法 |
 

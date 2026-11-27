@@ -3,6 +3,7 @@ package dev.agentflow.agent.server.bridge;
 import dev.agentflow.agent.server.config.AgentProperties;
 import dev.agentflow.inbox.api.ClaimRequest;
 import dev.agentflow.inbox.api.ClaimedRun;
+import dev.agentflow.inbox.api.Lane;
 import dev.agentflow.inbox.api.NackRequest;
 import dev.agentflow.inbox.client.ApiResult;
 import dev.agentflow.inbox.client.InboxClient;
@@ -20,6 +21,10 @@ import org.springframework.stereotype.Component;
  * Claims runs from the Event Inbox and hands each to the {@link TurnRunner}. It claims without
  * steering: messages that arrive while a turn runs are not pushed into it; the Inbox gathers them
  * into the line's next run.
+ *
+ * <p>An instance works on so many turns at once, and a turn holds its place until it ends. A
+ * worker's turn on a task may take many minutes. So that such turns can never hold every place, a
+ * few of the places take only what users wait for: the Inbox's interactive lane.
  */
 @Component
 public class TurnWorker {
@@ -50,12 +55,20 @@ public class TurnWorker {
      * @return whether there was a run
      */
     public boolean runOnce() {
-        return runOnce(0);
+        return runOnce(0, false);
     }
 
-    private boolean runOnce(long waitMillis) {
-        ApiResult<ClaimedRun> claimed = inbox.claim(new ClaimRequest(workerId, null, null, null, false,
-                waitMillis > 0 ? waitMillis : null));
+    /**
+     * The same, as one of the places that are kept for what users wait for: a run of work in the
+     * background, a worker's among it, is not taken.
+     */
+    public boolean runOnceForUsers() {
+        return runOnce(0, true);
+    }
+
+    private boolean runOnce(long waitMillis, boolean forUsers) {
+        ApiResult<ClaimedRun> claimed = inbox.claim(new ClaimRequest(workerId, null, null,
+                forUsers ? List.of(Lane.INTERACTIVE) : null, false, waitMillis > 0 ? waitMillis : null));
         if (!claimed.ok()) {
             throw new IllegalStateException("the Inbox refused the claim: " + claimed.status() + " " + claimed.code());
         }
@@ -80,13 +93,22 @@ public class TurnWorker {
             return;
         }
         running = true;
-        for (int i = 0; i < properties.getWorker().getConcurrency(); i++) {
-            loops.add(Thread.ofVirtual().name("turn-worker-" + i).start(this::loop));
+        int places = properties.getWorker().getConcurrency();
+        // Never all of them: work in the background has to find a place too.
+        int forUsers = Math.max(0, Math.min(properties.getWorker().getKeptForUsers(), places - 1));
+        if (forUsers != properties.getWorker().getKeptForUsers()) {
+            log.warn("agent.worker.kept-for-users is {} with agent.worker.concurrency {}; {} is used",
+                    properties.getWorker().getKeptForUsers(), places, forUsers);
         }
-        log.info("{} turn workers claim from the Inbox as {}", loops.size(), workerId);
+        for (int i = 0; i < places; i++) {
+            boolean kept = i < forUsers;
+            loops.add(Thread.ofVirtual().name("turn-worker-" + i).start(() -> loop(kept)));
+        }
+        log.info("{} turn workers claim from the Inbox as {}, {} of them only what users wait for", loops.size(), workerId,
+                forUsers);
     }
 
-    private void loop() {
+    private void loop(boolean forUsers) {
         while (running) {
             if (cma instanceof dev.agentflow.agent.cma.ThrottledManagedAgents throttled && throttled.saturated()) {
                 // The platform's limits are reached for now. Taking on more work would only make it wait.
@@ -98,7 +120,7 @@ public class TurnWorker {
                 continue;
             }
             try {
-                runOnce(properties.getWorker().getClaimWait().toMillis());
+                runOnce(properties.getWorker().getClaimWait().toMillis(), forUsers);
             } catch (RuntimeException e) {
                 log.warn("claiming from the Inbox failed, trying again shortly: {}", e.toString());
                 try {

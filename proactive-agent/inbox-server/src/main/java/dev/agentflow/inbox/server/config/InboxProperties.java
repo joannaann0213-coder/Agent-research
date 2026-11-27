@@ -318,7 +318,11 @@ public class InboxProperties {
     public static class Lanes {
         private final LaneSettings interactive = new LaneSettings(1);
         private final LaneSettings background = new LaneSettings(2);
-        private final LaneSettings batch = new LaneSettings(1);
+        /**
+         * Work that nobody waits for and that may take long runs here, several pieces of one inbox side
+         * by side: an agent's workers on the tasks of one user, for example.
+         */
+        private final LaneSettings batch = new LaneSettings(4);
 
         public LaneSettings getInteractive() {
             return interactive;

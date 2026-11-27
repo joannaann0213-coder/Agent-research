@@ -295,7 +295,8 @@ curl -s -X PUT $API/v1/users/u42/preferences -H "Authorization: Bearer $KEY" \
 - 用户是从主 agent 那里听说任务的。worker 不能通知用户，也不能向用户提问；但它需要审批的工具调用照常出现在[动作](#动作)里。主 agent
   会被告知 worker 在等，以及最后怎么决定的，所以用户问起时它答得上来。
 - 应用里任何不是主 agent 的 agent 都可以当 worker。关于用户和会话，它只知道主 agent 写进任务里的内容，或者你的事件里说的内容。
-- 一个用户的 worker 一次只运行一个，除非收件箱放宽这个上限（`inbox.lanes.batch.cap`）。
+- 一个用户最多同时有 4 个 worker 在运行，各有自己的 session；数量由收件箱的 `inbox.lanes.batch.cap`
+  决定。
 - `PUT /v1/users/{user_id}/preferences` 用 `proactivity` 设置用户想要主 agent 多主动：`proactive`
   是起始档，随时向用户通报进展；`balanced` 只说需要用户做的事和结果；`quiet` 只说关键的，而且不提任何建议。用户的客户端可以设，用户也可以直接告诉主
   agent；每次变化是一条 `preferences.updated` 更新。每一档具体改变什么，见[主 agent 与 worker](main-agent.md#主动程度)。

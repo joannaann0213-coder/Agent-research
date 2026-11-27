@@ -355,7 +355,8 @@ your systems post events, as before. What changes is where those go.
   that the worker waits, and what was decided, so it can answer the user about it.
 - A worker is any agent of the application that is not a main agent. Of the user and the
   conversation it knows only what the main agent writes into the task, or what your event says.
-- The workers of one user run one at a time, unless the Inbox allows more (`inbox.lanes.batch.cap`).
+- Up to four workers of one user run at the same time, each in a session of its own; the Inbox's
+  `inbox.lanes.batch.cap` sets how many.
 - `PUT /v1/users/{user_id}/preferences` sets how forward the user wants their main agent, with
   `proactivity`: `proactive`, where it starts, keeps them up to date; `balanced` tells them what
   needs them and what came of the work; `quiet` tells them only what is key, and offers nothing. A

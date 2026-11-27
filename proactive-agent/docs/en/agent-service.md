@@ -234,7 +234,7 @@ Every setting is under `agent.*` and can be set by environment variable.
 | `AGENT_TOKENS_SECRETS_0` | none | The secret that user tokens are derived from; a new one first, the old one second, to rotate |
 | `AGENT_INBOX_URL`, `AGENT_INBOX_SECRET` | `http://127.0.0.1:8080`, none | The Inbox, and the secret of the client `agent-server` there |
 | `AGENT_CMA_MODE` | `live` | `live` calls CMA with `ANTHROPIC_API_KEY`; `demo` runs a script instead of a model |
-| `agent.worker.concurrency` | `8` | Turns that one instance works on at once |
+| `agent.worker.concurrency`, `kept-for-users` | `8`, `2` | Turns that one instance works on at once, and how many of those places take only what users wait for, so that turns of workers and other work in the background, which may take many minutes, never hold every place |
 | `agent.turn.deadline` | `10m` | Longest turn; keep it below the Inbox's `inbox.lease.max-duration` |
 | `agent.cma.creations-per-minute`, `requests-per-minute` | `300`, `600` | CMA's rate limits; with several instances, give each its share |
 | `agent.worker.claim-wait` | `5s` | How long a claim waits in the Inbox for work |
@@ -250,9 +250,9 @@ Every setting is under `agent.*` and can be set by environment variable.
 | `AGENT_WEBHOOKS_ALLOWPRIVATENETWORKS`, `AGENT_WEBHOOKS_ALLOWPLAINHTTP` | `false`, `false` | Webhooks to private addresses and over plain http; only to try them on one machine |
 
 The Inbox needs a client for the service with the roles `RUNTIME` and `PRODUCER` and no tenant, and
-should allow more attempts than its default for long outages (`inbox.retry.max-attempts`). For the
-workers of a main agent to run side by side, raise the cap of the lane `batch`
-(`inbox.lanes.batch.cap`, 1 by default; `docker-compose.yml` sets 4).
+should allow more attempts than its default for long outages (`inbox.retry.max-attempts`). The
+workers of a main agent run side by side on the lane `batch`, four of one user at a time
+(`inbox.lanes.batch.cap`); raise it together with a main agent's `max_active_tasks`.
 
 ### Demo mode and live mode
 

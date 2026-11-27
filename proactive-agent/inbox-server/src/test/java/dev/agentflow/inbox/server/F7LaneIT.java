@@ -11,6 +11,8 @@ import dev.agentflow.inbox.client.ApiResult;
 import dev.agentflow.inbox.server.api.RunController;
 import dev.agentflow.inbox.server.support.IntegrationTestBase;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -109,6 +111,35 @@ class F7LaneIT extends IntegrationTestBase {
         assertThat(second.mergeKey()).isEqualTo("order:1");
         assertThat(second.lane()).isEqualTo(Lane.BACKGROUND);
         runtime.ackDone(second).require();
+    }
+
+    @Test
+    void batchWorkOfOneInboxRunsFourAtATime_andTheFifthWaitsForAFreeSlot() {
+        for (int job = 1; job <= 5; job++) {
+            write("u42", on(Lane.BATCH, "job-" + job));
+        }
+        List<ClaimedRun> atWork = new ArrayList<>();
+        for (int worker = 1; worker <= 4; worker++) {
+            atWork.add(claim("worker-" + worker, "u42").require());
+        }
+        assertThat(atWork).extracting(ClaimedRun::lane).containsOnly(Lane.BATCH);
+        assertThat(count("SELECT count(*) FROM run WHERE status = 'active' AND inbox_id = 'u42'")).isEqualTo(4);
+
+        ApiResult<ClaimedRun> fifth = claim("worker-5", "u42");
+        assertThat(fifth.status()).isEqualTo(204);
+        assertThat(fifth.header(RunController.HEADER_REASON)).contains("busy");
+
+        // And what a person waits for is not held up by any of it.
+        write("u42", on(Lane.INTERACTIVE, "question"));
+        ClaimedRun question = claim("worker-5", "u42").require();
+        assertThat(question.lane()).isEqualTo(Lane.INTERACTIVE);
+        runtime.ackDone(question).require();
+
+        runtime.ackDone(atWork.getFirst()).require();
+        ClaimedRun last = claim("worker-5", "u42").require();
+        assertThat(last.events().getFirst().sourceEventId()).isEqualTo("job-5");
+        runtime.ackDone(last).require();
+        atWork.subList(1, 4).forEach(run -> runtime.ackDone(run).require());
     }
 
     @Test

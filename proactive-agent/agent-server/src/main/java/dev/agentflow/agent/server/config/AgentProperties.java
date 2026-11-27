@@ -361,6 +361,22 @@ public class AgentProperties {
         private int concurrency = 8;
 
         /**
+         * How many of them are kept for what users wait for: they take runs of the Inbox's
+         * interactive lane only. A worker's turn on a task may take many minutes, and so may other
+         * work in the background; without this, such turns could hold every place of an instance, and
+         * a user who writes would wait for one of them to end. Less than {@code concurrency}.
+         */
+        private int keptForUsers = 2;
+
+        public int getKeptForUsers() {
+            return keptForUsers;
+        }
+
+        public void setKeptForUsers(int keptForUsers) {
+            this.keptForUsers = keptForUsers;
+        }
+
+        /**
          * How long a claim waits in the Inbox for work before it asks again. Short, because an instance
          * that stops lets its claims under way finish first.
          */
@@ -816,7 +832,7 @@ public class AgentProperties {
         /**
          * The lane of the Event Inbox on which workers run: {@code batch} or {@code background}. On
          * {@code batch} a worker never holds up what wakes the main agent, and the Inbox's cap of that
-         * lane ({@code inbox.lanes.batch.cap}) is how many workers of one user run at a time. On
+         * lane ({@code inbox.lanes.batch.cap}, 4 unless set) is how many workers of one user run at a time. On
          * {@code background} workers share the lane, and its cap, with everything else that happens
          * in the background.
          */

@@ -311,7 +311,8 @@ worker 之后做的每一件事：需要审批的工具调用仍然要等审批�
 | 任务的指令，以及之后发给 worker 的消息 | 8,000 个字符 | `agent.tasks.max-instructions` |
 | worker 的汇报 | 16,000 个字符，超出截断 | `agent.tasks.max-report` |
 | worker 运行所在的收件箱 lane | `batch` | `agent.tasks.lane`：`batch` 或 `background` |
-| 一个用户同时运行的 worker | 1 个 | 收件箱的 `inbox.lanes.batch.cap`；`docker-compose.yml` 设为 4 |
+| 一个用户同时运行的 worker | 4 个，和一个会话里可以排队或进行中的任务数一样 | 收件箱的 `inbox.lanes.batch.cap`；调高 `max_active_tasks` 时一并调高 |
+| 服务的一个实例同时处理的回合数，以及其中留给用户在等的东西的数量 | 8 个，其中 2 个 | `agent.worker.concurrency`、`agent.worker.kept-for-users` |
 | worker 的一轮最长多久 | 20 分钟；会话的一轮是 10 分钟 | `agent.tasks.turn-deadline`，要小于收件箱的 `inbox.lease.max-duration` |
 | 用户没说过时，主 agent 的主动程度 | `proactive` | agent 的 `coordinator` 里的 `proactivity`，没有就用 `agent.tasks.proactivity` |
 | 后台回合给用户让路的次数，以及让开多久 | 2 次，5 秒 | `agent.turn.max-yields`（设为 0 即关闭）、`agent.turn.yield-delay` |
@@ -329,8 +330,8 @@ worker 有自己的 lane，这样 worker 的长回合永远不会挡住唤醒主
 | 对象 | 在哪里运行 | 同时能跑多少 |
 | --- | --- | --- |
 | 主 agent | 每个会话一个 session，在会话的线上 | 一次一轮：一个 session 只有一个上下文。它的回合很短，因为耗时的活是 worker 的 |
-| 任务的 worker | 每个任务一个自己的 session，在任务的线上，走收件箱的 `batch` lane | 一个用户的 worker 同时运行的数量由 `inbox.lanes.batch.cap` 决定；不同用户的 worker 互不等待 |
-| 服务本身 | 没有自身状态的实例，从收件箱领取 run | 每个实例同时 8 个回合，加实例就更多 |
+| 任务的 worker | 每个任务一个自己的 session，在任务的线上，走收件箱的 `batch` lane | 一个用户的 worker 同时运行 4 个，除非 `inbox.lanes.batch.cap` 另有设置；不同用户的 worker 互不等待 |
+| 服务本身 | 没有自身状态的实例，从收件箱领取 run | 每个实例同时 8 个回合，加实例就更多。8 个里有 2 个只处理用户在等的东西，所以 worker 的回合即使要跑很多分钟，也不会占满所有位置 |
 
 用户发消息时，不应该排在主 agent 的后台回合后面等。靠三件事保证。
 

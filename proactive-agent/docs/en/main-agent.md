@@ -407,7 +407,8 @@ have a test for each row.
 | Instructions of a task, and a later message to its worker | 8,000 characters | `agent.tasks.max-instructions` |
 | A worker's report | 16,000 characters, then cut off | `agent.tasks.max-report` |
 | The Inbox lane on which workers run | `batch` | `agent.tasks.lane`: `batch` or `background` |
-| Workers of one user that run at the same time | 1 | The Inbox's `inbox.lanes.batch.cap`; `docker-compose.yml` sets 4 |
+| Workers of one user that run at the same time | 4, as many as tasks of a conversation may be queued or worked on | The Inbox's `inbox.lanes.batch.cap`; raise it with `max_active_tasks` |
+| Turns that one instance of the service works on at once, and how many of them are kept for what users wait for | 8, 2 of them | `agent.worker.concurrency`, `agent.worker.kept-for-users` |
 | How long a turn of a worker may take | 20 minutes; a conversation's turn has 10 | `agent.tasks.turn-deadline`, below the Inbox's `inbox.lease.max-duration` |
 | How forward a main agent is with a user who has not said | `proactive` | `proactivity` of the agent's `coordinator`, else `agent.tasks.proactivity` |
 | How often a turn in the background gives way to the user, and for how long it stays out of the way | 2 times, 5 seconds | `agent.turn.max-yields` (0 turns it off), `agent.turn.yield-delay` |
@@ -426,8 +427,8 @@ The work is spread over many sessions; only the main agent's own line takes turn
 | What | Where it runs | How much at once |
 | --- | --- | --- |
 | The main agent | One session per conversation, on the conversation's line | One turn at a time: a session has one context. Its turns are short, because what takes long is a worker's |
-| The worker of a task | A session of its own per task, on the task's line, in the Inbox's lane `batch` | As many of one user's workers at once as `inbox.lanes.batch.cap` allows; workers of different users do not wait for each other |
-| The service | Instances without state of their own, which claim runs from the Inbox | 8 turns per instance at once, and more with more instances |
+| The worker of a task | A session of its own per task, on the task's line, in the Inbox's lane `batch` | Four of one user's workers at once, unless `inbox.lanes.batch.cap` says otherwise; workers of different users do not wait for each other |
+| The service | Instances without state of their own, which claim runs from the Inbox | 8 turns per instance at once, and more with more instances. Two of the eight take only what users wait for, so that workers' turns, which may take many minutes, never hold every place |
 
 A user who writes must not wait behind a turn of the main agent in the background. Three things see
 to that.
