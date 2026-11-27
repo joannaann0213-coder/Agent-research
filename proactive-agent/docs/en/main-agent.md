@@ -186,6 +186,11 @@ starts its turn. Closing the task does not cancel the schedule, which stays the 
 next run starts a new task. `list_tasks` also shows what the application has scheduled for the
 workers and is still to come.
 
+A schedule that was set before the conversation had a main agent keeps its timer on the line of its
+subject. When it falls due there, the service passes it on and nothing runs on the old line: a
+schedule of the agent that has become the main agent goes to the conversation that it serves, and a
+schedule of another agent becomes a task of the main agent, as above.
+
 ## Who lets a task start
 
 A task does not always start when the main agent delegates it. What decides is whose idea the task
@@ -480,8 +485,8 @@ What to measure once the service runs with a model:
 - Authorisations narrower than a role, for example by kind of event or up to an amount.
 - A tool of the main agent's own that needs an approval still holds its turn, and whatever comes in
   next ends that wait. Work that needs approvals belongs with a worker.
-- What was set up before a main agent served the conversation stays where it was: a schedule keeps
-  running on its subject's line. Cancel it and set it up again to bring it under the main agent.
+- A follow-up that an agent set for itself on a subject's line, before a main agent served the
+  conversation, still runs there. Follow-ups are few and run out by themselves.
 - A main agent hears of the tasks of its conversation. What happens in another conversation of the
   same user, it does not: an application that wants one agent that knows everything about a user
   gives each user one conversation.

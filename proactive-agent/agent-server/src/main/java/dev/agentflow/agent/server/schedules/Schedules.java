@@ -12,13 +12,16 @@ import dev.agentflow.agent.server.core.Db;
 import dev.agentflow.agent.server.core.Ids;
 import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.core.Names;
+import dev.agentflow.agent.server.relay.InboxRelay;
 import dev.agentflow.agent.server.time.AgentClock;
 import dev.agentflow.inbox.api.CanonicalJson;
 import dev.agentflow.inbox.api.CreateTimerRequest;
+import dev.agentflow.inbox.api.EventSource;
 import dev.agentflow.inbox.api.Hashing;
 import dev.agentflow.inbox.api.InboxJson;
 import dev.agentflow.inbox.api.Lane;
 import dev.agentflow.inbox.api.TimerView;
+import dev.agentflow.inbox.api.WriteEventRequest;
 import dev.agentflow.inbox.client.ApiResult;
 import dev.agentflow.inbox.client.InboxClient;
 import java.nio.charset.StandardCharsets;
@@ -55,6 +58,12 @@ public class Schedules {
     /** The type of the events that the Inbox's timers produce. */
     public static final String TIMER_EVENT = "timer.due";
 
+    /**
+     * The type of the Inbox event with which a schedule that fell due on a subject's line is passed
+     * on to the main agent that serves its conversation by now. Its payload names the schedule.
+     */
+    public static final String FORWARDED_EVENT = "agent.schedule_due.v1";
+
     public static final String BY_APP = "app";
     public static final String BY_AGENT = "agent";
 
@@ -86,10 +95,20 @@ public class Schedules {
             return subject != null;
         }
 
+        /** The same schedule, with the subject that its work is kept under when a main agent hands it to a worker. */
+        public Schedule withSubject(String ofLine) {
+            return new Schedule(appId, userId, scheduleId, createdBy, kind, name, instructions, note, chain, mergeKey, agentKey,
+                    conversationId, fireAt, cron, timeZone, fingerprint, timerId, state, lastFiredAt, createdAt, ofLine);
+        }
+
+        /** The subject of the line it falls due on, when that is a subject's line; {@code null} otherwise. */
+        public String subjectOfLine() {
+            return mergeKey.startsWith(Threads.TASK_PREFIX) ? mergeKey.substring(Threads.TASK_PREFIX.length()) : null;
+        }
+
         public ScheduleView view() {
-            String ofLine = mergeKey.startsWith(Threads.TASK_PREFIX) ? mergeKey.substring(Threads.TASK_PREFIX.length()) : null;
             return new ScheduleView(scheduleId, createdBy, kind, name, instructions, note, fireAt, cron, timeZone,
-                    subject != null ? subject : ofLine, agentKey, conversationId, state, lastFiredAt, createdAt);
+                    subject != null ? subject : subjectOfLine(), agentKey, conversationId, state, lastFiredAt, createdAt);
         }
     }
 
@@ -107,18 +126,20 @@ public class Schedules {
     private final Users users;
     private final Lines lines;
     private final InboxClient inbox;
+    private final InboxRelay relay;
     private final AgentClock clock;
     private final Ids ids;
     /** The Inbox lane of the follow-ups that workers set themselves. */
     private final Lane workLane;
 
-    public Schedules(JdbcClient jdbc, TransactionTemplate tx, Users users, Lines lines, InboxClient inbox, AgentClock clock,
-            Ids ids, AgentProperties properties) {
+    public Schedules(JdbcClient jdbc, TransactionTemplate tx, Users users, Lines lines, InboxClient inbox, InboxRelay relay,
+            AgentClock clock, Ids ids, AgentProperties properties) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.users = users;
         this.lines = lines;
         this.inbox = inbox;
+        this.relay = relay;
         this.clock = clock;
         this.ids = ids;
         this.workLane = Lane.fromWire(properties.getTasks().getLane());
@@ -241,6 +262,27 @@ public class Schedules {
                         e.toString());
             }
         }
+    }
+
+    /**
+     * Passes a schedule that fell due on its subject's line on to the main agent that serves its
+     * conversation by now, as an event of the main agent's line: the main agent works on it there,
+     * like on anything else that concerns the user. A firing is passed on once, however often this
+     * is called for it. In the caller's transaction.
+     *
+     * @param hub the main agent's line
+     */
+    public void forward(Threads.Thread hub, Schedule schedule, Instant dueAt, boolean late) {
+        ObjectNode payload = InboxJson.mapper().createObjectNode();
+        payload.put("schedule_id", schedule.scheduleId()).put("due_at", dueAt.toString()).put("late", late);
+        relay.enqueue(schedule.appId(), schedule.userId(), WriteEventRequest.builder(EventSource.AGENT_SELF, FORWARDED_EVENT)
+                .sourceEventId("due:" + schedule.scheduleId() + ":" + dueAt)
+                .mergeKey(hub.mergeKey())
+                .lane(Lane.BACKGROUND)
+                .interrupt(false)
+                .occurredAt(clock.now())
+                .payload(payload)
+                .build());
     }
 
     /**

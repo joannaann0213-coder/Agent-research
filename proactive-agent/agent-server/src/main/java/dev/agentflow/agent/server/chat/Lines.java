@@ -61,14 +61,26 @@ public class Lines {
      * @param keeps how the refusal ends when the subject already has another agent than the one named
      */
     public Route route(String appId, String userId, String subject, String agentKey, String conversationId, String keeps) {
+        Optional<Threads.Thread> hub = hubOf(appId, userId, conversationId);
+        if (hub.isEmpty()) {
+            return new Direct(background(appId, userId, subject, agentKey, conversationId, keeps));
+        }
+        return new Hub(hub.get(), workerOf(hub.get(), subject, agentKey, keeps));
+    }
+
+    /**
+     * The line of the main agent that serves a conversation, if one does: the conversation's own
+     * agent, or, for a conversation that nobody has written to yet, the application's default agent.
+     * Such a conversation is started if need be. In the caller's transaction, under the user's lock.
+     */
+    public Optional<Threads.Thread> hubOf(String appId, String userId, String conversationId) {
         Optional<Threads.Thread> conversation = threads.find(appId, userId, Threads.chatKey(conversationId));
         String server = conversation.map(Threads.Thread::agentKey).orElse(Messages.DEFAULT_AGENT);
         boolean mainServes = profiles.configIfThere(appId, server).map(config -> config.coordinator() != null).orElse(false);
         if (!mainServes) {
-            return new Direct(background(appId, userId, subject, agentKey, conversationId, keeps));
+            return Optional.empty();
         }
-        Threads.Thread hub = conversation.orElseGet(() -> threads.ensureChat(appId, userId, conversationId, server));
-        return new Hub(hub, workerOf(hub, subject, agentKey, keeps));
+        return Optional.of(conversation.orElseGet(() -> threads.ensureChat(appId, userId, conversationId, server)));
     }
 
     /**

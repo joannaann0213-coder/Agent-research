@@ -17,6 +17,7 @@ import dev.agentflow.agent.server.app.Users;
 import dev.agentflow.agent.server.bridge.TurnHooks.Point;
 import dev.agentflow.agent.server.bridge.Turns.StaleTurnException;
 import dev.agentflow.agent.server.bridge.Turns.Turn;
+import dev.agentflow.agent.server.chat.Lines;
 import dev.agentflow.agent.server.chat.Messages;
 import dev.agentflow.agent.server.chat.Threads;
 import dev.agentflow.agent.server.config.AgentProperties;
@@ -154,6 +155,7 @@ public class TurnRunner {
     private final TurnTools tools;
     private final AgentProfiles profiles;
     private final Preferences preferences;
+    private final Lines lines;
     private final TransactionTemplate tx;
     private final AgentClock clock;
     private final Patience patience;
@@ -165,8 +167,8 @@ public class TurnRunner {
 
     TurnRunner(ManagedAgents cma, InboxClient inbox, Turns turns, Threads threads, Messages messages, AppEvents appEvents,
             Schedules schedules, Actions actions, Users users, Outbound outbound, Credentials credentials, Memories memories,
-            Tasks tasks, TurnTools tools, AgentProfiles profiles, Preferences preferences, TransactionTemplate tx,
-            AgentClock clock, Patience patience, TurnHooks hooks, AgentProperties properties) {
+            Tasks tasks, TurnTools tools, AgentProfiles profiles, Preferences preferences, Lines lines,
+            TransactionTemplate tx, AgentClock clock, Patience patience, TurnHooks hooks, AgentProperties properties) {
         this.cma = cma;
         this.inbox = inbox;
         this.turns = turns;
@@ -183,6 +185,7 @@ public class TurnRunner {
         this.tools = tools;
         this.profiles = profiles;
         this.preferences = preferences;
+        this.lines = lines;
         this.tx = tx;
         this.clock = clock;
         this.patience = patience;
@@ -224,7 +227,7 @@ public class TurnRunner {
         Work fresh = resumed ? null : workOf(run);
         if (!resumed && fresh == null && !run.events().isEmpty() && run.events().stream()
                 .allMatch(event -> Actions.DOORBELL.equals(event.type()) || Schedules.TIMER_EVENT.equals(event.type())
-                        || Tasks.REPORT_EVENT.equals(event.type()))) {
+                        || Schedules.FORWARDED_EVENT.equals(event.type()) || Tasks.REPORT_EVENT.equals(event.type()))) {
             // Rings that came after the turn they were to wake had ended, a schedule that was cancelled after
             // it fell due, or one that this line has just handed to a worker; or word of a task that an earlier
             // turn of the main agent was given already, such as the user's message. There is nothing more to do.
@@ -630,6 +633,16 @@ public class TurnRunner {
                             .filter(schedule -> Schedules.ACTIVE.equals(schedule.state()))
                             .ifPresent(schedule -> due.add(new Work.Due(schedule, dueAt, late)));
                 }
+            } else if (Schedules.FORWARDED_EVENT.equals(event.type())) {
+                // A schedule that fell due on its subject's line, passed on to the main agent that serves its conversation by now.
+                String scheduleId = event.payload().path("schedule_id").asString(null);
+                if (scheduleId != null) {
+                    Instant dueAt = parseInstant(event.payload().path("due_at").asString(null), event.occurredAt());
+                    boolean late = event.payload().path("late").asBoolean(false);
+                    schedules.find(run.tenantId(), run.inboxId(), scheduleId)
+                            .filter(schedule -> Schedules.ACTIVE.equals(schedule.state()))
+                            .ifPresent(schedule -> due.add(new Work.Due(schedule, dueAt, late)));
+                }
             } else if (Tasks.REPORT_EVENT.equals(event.type()) || Tasks.MESSAGE_EVENT.equals(event.type())) {
                 // A note of a delegated task: for the main agent on its line, for the worker on the task's.
                 String taskId = event.payload().path("task_id").asString(null);
@@ -702,37 +715,74 @@ public class TurnRunner {
      * agent's to do: it is handed to that agent here, as a task of the main agent, which is told of
      * it through its line. Such items are taken out of {@code due}.
      *
+     * <p>A schedule that was set before its conversation had a main agent still falls due on the line
+     * of its subject. It is passed on from there: to the main agent's line when it is the main
+     * agent's own, and to its worker as a task of the main agent otherwise. Nothing runs on the old
+     * line then, so nothing works for the user that the main agent does not know of.
+     *
      * <p>A run that is delivered again hands nothing over twice. A schedule that cannot be handed
      * over, because its agent can no longer take it or too many tasks are open, is recorded for the
      * application as a failure, and counts as having been due.
      */
     private void handOver(ClaimedRun run, List<Work.Due> due) {
-        List<Work.Due> forWorkers = due.stream().filter(item -> item.schedule().forWorker()).toList();
-        if (forWorkers.isEmpty()) {
+        if (run.mergeKey() == null || due.stream().allMatch(item -> item.schedule().followup())) {
+            // Nothing of the application's is due: an agent's own follow-ups stay on the line that set them.
             return;
         }
-        Optional<Threads.Thread> hub = run.mergeKey() == null ? Optional.empty()
-                : threads.find(run.tenantId(), run.inboxId(), run.mergeKey());
-        if (hub.isEmpty()) {
+        Optional<Threads.Thread> line = threads.find(run.tenantId(), run.inboxId(), run.mergeKey());
+        if (line.isEmpty()) {
             return;
         }
+        boolean ofSubject = run.mergeKey().startsWith(Threads.TASK_PREFIX);
+        List<Work.Due> passedOn = new ArrayList<>();
         tx.executeWithoutResult(status -> {
             users.lock(run.tenantId(), run.inboxId());
-            for (Work.Due item : forWorkers) {
+            List<String> handed = new ArrayList<>();
+            for (Work.Due item : due) {
+                Schedules.Schedule schedule = item.schedule();
+                if (schedule.followup()) {
+                    continue;
+                }
+                Threads.Thread hub;
+                Schedules.Schedule forWorker;
+                if (schedule.forWorker()) {
+                    hub = line.get();
+                    forWorker = schedule;
+                } else if (ofSubject) {
+                    Optional<Threads.Thread> servedBy = lines.hubOf(run.tenantId(), run.inboxId(), schedule.conversationId());
+                    if (servedBy.isEmpty()) {
+                        // No main agent serves the conversation: the schedule runs here, as it always has.
+                        continue;
+                    }
+                    hub = servedBy.get();
+                    if (schedule.agentKey().equals(hub.agentKey())) {
+                        // The main agent's own: it works on it in the conversation that it serves.
+                        schedules.forward(hub, schedule, item.dueAt(), item.late());
+                        passedOn.add(item);
+                        continue;
+                    }
+                    forWorker = schedule.withSubject(schedule.subjectOfLine());
+                } else {
+                    continue;
+                }
                 try {
-                    tasks.assignDue(hub.get(), item.schedule(), item.dueAt(), item.late());
+                    tasks.assignDue(hub, forWorker, item.dueAt(), item.late());
                 } catch (AgentException e) {
-                    String error = "what the application scheduled as \"" + item.schedule().name() + "\" could not be handed "
-                            + "to agent " + item.schedule().agentKey() + ": " + e.getMessage();
+                    String error = "what the application scheduled as \"" + schedule.name() + "\" could not be handed "
+                            + "to agent " + schedule.agentKey() + ": " + e.getMessage();
                     log.warn("run {}: {}", run.runId(), error);
                     outbound.record(run.tenantId(), run.inboxId(), Update.RUN_FAILED,
                             Outbound.failure(run.runId(), run.mergeKey(), error));
                 }
+                handed.add(schedule.scheduleId());
+                passedOn.add(item);
             }
-            schedules.fired(run.tenantId(), run.inboxId(), forWorkers.stream().map(item -> item.schedule().scheduleId()).toList());
+            schedules.fired(run.tenantId(), run.inboxId(), handed);
         });
-        hooks.at(Point.HANDED_OVER, run);
-        due.removeAll(forWorkers);
+        if (!passedOn.isEmpty()) {
+            hooks.at(Point.HANDED_OVER, run);
+            due.removeAll(passedOn);
+        }
     }
 
     private static Instant parseInstant(String text, Instant otherwise) {
