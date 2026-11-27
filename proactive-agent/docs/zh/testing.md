@@ -149,7 +149,7 @@ agent 服务的测试跑在 Claude Managed Agents 的替身上。另有三个脚
 | --- | --- | --- |
 | `scripts/cma-live-check.sh` | agent 服务所依赖、而文档没有说清的 22 项平台行为 | 当时检查的 21 项：全部与假设一致。第 22 项（session 会说明每次模型请求用了多少）是之后加的 |
 | `scripts/agent-live-smoke.sh` | 一段会话、一个变成通知的事件、一个由用户回答的提问 | 全部通过 |
-| `scripts/main-agent-live.sh` | 主 agent 和 worker：用户要的任务、应用交给 worker 的事件和定时计划、主 agent 提议而用户确认的工作、主动程度，以及汇报还在路上时用户发来消息 | 全部通过 |
+| `scripts/main-agent-live.sh` | 主 agent 和 worker：用户要的任务、应用交给 worker 的事件和定时计划、主 agent 提议而用户确认的工作、主动程度，以及汇报还在路上时用户发来消息。之后又加了三步：回答到来之前用户又发消息、两个 worker 同时在干活、回合用了多少 | 当时已有的步骤：全部通过。后加的三步还没有对真实服务跑过 |
 
 平台探查第一次运行时，发现替身有四处和真实服务不一样。agent 服务没有依赖其中任何一处。替身和它的契约测试现在与真实服务一致：
 

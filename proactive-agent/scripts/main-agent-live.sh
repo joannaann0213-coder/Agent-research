@@ -4,6 +4,8 @@
 # with a model instead of the demo script. It checks what the service has to do whatever the model
 # says (a task is made, a report comes back, the main agent is told), and prints, as information,
 # what the model made of the rest (whether it told the user, offered work, changed how forward it is).
+# Three steps depend on timing and say so when the moment was missed: the user writing again before
+# the answer is there, two workers at work at the same time, and what the turns used.
 #
 #   export ANTHROPIC_API_KEY=...          # a key with access to Managed Agents
 #   mvn install -DskipTests               # once, to build the jars
@@ -101,6 +103,24 @@ await_note() { # task kind
   echo "$notes"
 }
 REPLY="next((u['data']['text'] for u in d['updates'] if u['type']=='message.created' and u['data']['kind']=='reply'), '')"
+REPLIES="' | '.join(u['data']['text'] for u in d['updates'] if u['type']=='message.created' and u['data']['kind']=='reply')"
+HOW_MANY_REPLIES="sum(1 for u in d['updates'] if u['type']=='message.created' and u['data']['kind']=='reply')"
+# how many chat turns of the user have ended one way, by the statistics
+chats() { call GET /v1/users/u1/stats "" "$KEY" | json "sum(t['turns'] for t in d['turns'] if t['kind']=='chat' and t['outcome']=='$1')"; }
+# the tasks that were made after $1, once every one of them has been worked on and rests: how many; empty until then
+TASKS_DONE="(lambda made, idle: len(made) if made and all(t in idle for t in made) else '')([u['data']['task_id'] for u in d['updates'] if u['type']=='task.created'], {u['data']['task_id'] for u in d['updates'] if u['type']=='task.updated' and u['data']['status']=='idle'})"
+# the most tasks that were being worked on at one moment after $1, from the order in which the service
+# recorded them starting and resting
+peak() {
+  updates "$1" | python3 -c "
+import json, sys
+at_work, most = set(), 0
+for u in json.load(sys.stdin)['updates']:
+    if u['type'] == 'task.updated' and u['data']['status'] in ('working', 'idle'):
+        (at_work.add if u['data']['status'] == 'working' else at_work.discard)(u['data']['task_id'])
+        most = max(most, len(at_work))
+print(most)"
+}
 NOTIFIED="' | '.join(u['data']['text'] for u in d['updates'] if u['type']=='message.created' and u['data']['kind']=='notification')"
 
 APP=main-live-$(date +%s)
@@ -201,6 +221,59 @@ if [ -n "$DUE" ]; then
   info "what the main agent told the user about it: $(updates "$MARK" | json "$NOTIFIED" | sed 's/^$/(nothing)/')"
 else
   fail "the schedule became a task of the main agent when it was due"
+fi
+
+echo
+echo "7. The user writes, and writes the rest before the answer is there."
+MARK=$(last_seq)
+ENDED=$(chats superseded); TOGETHER=$(chats absorbed)
+call POST /v1/users/u1/messages '{"text": "I would like to change the delivery address of one of my orders."}' "$KEY" > /dev/null
+sleep 4   # past the Inbox's quiet window, and into the model's answer
+call POST /v1/users/u1/messages '{"text": "It is order 4321, and the new address is 12 Mill Lane, Oldtown."}' "$KEY" > /dev/null
+await "$MARK" "$REPLY"
+sleep 20  # a second reply, if one is to come
+COUNT=$(updates "$MARK" | json "$HOW_MANY_REPLIES"); ENDED=$(( $(chats superseded) - ENDED )); TOGETHER=$(( $(chats absorbed) - TOGETHER ))
+info "the user got: $(updates "$MARK" | json "$REPLIES" | sed 's/^$/(nothing)/')"
+if [ "$COUNT" = 1 ] && [ "$ENDED" -ge 1 ]; then pass "the reply under way was ended, and one reply answers both messages"
+elif [ "$COUNT" = 1 ] && [ "$TOGETHER" -ge 1 ]; then pass "the second message came before the agent had its input: one turn took both, and one reply answers them"
+elif [ "$COUNT" = 0 ]; then fail "the user is answered (replies ended: $ENDED)"
+elif [ "$ENDED" -ge 1 ]; then fail "a reply was ended, and yet the user got $COUNT replies"
+else info "the moment was missed: the first reply was there before the second message came, so there was nothing to end ($COUNT replies)"; fi
+
+echo
+echo "8. The user asks for two things at once."
+MARK=$(last_seq)
+call POST /v1/users/u1/messages '{"text": "Please look up two things for me, as two separate tasks for your research worker: why order 2001 is late, and whether order 2002 can still be cancelled."}' "$KEY" > /dev/null
+await "$MARK" "$REPLY"; ANSWER=$FOUND
+if [ -n "$ANSWER" ]; then pass "the main agent answers at once (${TOOK}s): $ANSWER"; else fail "the main agent answers"; fi
+await "$MARK" "$TASKS_DONE"; MADE=${FOUND:-0}
+AT_ONCE=$(peak "$MARK")
+if [ "$MADE" -ge 2 ] && [ "$AT_ONCE" -ge 2 ]; then pass "$MADE tasks, and $AT_ONCE workers were at work at the same time, each in a session of its own"
+elif [ "$MADE" -ge 2 ]; then info "$MADE tasks, and their workers happened to work one after the other"
+elif [ "$MADE" = 1 ]; then info "the model made one task of it, so there was nothing to run side by side"
+else info "the model made no task of it, so there was nothing to run side by side"; fi
+sleep 12
+info "what the main agent told the user about them: $(updates "$MARK" | json "$NOTIFIED" | sed 's/^$/(nothing)/')"
+
+echo
+echo "9. What it all came to: the turns by kind and outcome, and what they used."
+STATS=$(call GET /v1/users/u1/stats "" "$KEY")
+echo "$STATS" | python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+for t in s['turns']:
+    print('      %-10s %-10s %3d turns %3d requests %8d tokens in (%d of them from the cache) %6d out %6.1f s' % (t['kind'], t['outcome'],
+          t['turns'], t['model_requests'], t['input_tokens'] + t['cache_read_tokens'] + t['cache_creation_tokens'], t['cache_read_tokens'],
+          t['output_tokens'], t['seconds']))
+print('      replies:', s['replies'], ' messages:', s['messages'])"
+REQUESTS=$(echo "$STATS" | json "sum(t['model_requests'] for t in d['turns'])")
+TOKENS=$(echo "$STATS" | json "sum(t['input_tokens'] + t['cache_read_tokens'] + t['cache_creation_tokens'] for t in d['turns'])")
+WRITTEN=$(echo "$STATS" | json "sum(t['output_tokens'] for t in d['turns'])")
+UNCOUNTED=$(echo "$STATS" | json "', '.join(t['kind'] + '/' + t['outcome'] for t in d['turns'] if t['outcome'] in ('replied', 'notified', 'reported') and (t['model_requests'] < t['turns'] or t['output_tokens'] == 0))")
+if [ "$REQUESTS" -gt 0 ] && [ "$TOKENS" -gt 0 ] && [ "$WRITTEN" -gt 0 ] && [ -z "$UNCOUNTED" ]; then
+  pass "the turns say what their requests to the model used: $REQUESTS requests, $TOKENS tokens of input, $WRITTEN of output"
+else
+  fail "the turns say what they used (requests: $REQUESTS, input: $TOKENS, output: $WRITTEN, without numbers: ${UNCOUNTED:-none})"
 fi
 
 echo

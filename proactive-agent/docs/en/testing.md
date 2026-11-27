@@ -163,7 +163,7 @@ real service instead, with an API key. They were last run in November 2026, with
 | --- | --- | --- |
 | `scripts/cma-live-check.sh` | 22 behaviours of the platform that the agent service depends on and that the documentation leaves open | The 21 that it checked then: all as assumed. The 22nd, that a session says what every request to the model used, was added afterwards |
 | `scripts/agent-live-smoke.sh` | A conversation, an event that becomes a notification, a question that the user answers | All passed |
-| `scripts/main-agent-live.sh` | A main agent and a worker: a task that the user asks for, an event and a schedule that the application hands to the worker, work that the main agent offers and the user confirms, how forward it is, and the user writing while a report is on its way | All passed |
+| `scripts/main-agent-live.sh` | A main agent and a worker: a task that the user asks for, an event and a schedule that the application hands to the worker, work that the main agent offers and the user confirms, how forward it is, and the user writing while a report is on its way. Three steps were added afterwards: the user writing again before the answer is there, two workers at work at the same time, and what the turns used | The steps it had then: all passed. The three later ones have not been run against the real service |
 
 The first run of the platform check found four things that the stand-in had wrong. The agent service
 relied on none of them. The stand-in and its contract tests now do what the service does:
