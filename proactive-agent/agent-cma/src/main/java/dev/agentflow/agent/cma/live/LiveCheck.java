@@ -169,11 +169,14 @@ public final class LiveCheck {
             note("a send returns the stored event with its id", hasId ? Verdict.AS_ASSUMED : Verdict.DIFFERENT,
                     "returned " + describe(sent));
 
+            // The bridge learns from the stream that its input was taken up. Whether the stream also shows the
+            // message while it is still queued makes no difference to it.
             List<CmaEvent> echoes = turn.stream().filter(CmaEvent.UserMessage.class::isInstance).toList();
-            boolean twice = echoes.size() == 2 && echoes.get(0).processedAt() == null && echoes.get(1).processedAt() != null
-                    && echoes.get(0).id().equals(echoes.get(1).id());
-            note("a sent message shows on the stream queued, then processed, under one id",
-                    twice ? Verdict.AS_ASSUMED : Verdict.DIFFERENT, "saw " + describe(echoes));
+            boolean processed = hasId && !echoes.isEmpty()
+                    && echoes.stream().allMatch(echo -> sent.getFirst().id().equals(echo.id()))
+                    && echoes.getLast().processedAt() != null;
+            note("a sent message shows on the stream as processed, under the id the send returned",
+                    processed ? Verdict.AS_ASSUMED : Verdict.DIFFERENT, "saw " + describe(echoes));
 
             CmaEvent last = turn.getLast();
             note("a finished turn ends idle with end_turn",
@@ -247,11 +250,8 @@ public final class LiveCheck {
                         "the agent said: " + texts(rest));
             }
 
-            Refusal again = refusal(() -> cma.send(session, List.of(new Outgoing.CustomToolResult(id, "ping", false))));
-            note("a call is answered once", again.verdict(), again.detail());
-            if (again.accepted()) {
-                listen(stream, options.quiet());
-            }
+            Late again = late(stream, () -> cma.send(session, List.of(new Outgoing.CustomToolResult(id, "ping", false))));
+            note("an answer to a call that was answered already changes nothing", again.verdict(), again.detail());
         }
     }
 
@@ -283,11 +283,8 @@ public final class LiveCheck {
             note("an interrupt ends a turn that waits for an answer",
                     idle.reason() == StopReason.END_TURN ? Verdict.AS_ASSUMED : Verdict.DIFFERENT, "then idle with " + idle.reason());
 
-            Refusal late = refusal(() -> cma.send(session, List.of(new Outgoing.CustomToolResult(call.get().id(), "wait", false))));
-            note("the waiting call is gone with the interrupted turn", late.verdict(), late.detail());
-            if (late.accepted()) {
-                listen(stream, options.quiet());
-            }
+            Late late = late(stream, () -> cma.send(session, List.of(new Outgoing.CustomToolResult(call.get().id(), "wait", false))));
+            note("an answer to the call of an interrupted turn changes nothing", late.verdict(), late.detail());
 
             cma.send(session, List.of(new Outgoing.UserMessage("Reply with the single word AGAIN.")));
             List<CmaEvent> next = read(stream, LiveCheck::turnOver, options.turnTimeout());
@@ -364,8 +361,8 @@ public final class LiveCheck {
             note("after the confirmations the turn ends", turnOver(rest.getLast()) ? Verdict.AS_ASSUMED : Verdict.DIFFERENT,
                     "the agent said: " + texts(rest));
 
-            Refusal late = refusal(() -> cma.send(session, List.of(new Outgoing.ToolConfirmation(asked.get(0).id(), true, null))));
-            note("a confirmation for a call that no longer waits is refused", late.verdict(), late.detail());
+            Late late = late(stream, () -> cma.send(session, List.of(new Outgoing.ToolConfirmation(asked.get(0).id(), true, null))));
+            note("a confirmation for a call that no longer waits changes nothing", late.verdict(), late.detail());
         }
     }
 
@@ -397,6 +394,30 @@ public final class LiveCheck {
         Verdict verdict() {
             return accepted ? Verdict.DIFFERENT : Verdict.AS_ASSUMED;
         }
+    }
+
+    /**
+     * What came of an answer that is sent although nothing waits for it: after a retry whose first
+     * attempt got through, or after a turn was interrupted. The bridge needs it to be harmless. The
+     * service may refuse it or take it, and a session that takes it may show itself running and
+     * idle once more; what counts is that the call does not run and the model does not speak again.
+     */
+    private record Late(boolean harmless, String detail) {
+        Verdict verdict() {
+            return harmless ? Verdict.AS_ASSUMED : Verdict.DIFFERENT;
+        }
+    }
+
+    private Late late(EventStream stream, Runnable answer) {
+        Refusal refusal = refusal(answer);
+        if (!refusal.accepted()) {
+            return new Late(true, refusal.detail());
+        }
+        List<CmaEvent> then = listen(stream, options.quiet());
+        boolean worked = then.stream().anyMatch(event -> event instanceof CmaEvent.AgentMessage
+                || event instanceof CmaEvent.CustomToolUse || event instanceof CmaEvent.ToolUse
+                || event instanceof CmaEvent.ToolResult);
+        return new Late(!worked, "the service accepted it; the stream then showed " + describe(then));
     }
 
     /** Makes a call that is expected to be refused as an invalid request, and says what came of it. */

@@ -455,12 +455,13 @@ openssl rand -hex 32
 ```
 
 在 `.env` 里设置 `AGENT_CMA_MODE=live` 和 `ANTHROPIC_API_KEY`，并给 `AGENT_ADMIN_KEYS_0`、`AGENT_TOKENS_SECRETS_0` 和
-`AGENT_INBOX_SECRET` 各填一个用 `openssl rand -hex 32` 生成的值。然后重新启动，端到端检查一段会话、一条通知和一次提问：
+`AGENT_INBOX_SECRET` 各填一个用 `openssl rand -hex 32` 生成的值。然后重新启动，端到端检查一段会话、一条通知和一次提问，再检查一个带 worker 的主 agent：
 
 ```bash
 docker compose up -d --wait
 ADMIN=$(grep '^AGENT_ADMIN_KEYS_0=' .env | cut -d= -f2)
 scripts/agent-live-smoke.sh --api http://localhost:8090 --admin-key "$ADMIN"
+scripts/main-agent-live.sh --api http://localhost:8090 --admin-key "$ADMIN"
 ```
 
 演示模式创建的 agent 只存在于演示里：真实模式下请登记新的应用，或者用 `docker compose down -v`

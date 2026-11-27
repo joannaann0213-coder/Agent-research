@@ -154,6 +154,36 @@ The README's quick start is the manual smoke test: start the service, write a si
 `scripts/inbox-curl.sh`, let `scripts/run-worker.sh` claim and ack it, and read the event's history
 back.
 
+## Against the real service
+
+The agent service's tests run on a stand-in for Claude Managed Agents. Three scripts run against the
+real service instead, with an API key. They were last run in November 2026, with `claude-opus-5-5`.
+
+| Script | What it checks | Result |
+| --- | --- | --- |
+| `scripts/cma-live-check.sh` | 21 behaviours of the platform that the agent service depends on and that the documentation leaves open | All as assumed |
+| `scripts/agent-live-smoke.sh` | A conversation, an event that becomes a notification, a question that the user answers | All passed |
+| `scripts/main-agent-live.sh` | A main agent and a worker: a task that the user asks for, an event and a schedule that the application hands to the worker, work that the main agent offers and the user confirms, how forward it is, and the user writing while a report is on its way | All passed |
+
+The first run of the platform check found four things that the stand-in had wrong. The agent service
+relied on none of them. The stand-in and its contract tests now do what the service does:
+
+- The stream shows a message once, when the session takes it up and after it has said that it is
+  running. The stored list has the message at that place too.
+- An answer to a call that no longer waits, because it was answered or its turn was interrupted, is
+  accepted and changes nothing. A confirmation makes the session show itself running and idle once
+  more; the result of a custom tool shows nothing.
+- An interrupt gives the calls that wait an error as their result before the session goes idle.
+
+With the model, a reply of the main agent took 5 to 6 seconds in the service, and reached the user 7
+to 8 seconds after they wrote, the Inbox's quiet window included. A turn in the background took 5 to
+7 seconds, a worker's turn about 5. In two runs a turn in the background gave way to a message of the
+user four times: three times the user's turn had taken its news and it ended without the model, and
+once it started over and repeated its calls, none of which was made twice.
+
+Not run against the real service: a worker that waits for an approval. That needs an MCP server that
+the platform can reach.
+
 ## What is not tested
 
 - Roadmap stage M2 (F11) is not built.

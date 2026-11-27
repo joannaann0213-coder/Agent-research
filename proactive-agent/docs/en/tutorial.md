@@ -505,12 +505,14 @@ openssl rand -hex 32
 
 In `.env`, set `AGENT_CMA_MODE=live` and `ANTHROPIC_API_KEY`, and give `AGENT_ADMIN_KEYS_0`,
 `AGENT_TOKENS_SECRETS_0` and `AGENT_INBOX_SECRET` a value each from `openssl rand -hex 32`. Then start
-again, and check a conversation, a notification and a question end to end:
+again, and check a conversation, a notification and a question end to end, and then a main agent
+with a worker:
 
 ```bash
 docker compose up -d --wait
 ADMIN=$(grep '^AGENT_ADMIN_KEYS_0=' .env | cut -d= -f2)
 scripts/agent-live-smoke.sh --api http://localhost:8090 --admin-key "$ADMIN"
+scripts/main-agent-live.sh --api http://localhost:8090 --admin-key "$ADMIN"
 ```
 
 The agents that demo mode made exist only in the demo: in live mode, register new applications, or

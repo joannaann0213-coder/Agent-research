@@ -173,15 +173,15 @@ abstract class ManagedAgentsContract {
             assertThat(message.id()).isNotBlank();
             assertThat(message.text()).isEqualTo("world");
         });
+        assertThat(stored.getFirst().processedAt()).as("the answer to the send has it as queued").isNull();
         List<CmaEvent> turn = until(stream, ManagedAgentsContract::turnOver);
-        assertThat(types(turn)).containsExactly("user.message", "user.message", "session.status_running",
-                "agent.message", "session.status_idle");
-        assertThat(turn.get(0).processedAt()).as("queued first").isNull();
-        assertThat(turn.get(1).processedAt()).as("then processed").isNotNull();
-        assertThat(turn.get(1).id()).isEqualTo(turn.get(0).id()).isEqualTo(stored.getFirst().id());
-        assertThat(turn.get(3)).isInstanceOfSatisfying(CmaEvent.AgentMessage.class,
+        assertThat(types(turn)).as("the stream shows the message once, when the session takes it up")
+                .containsExactly("session.status_running", "user.message", "agent.message", "session.status_idle");
+        assertThat(turn.get(1).processedAt()).as("processed").isNotNull();
+        assertThat(turn.get(1).id()).isEqualTo(stored.getFirst().id());
+        assertThat(turn.get(2)).isInstanceOfSatisfying(CmaEvent.AgentMessage.class,
                 message -> assertThat(message.text()).isEqualTo("Hello, world!"));
-        assertThat(turn.get(4)).isInstanceOfSatisfying(CmaEvent.Idle.class, idle -> {
+        assertThat(turn.get(3)).isInstanceOfSatisfying(CmaEvent.Idle.class, idle -> {
             assertThat(idle.reason()).isEqualTo(StopReason.END_TURN);
             assertThat(idle.awaiting()).isEmpty();
         });
@@ -197,15 +197,15 @@ abstract class ManagedAgentsContract {
 
         List<CmaEvent> all = cma.listEvents(session, null);
 
-        assertThat(types(all)).containsExactly(
-                "user.message", "session.status_running", "agent.message", "session.status_idle",
-                "user.message", "session.status_running", "agent.message", "session.status_idle");
+        assertThat(types(all)).as("a message has its place where the session took it up").containsExactly(
+                "session.status_running", "user.message", "agent.message", "session.status_idle",
+                "session.status_running", "user.message", "agent.message", "session.status_idle");
         assertThat(all).allSatisfy(event -> assertThat(event.processedAt()).isNotNull());
         assertThat(all).extracting(CmaEvent::id).doesNotHaveDuplicates();
         assertThat(((CmaEvent.AgentMessage) all.get(6)).text()).isEqualTo("You said: two");
 
-        Instant secondMessage = all.get(4).processedAt();
-        assertThat(types(cma.listEvents(session, secondMessage))).startsWith("session.status_running").hasSizeLessThan(5);
+        Instant secondMessage = all.get(5).processedAt();
+        assertThat(types(cma.listEvents(session, secondMessage))).startsWith("user.message").hasSizeLessThan(5);
         assertThat(cma.listEvents(session, all.getLast().processedAt().plusSeconds(60))).isEmpty();
     }
 
@@ -249,12 +249,12 @@ abstract class ManagedAgentsContract {
         cma.send(session, List.of(new Outgoing.UserMessage("what is new?")));
 
         List<CmaEvent> first = until(stream, ManagedAgentsContract::idle);
-        assertThat(types(first)).containsExactly("user.message", "user.message", "session.status_running",
+        assertThat(types(first)).containsExactly("session.status_running", "user.message",
                 "agent.message", "agent.custom_tool_use", "session.status_idle");
-        CmaEvent.CustomToolUse call = (CmaEvent.CustomToolUse) first.get(4);
+        CmaEvent.CustomToolUse call = (CmaEvent.CustomToolUse) first.get(3);
         assertThat(call.name()).isEqualTo("read_events");
         assertThat(call.input().path("limit").asInt()).isEqualTo(5);
-        assertThat(first.get(5)).isInstanceOfSatisfying(CmaEvent.Idle.class, idle -> {
+        assertThat(first.get(4)).isInstanceOfSatisfying(CmaEvent.Idle.class, idle -> {
             assertThat(idle.reason()).isEqualTo(StopReason.REQUIRES_ACTION);
             assertThat(idle.awaiting()).containsExactly(call.id());
         });
@@ -329,8 +329,11 @@ abstract class ManagedAgentsContract {
 
         cma.send(session, List.of(new Outgoing.CustomToolResult(call, "fine", false)));
         until(stream, ManagedAgentsContract::turnOver);
-        assertThat(kindOf(() -> cma.send(session, List.of(new Outgoing.CustomToolResult(call, "again", false)))))
-                .as("a call is answered once").isEqualTo(CmaException.Kind.INVALID_REQUEST);
+
+        // An answer that comes a second time, as after a retry whose first attempt got through, is taken and changes nothing.
+        cma.send(session, List.of(new Outgoing.CustomToolResult(call, "again", false)));
+        assertThat(stream.poll(Duration.ofMillis(300))).as("nothing comes of it").isEmpty();
+        assertThat(cma.getSession(session).status()).isEqualTo(SessionInfo.Status.IDLE);
     }
 
     // ================================================================ tools the platform runs
@@ -387,7 +390,7 @@ abstract class ManagedAgentsContract {
         cma.send(session, List.of(new Outgoing.UserMessage("go")));
 
         List<CmaEvent> turn = until(stream, ManagedAgentsContract::turnOver);
-        assertThat(types(turn)).containsExactly("user.message", "user.message", "session.status_running",
+        assertThat(types(turn)).containsExactly("session.status_running", "user.message",
                 "agent.mcp_tool_use", "agent.mcp_tool_result", "agent.tool_use", "agent.tool_result",
                 "agent.message", "session.status_idle");
         assertThat(turn.stream().filter(CmaEvent.ToolUse.class::isInstance).map(CmaEvent.ToolUse.class::cast))
@@ -430,7 +433,7 @@ abstract class ManagedAgentsContract {
         EventStream stream = stream(session);
         fake.hold(session);
         cma.send(session, List.of(new Outgoing.UserMessage("write a long report")));
-        until(stream, event -> event instanceof CmaEvent.Running);
+        until(stream, event -> event instanceof CmaEvent.UserMessage);
         assertThat(cma.getSession(session).status()).isEqualTo(SessionInfo.Status.RUNNING);
 
         cma.send(session, List.of(new Outgoing.Interrupt()));
@@ -457,9 +460,16 @@ abstract class ManagedAgentsContract {
         String call = lastOf(until(stream, ManagedAgentsContract::idle), CmaEvent.CustomToolUse.class).id();
 
         cma.send(session, List.of(new Outgoing.Interrupt()));
-        assertThat(((CmaEvent.Idle) until(stream, ManagedAgentsContract::idle).getLast()).reason()).isEqualTo(StopReason.END_TURN);
-        assertThat(kindOf(() -> cma.send(session, List.of(new Outgoing.CustomToolResult(call, "late", false)))))
-                .as("the call is gone with the turn").isEqualTo(CmaException.Kind.INVALID_REQUEST);
+        List<CmaEvent> stopped = until(stream, ManagedAgentsContract::idle);
+        assertThat(((CmaEvent.Idle) stopped.getLast()).reason()).isEqualTo(StopReason.END_TURN);
+        assertThat(stopped.getFirst()).as("the call that waited gets an error as its result")
+                .isInstanceOfSatisfying(CmaEvent.ToolResult.class, result -> {
+                    assertThat(result.toolUseId()).isEqualTo(call);
+                    assertThat(result.error()).isTrue();
+                });
+        // The call is gone with the turn. An answer that comes for it all the same is taken, and nothing comes of it.
+        cma.send(session, List.of(new Outgoing.CustomToolResult(call, "late", false)));
+        assertThat(stream.poll(Duration.ofMillis(300))).isEmpty();
 
         cma.send(session, List.of(new Outgoing.UserMessage("next")));
         assertThat(lastOf(until(stream, ManagedAgentsContract::turnOver), CmaEvent.AgentMessage.class).text())
@@ -769,7 +779,7 @@ abstract class ManagedAgentsContract {
         cma.send(session, List.of(new Outgoing.UserMessage("one")));
 
         try (EventTail tail = EventTail.open(cma, session, null)) {
-            assertThat(types(tail.stored())).containsExactly("user.message", "session.status_running", "agent.message",
+            assertThat(types(tail.stored())).containsExactly("session.status_running", "user.message", "agent.message",
                     "session.status_idle");
             assertThat(tail.stored()).as("handed out once").isEmpty();
 

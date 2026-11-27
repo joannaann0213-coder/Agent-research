@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -43,16 +44,23 @@ import tools.jackson.databind.JsonNode;
  * events of the resulting work are already on the open streams. That keeps tests deterministic. To
  * get a session that is still working when a call returns, freeze its model with {@link #hold}.
  *
- * <p>Where the service's documentation does not say what happens, the fake assumes the following.
- * The live smoke test checks each of them against the real service.
+ * <p>Where the service's documentation does not say what happens, the fake does what the live
+ * check ({@code scripts/cma-live-check.sh}) saw the real service do, in November 2026:
  *
  * <ul>
  *   <li>A call that is approved runs at once, also while other calls of the same step still wait;
  *       the session then goes idle again and names the calls that remain.
- *   <li>An interrupt ends a turn that waits for answers, and the waiting calls are gone with it.
+ *   <li>An interrupt ends a turn that waits for answers: the waiting calls get an error as their
+ *       result, and the session goes idle with end_turn.
  *   <li>A message sent while the session waits for answers is refused, and the whole request with
  *       it, even when the same request carries the answers.
- *   <li>An answer to a call that is not waiting, or not waiting any more, is refused.
+ *   <li>An answer to a call that the session never made is refused. An answer to a call that no
+ *       longer waits, because it was answered or its turn was interrupted, is accepted and changes
+ *       nothing: the call does not run and the model is not asked again. For a confirmation the
+ *       session shows itself running and idle once more; for the result of a custom tool it shows
+ *       nothing.
+ *   <li>The stream shows a message when the session takes it up, once, after it has said that it
+ *       is running. The answer to the send has it as queued.
  * </ul>
  *
  * <p>Used by the tests of the agent service and by its local demo mode. It is not a simulator of
@@ -557,10 +565,10 @@ public final class FakeManagedAgents implements ManagedAgents {
     }
 
     private void checkAnswer(Session session, String eventId, boolean custom, Set<String> answered) {
-        Waiting waiting = session.awaiting.get(eventId);
-        if (waiting == null || waiting.custom != custom || !answered.add(eventId)) {
+        Boolean known = session.asked.get(eventId);
+        if (known == null || known != custom || !answered.add(eventId)) {
             throw CmaException.invalid("no " + (custom ? "custom tool call" : "tool call that waits for permission")
-                    + " with id " + eventId + " is waiting for an answer in session " + session.id);
+                    + " with id " + eventId + " in session " + session.id);
         }
     }
 
@@ -568,13 +576,21 @@ public final class FakeManagedAgents implements ManagedAgents {
         Instant now = clock.get();
         switch (outgoing) {
             case Outgoing.UserMessage message -> {
+                // Stored as queued. The stream shows it when the session takes it up.
                 CmaEvent.UserMessage queued = new CmaEvent.UserMessage(newEventId(), null, message.text());
-                emit(session, queued);
+                session.log.add(queued);
+                session.createdAt.add(now);
                 session.queued.add(queued.id());
                 return queued;
             }
             case Outgoing.Interrupt interrupt -> {
                 CmaEvent.UserInterrupt stored = new CmaEvent.UserInterrupt(interruptsHaveIds ? newEventId() : "", now);
+                if (session.inTurn) {
+                    // The calls that waited get an error as their result first: nobody is going to answer them.
+                    for (Waiting waiting : List.copyOf(session.awaiting.values())) {
+                        emit(session, new CmaEvent.ToolResult(newEventId(), now, waiting.eventId, true, waiting.server != null));
+                    }
+                }
                 emit(session, stored);
                 if (session.inTurn) {
                     // The turn stops where it is. An interrupted turn ends like any other one. A model that
@@ -590,8 +606,17 @@ public final class FakeManagedAgents implements ManagedAgents {
             case Outgoing.ToolConfirmation confirmation -> {
                 CmaEvent.UserToolConfirmation stored = new CmaEvent.UserToolConfirmation(newEventId(), now,
                         confirmation.toolUseId(), confirmation.allow());
-                emit(session, stored);
                 Waiting waiting = session.awaiting.remove(confirmation.toolUseId());
+                if (waiting == null) {
+                    // The call no longer waits. The service takes the confirmation all the same: the call does
+                    // not run, and a session that is at rest shows itself running and idle once more.
+                    if (!session.inTurn) {
+                        running(session);
+                        idle(session, StopReason.END_TURN, List.of());
+                    }
+                    return stored;
+                }
+                emit(session, stored);
                 if (confirmation.allow()) {
                     // an approved call runs at once, whether or not other calls still wait
                     running(session);
@@ -606,8 +631,12 @@ public final class FakeManagedAgents implements ManagedAgents {
             case Outgoing.CustomToolResult result -> {
                 CmaEvent.UserCustomToolResult stored =
                         new CmaEvent.UserCustomToolResult(newEventId(), now, result.customToolUseId());
-                emit(session, stored);
                 Waiting waiting = session.awaiting.remove(result.customToolUseId());
+                if (waiting == null) {
+                    // The call no longer waits. The service takes the result all the same, and nothing comes of it.
+                    return stored;
+                }
+                emit(session, stored);
                 session.results.add(new ToolOutcome(waiting.eventId, null, waiting.tool, result.text(), result.error()));
                 return stored;
             }
@@ -771,11 +800,11 @@ public final class FakeManagedAgents implements ManagedAgents {
                 if (next == null) {
                     return;
                 }
+                running(session);
                 session.turnMessage = processed(session, next);
                 session.inTurn = true;
                 session.step = 0;
                 session.results.clear();
-                running(session);
             }
             if (session.held) {
                 return;
@@ -825,6 +854,7 @@ public final class FakeManagedAgents implements ManagedAgents {
                 String id = newEventId();
                 emit(session, new CmaEvent.CustomToolUse(id, now, call.name(), call.input()));
                 session.awaiting.put(id, new Waiting(id, true, null, call.name(), call.input()));
+                session.asked.put(id, true);
             }
             case ModelStep.Mcp call -> platformCall(session, call.server(), call.name(), call.input(),
                     session.agent.mcpServers().stream().filter(server -> server.name().equals(call.server()))
@@ -854,7 +884,10 @@ public final class FakeManagedAgents implements ManagedAgents {
         emit(session, new CmaEvent.ToolUse(id, clock.get(), tool, server, input, permission));
         switch (permission) {
             case ALLOW -> run(session, id, server, tool, input);
-            case ASK -> session.awaiting.put(id, new Waiting(id, false, server, tool, input));
+            case ASK -> {
+                session.awaiting.put(id, new Waiting(id, false, server, tool, input));
+                session.asked.put(id, false);
+            }
             case DENY -> result(session, id, server, tool,
                     ToolOutcome.failed("Permission to use " + tool + " has been denied."));
         }
@@ -883,13 +916,16 @@ public final class FakeManagedAgents implements ManagedAgents {
         emit(session, new CmaEvent.Idle(newEventId(), clock.get(), reason, awaiting));
     }
 
-    /** Stamps a queued message as processed. The stream shows it a second time; the stored list shows it once. */
+    /**
+     * Stamps a queued message as processed. The stream shows it now, for the first time. The stored
+     * list shows it once, at the place where it was taken up: after the session said that it runs.
+     */
     private String processed(Session session, String eventId) {
         for (int i = 0; i < session.log.size(); i++) {
             if (session.log.get(i) instanceof CmaEvent.UserMessage message && message.id().equals(eventId)) {
-                CmaEvent.UserMessage done = new CmaEvent.UserMessage(eventId, clock.get(), message.text());
-                session.log.set(i, done);
-                session.streams.forEach(stream -> stream.offer(done));
+                session.log.remove(i);
+                session.createdAt.remove(i);
+                emit(session, new CmaEvent.UserMessage(eventId, clock.get(), message.text()));
                 return message.text();
             }
         }
@@ -1026,6 +1062,8 @@ public final class FakeManagedAgents implements ManagedAgents {
         final List<Instant> createdAt = new ArrayList<>();
         final Deque<String> queued = new ArrayDeque<>();
         final Map<String, Waiting> awaiting = new LinkedHashMap<>();
+        /** Every call that ever waited for an answer, and whether it was a custom tool's. */
+        final Map<String, Boolean> asked = new HashMap<>();
         final List<ToolOutcome> results = new ArrayList<>();
         final List<FakeStream> streams = new ArrayList<>();
         SessionInfo.Status status = SessionInfo.Status.IDLE;

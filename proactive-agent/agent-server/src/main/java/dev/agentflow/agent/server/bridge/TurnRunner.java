@@ -1208,11 +1208,10 @@ public class TurnRunner {
                 hooks.at(Point.ANSWERS_SENT, run);
                 return false;
             } catch (CmaException e) {
-                if (e.kind() == CmaException.Kind.INVALID_REQUEST && attempt > 1) {
-                    // An earlier attempt got through after all: the calls are answered and no longer wait.
-                    hooks.at(Point.ANSWERS_SENT, run);
-                    return false;
-                }
+                // A retry needs no care of its own. When an earlier attempt got through after all, the service
+                // takes the answers a second time and nothing comes of it (seen against the real service in
+                // November 2026). A refusal is therefore a refusal: the run goes back to the Inbox, and the
+                // turn goes on from what the session has on record.
                 if (!e.retryable() || attempt >= config.getAttempts()) {
                     throw e;
                 }

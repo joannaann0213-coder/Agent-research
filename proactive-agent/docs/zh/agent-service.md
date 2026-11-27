@@ -170,7 +170,8 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 
 演示模式下由脚本扮演所有 agent：它重复用户说的话、读取事件并逐条通知；作为主 agent，它把用户写在 `task:` 后面的内容交给 worker；作为
 worker，它汇报说做完了。这样不用 key 也能试用整个服务。真实模式需要一个开通了 Managed Agents 的 Anthropic API
-key。上线前先运行 `scripts/cma-live-check.sh`：它检查本服务所依赖、而文档没有说清的那些 CMA 行为。然后运行 `scripts/agent-live-smoke.sh`：它用 CMA 启动两个服务，端到端检查一段会话、一条通知，以及一个由用户回答的提问；加上 `--api` 和 `--admin-key` 时，它检查一个已经在运行的服务，比如 `docker-compose.yml` 启动的那个。
+key。上线前先运行 `scripts/cma-live-check.sh`：它检查本服务所依赖、而文档没有说清的那些 CMA 行为。然后运行 `scripts/agent-live-smoke.sh`：它用 CMA 启动两个服务，端到端检查一段会话、一条通知，以及一个由用户回答的提问；加上 `--api` 和 `--admin-key` 时，它检查一个已经在运行的服务，比如 `docker-compose.yml` 启动的那个。`scripts/main-agent-live.sh`
+对主 agent 和 worker 做同样的检查。这些脚本最近一次运行的结果见[测试](testing.md#对真实服务的验证)。
 
 演示模式的平台在服务的内存里。重启之后，它会认领数据库里仍然记着的东西（agent 按其配置恢复），但它创建的东西别处都没有：真实模式要从新的应用开始。
 

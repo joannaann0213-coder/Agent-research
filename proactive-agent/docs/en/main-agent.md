@@ -471,8 +471,8 @@ What to measure once the service runs with a model:
 - The third tier: several agents under one task, in the platform's threads inside a worker's
   session.
 - Writing to a worker directly as the user. The user talks to the main agent, which passes it on.
-- Steering: a message that arrives while the main agent works in the background waits for that turn
-  to end.
+- Steering a reply that is under way: a second message of the user waits for the reply to the
+  first. A turn in the background, by contrast, gives way to the user.
 - A worker does not have the main agent's memory of the user. What it needs to know is written into
   the task.
 - A plan to confirm. The user confirms the main agent's summary of a task; the worker does not draft
@@ -485,4 +485,6 @@ What to measure once the service runs with a model:
 - A main agent hears of the tasks of its conversation. What happens in another conversation of the
   same user, it does not: an application that wants one agent that knows everything about a user
   gives each user one conversation.
-- Nothing here ran against a model or the platform: the tests use the scripted stand-in.
+- A worker that waits for an approval has not run against the real service: that needs an MCP
+  server that the platform can reach. The rest of this document has, with a model; see
+  [Testing](testing.md#against-the-real-service).

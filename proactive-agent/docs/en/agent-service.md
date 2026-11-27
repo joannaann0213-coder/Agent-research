@@ -249,6 +249,8 @@ the behaviour of CMA that the service relies on and that the documentation leave
 `scripts/agent-live-smoke.sh` runs both services against CMA and checks a conversation, a
 notification and a question answered by the user, end to end; with `--api` and `--admin-key` it
 checks a service that runs already, such as the one of `docker-compose.yml`.
+`scripts/main-agent-live.sh` does the same for a main agent and a worker.
+[Testing](testing.md#against-the-real-service) has what these found when they were last run.
 
 The platform of demo mode lives in the service's memory. After a restart it takes back what the
 database still names, an agent with the configuration of its profile, but what it made exists nowhere
