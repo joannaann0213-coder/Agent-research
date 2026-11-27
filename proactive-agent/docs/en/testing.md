@@ -161,7 +161,7 @@ real service instead, with an API key. They were last run in November 2026, with
 
 | Script | What it checks | Result |
 | --- | --- | --- |
-| `scripts/cma-live-check.sh` | 21 behaviours of the platform that the agent service depends on and that the documentation leaves open | All as assumed |
+| `scripts/cma-live-check.sh` | 22 behaviours of the platform that the agent service depends on and that the documentation leaves open | The 21 that it checked then: all as assumed. The 22nd, that a session says what every request to the model used, was added afterwards |
 | `scripts/agent-live-smoke.sh` | A conversation, an event that becomes a notification, a question that the user answers | All passed |
 | `scripts/main-agent-live.sh` | A main agent and a worker: a task that the user asks for, an event and a schedule that the application hands to the worker, work that the main agent offers and the user confirms, how forward it is, and the user writing while a report is on its way | All passed |
 
@@ -182,7 +182,9 @@ user four times: three times the user's turn had taken its news and it ended wit
 once it started over and repeated its calls, none of which was made twice.
 
 Not run against the real service: a worker that waits for an approval. That needs an MCP server that
-the platform can reach.
+the platform can reach. Nor the counting of tokens, which came later: the runs showed that a session
+stores an event with the usage after every request to the model, which is what the count reads, and
+the official SDK has the event's type; the numbers themselves have only been checked on the stand-in.
 
 ## What is not tested
 

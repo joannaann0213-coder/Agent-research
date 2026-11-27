@@ -456,6 +456,13 @@ curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
   -d '{"conversation_id": "support", "text": "for four, at seven"}'
 ```
 
+这一切加起来是什么样，看统计就知道：你的用户的 agent 的回合按种类和结果分别有多少、用了多少 token、用户等回复等了多久、每个主动档位发出了多少通知。改设置之前和之后各看一次。
+
+```bash
+curl -s "$API/v1/stats" -H "Authorization: Bearer $KEY"
+curl -s "$API/v1/users/u-1001/stats" -H "Authorization: Bearer $KEY"
+```
+
 `examples/agent-api/main-agent.sh` 会一步步把这些都跑一遍。
 
 ## 11. 切换到真实模式

@@ -254,6 +254,28 @@ should allow more attempts than its default for long outages (`inbox.retry.max-a
 workers of a main agent run side by side on the lane `batch`, four of one user at a time
 (`inbox.lanes.batch.cap`); raise it together with a main agent's `max_active_tasks`.
 
+### What to watch
+
+Every turn records what it was and what it used: its kind, its agent, how it ended, how often it
+gave way, the requests to the model and their tokens, and for a reply how long the user waited. The
+tokens are read from the session, which reports them after every request to the model, so a run that
+is delivered again counts the same. `GET /v1/stats` and `GET /v1/users/{user_id}/stats` return these
+numbers for an application and for a user ([Agent API](agent-api.md#statistics)). The meters at
+`/actuator/prometheus` count the same turns, by kind and outcome only:
+
+| Meter | Tags | Meaning |
+| --- | --- | --- |
+| `agent_turns_total` | `kind`, `outcome` | Turns that ended: `chat`, `background` or `worker`, and how |
+| `agent_turn_duration_seconds` | `kind` | From the first delivery of a turn's run to its end |
+| `agent_turn_model_requests_total` | `kind` | Requests to the model |
+| `agent_turn_tokens_total` | `kind`, `type` | Tokens: `input`, `output`, `cache_read`, `cache_creation` |
+| `agent_reply_wait_seconds` | none | From a user's oldest unanswered message to the reply |
+| `agent_turn_yields_total` | none | Turns in the background that gave way to a message of the user |
+
+Three ratios say most about a main agent. Turns in the background that end `silent`, out of all in
+the background: how much it is woken for nothing. `superseded` chats out of all chats: how often
+users write again before the answer. And the 95th percentile of the reply wait: what a user feels.
+
 ### Demo mode and live mode
 
 In demo mode a script plays every agent: it repeats what the user says, reads events and notifies

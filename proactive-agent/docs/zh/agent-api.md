@@ -306,6 +306,60 @@ curl -s -X PUT $API/v1/users/u42/preferences -H "Authorization: Bearer $KEY" \
 会去调用它，这样就能试一试等人审批的过程。以 `slow:` 开头的消息会让脚本花四秒钟才回答，这样就能试一试在回答到来之前再发一条。`examples/agent-api/main-agent.sh`
 把这些情况都走一遍。
 
+## 统计
+
+agent 主动做多少事是可以设置的：用户的 `proactivity`、角色的开工规则、服务的各项上限。调这些设置时要看的数字来自两个接口，用 API key 调用：`GET /v1/users/{user_id}/stats`
+看一个用户，`GET /v1/stats` 看应用的全部用户。两个接口都接受 `since` 和 `until`，不传就是最近 24 小时，跨度最长 92 天。
+
+```bash
+curl -s "$API/v1/stats" -H "Authorization: Bearer $KEY"
+```
+
+```json
+{
+  "since": "2026-11-19T10:00:00Z",
+  "until": "2026-11-20T10:00:00Z",
+  "users": 37,
+  "turns": [
+    {"kind": "background", "outcome": "notified", "turns": 61, "yields": 3, "seconds": 402.5, "model_requests": 190,
+     "input_tokens": 41200, "output_tokens": 9100, "cache_read_tokens": 611000, "cache_creation_tokens": 28000},
+    {"kind": "background", "outcome": "silent", "turns": 148, "yields": 0, "seconds": 655.1, "model_requests": 301,
+     "input_tokens": 60400, "output_tokens": 7200, "cache_read_tokens": 980000, "cache_creation_tokens": 31000},
+    {"kind": "chat", "outcome": "replied", "turns": 212, "yields": 0, "seconds": 1190.4, "model_requests": 344,
+     "input_tokens": 90100, "output_tokens": 30800, "cache_read_tokens": 1320000, "cache_creation_tokens": 77000},
+    {"kind": "chat", "outcome": "superseded", "turns": 9, "yields": 0, "seconds": 21.0, "model_requests": 9,
+     "input_tokens": 2100, "output_tokens": 600, "cache_read_tokens": 31000, "cache_creation_tokens": 0},
+    {"kind": "worker", "outcome": "reported", "turns": 58, "yields": 0, "seconds": 2740.9, "model_requests": 410,
+     "input_tokens": 120300, "output_tokens": 51000, "cache_read_tokens": 1500000, "cache_creation_tokens": 90000}
+  ],
+  "replies": {"replies": 212, "median_seconds": 6.4, "p95_seconds": 11.9},
+  "messages": {"from_user": 233, "replies": 212, "notifications": 74, "questions": 5, "proposals": 12},
+  "tasks": {"made": 63, "by_agent": 51, "by_application": 12, "asked_for": 39, "confirmed": 7, "unasked": 2,
+            "declined": 2, "expired": 1, "withdrawn": 0, "waiting": 0, "failures": 1},
+  "levels": [
+    {"proactivity": "balanced", "users": 4, "notifications": 6},
+    {"proactivity": "default", "users": 31, "notifications": 66},
+    {"proactivity": "quiet", "users": 2, "notifications": 2}
+  ]
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `turns` | 在这段时间里开始并且已经结束的回合，按 `kind`（`chat`、`background`、`worker`）和 `outcome` 分组，附带耗时和对模型的请求所用的 token |
+| `replies` | 用户等回复等了多久，从这条回复所回答的最早一条消息算起 |
+| `messages` | 说了些什么：用户的消息，以及 agent 的回复、通知、提问和提议 |
+| `tasks` | 建了哪些任务，谁建的，凭什么开工，提议出去的任务后来怎样了 |
+| `users`、`levels` | 针对应用：有多少用户有过回合；以及按 `proactivity` 设置分组的用户数和每组收到的通知数 |
+| `proactivity` | 针对单个用户：用户自己的设置；没设过就没有这个字段 |
+
+- `background` 回合里以 `silent` 结束的，就是主 agent 被叫醒却什么也没做的那部分。把 `proactivity` 调低会少叫醒它；你的系统少发一种事件也一样。
+- 以 `absorbed` 结束的回合发现它的活已经被另一个回合做了，没有向模型发过请求。
+- `superseded` 的 chat 回合是因为用户又发了消息而被结束的回复。它在那之前用掉的 token 照样算，它的等待时间计入后来到达的那条回复。
+- 一次请求的输入是三个数之和：`input_tokens`、`cache_read_tokens` 和 `cache_creation_tokens`。session 的大部分输入是从缓存读的，价格只是一小部分。
+- 服务的指标统计的是同一批回合，但不区分用户和应用；见 [Agent 服务](agent-service.md#该看什么)。
+- 演示模式下没有模型：脚本的每一步算作一次请求，输入 100 个 token，输出 20 个。
+
 ## 限制
 
 | 项目 | 默认值 | 配置项 |

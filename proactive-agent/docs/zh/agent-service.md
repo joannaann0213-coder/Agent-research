@@ -173,6 +173,24 @@ MCP 服务器的凭据保存在 CMA 的 vault 里：应用一个，每个有自�
 收件箱需要为本服务配置一个 client，角色为 `RUNTIME` 和 `PRODUCER`，不属于任何租户；为了扛住较长的故障，应把最大尝试次数调得比默认值高（`inbox.retry.max-attempts`）。主 agent 的 worker 在 `batch` lane
 上并行运行，一个用户同时 4 个（`inbox.lanes.batch.cap`）；调高主 agent 的 `max_active_tasks` 时要一并调高它。
 
+### 该看什么
+
+每个回合都记下自己是什么、用了多少：种类、agent、怎么结束的、让过几次路、对模型的请求数及其 token，回复还记下用户等了多久。token 是从 session
+里读的，session 在每次模型请求之后都会报告用量，所以重新投递的 run 数出来的结果一样。`GET /v1/stats` 和 `GET /v1/users/{user_id}/stats`
+分别返回应用和单个用户的这些数字（[Agent API](agent-api.md#统计)）。`/actuator/prometheus` 上的指标统计的是同一批回合，只按种类和结果区分：
+
+| 指标 | 标签 | 含义 |
+| --- | --- | --- |
+| `agent_turns_total` | `kind`、`outcome` | 已结束的回合：`chat`、`background` 或 `worker`，以及怎么结束的 |
+| `agent_turn_duration_seconds` | `kind` | 从回合的 run 第一次投递到回合结束 |
+| `agent_turn_model_requests_total` | `kind` | 对模型的请求数 |
+| `agent_turn_tokens_total` | `kind`、`type` | token：`input`、`output`、`cache_read`、`cache_creation` |
+| `agent_reply_wait_seconds` | 无 | 从用户最早一条未回答的消息到回复 |
+| `agent_turn_yields_total` | 无 | 给用户消息让路的后台回合数 |
+
+有三个比例最能说明一个主 agent 的情况。后台回合里以 `silent` 结束的占比：它有多少次被白白叫醒。chat 回合里 `superseded` 的占比：用户有多常在回答到来之前又发消息。回复等待时间的
+95 分位：用户的实际感受。
+
 ### 演示模式与真实模式
 
 演示模式下由脚本扮演所有 agent：它重复用户说的话、读取事件并逐条通知；作为主 agent，它把用户写在 `task:` 后面的内容交给 worker；作为

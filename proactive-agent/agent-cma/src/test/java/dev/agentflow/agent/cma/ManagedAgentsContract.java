@@ -176,16 +176,40 @@ abstract class ManagedAgentsContract {
         assertThat(stored.getFirst().processedAt()).as("the answer to the send has it as queued").isNull();
         List<CmaEvent> turn = until(stream, ManagedAgentsContract::turnOver);
         assertThat(types(turn)).as("the stream shows the message once, when the session takes it up")
-                .containsExactly("session.status_running", "user.message", "agent.message", "session.status_idle");
+                .containsExactly("session.status_running", "user.message", "agent.message", "span.model_request_end",
+                        "session.status_idle");
         assertThat(turn.get(1).processedAt()).as("processed").isNotNull();
         assertThat(turn.get(1).id()).isEqualTo(stored.getFirst().id());
         assertThat(turn.get(2)).isInstanceOfSatisfying(CmaEvent.AgentMessage.class,
                 message -> assertThat(message.text()).isEqualTo("Hello, world!"));
-        assertThat(turn.get(3)).isInstanceOfSatisfying(CmaEvent.Idle.class, idle -> {
+        assertThat(turn.get(4)).isInstanceOfSatisfying(CmaEvent.Idle.class, idle -> {
             assertThat(idle.reason()).isEqualTo(StopReason.END_TURN);
             assertThat(idle.awaiting()).isEmpty();
         });
         assertThat(cma.getSession(session).status()).isEqualTo(SessionInfo.Status.IDLE);
+    }
+
+    @Test
+    void everyRequestToTheModelSaysWhatItUsed_inTheStreamAndInTheStoredList() {
+        fake.usagePerRequest(1200, 85, 9000, 300);
+        fake.brain(context -> context.step() == 0 ? ModelStep.of(custom("read_events", "{}")) : say("Nothing new."));
+        String session = newSession(toolAgent());
+        EventStream stream = stream(session);
+
+        cma.send(session, List.of(new Outgoing.UserMessage("what is new?")));
+        List<CmaEvent> first = until(stream, ManagedAgentsContract::idle);
+        String call = lastOf(first, CmaEvent.CustomToolUse.class).id();
+        cma.send(session, List.of(new Outgoing.CustomToolResult(call, "{}", false)));
+        List<CmaEvent> second = until(stream, ManagedAgentsContract::turnOver);
+
+        CmaEvent.ModelUsage used = lastOf(first, CmaEvent.ModelUsage.class);
+        assertThat(used.id()).isNotBlank();
+        assertThat(used.processedAt()).isNotNull();
+        assertThat(List.of(used.inputTokens(), used.outputTokens(), used.cacheReadTokens(), used.cacheCreationTokens()))
+                .containsExactly(1200, 85, 9000, 300);
+        assertThat(second.stream().filter(CmaEvent.ModelUsage.class::isInstance)).as("one for the step that ended the turn").hasSize(1);
+        assertThat(cma.listEvents(session, null).stream().filter(CmaEvent.ModelUsage.class::isInstance))
+                .as("a request for each step of the agent, on record").hasSize(2).contains(used);
     }
 
     @Test
@@ -198,14 +222,14 @@ abstract class ManagedAgentsContract {
         List<CmaEvent> all = cma.listEvents(session, null);
 
         assertThat(types(all)).as("a message has its place where the session took it up").containsExactly(
-                "session.status_running", "user.message", "agent.message", "session.status_idle",
-                "session.status_running", "user.message", "agent.message", "session.status_idle");
+                "session.status_running", "user.message", "agent.message", "span.model_request_end", "session.status_idle",
+                "session.status_running", "user.message", "agent.message", "span.model_request_end", "session.status_idle");
         assertThat(all).allSatisfy(event -> assertThat(event.processedAt()).isNotNull());
         assertThat(all).extracting(CmaEvent::id).doesNotHaveDuplicates();
-        assertThat(((CmaEvent.AgentMessage) all.get(6)).text()).isEqualTo("You said: two");
+        assertThat(((CmaEvent.AgentMessage) all.get(7)).text()).isEqualTo("You said: two");
 
-        Instant secondMessage = all.get(5).processedAt();
-        assertThat(types(cma.listEvents(session, secondMessage))).startsWith("user.message").hasSizeLessThan(5);
+        Instant secondMessage = all.get(6).processedAt();
+        assertThat(types(cma.listEvents(session, secondMessage))).startsWith("user.message").hasSizeLessThan(6);
         assertThat(cma.listEvents(session, all.getLast().processedAt().plusSeconds(60))).isEmpty();
     }
 
@@ -250,11 +274,11 @@ abstract class ManagedAgentsContract {
 
         List<CmaEvent> first = until(stream, ManagedAgentsContract::idle);
         assertThat(types(first)).containsExactly("session.status_running", "user.message",
-                "agent.message", "agent.custom_tool_use", "session.status_idle");
+                "agent.message", "agent.custom_tool_use", "span.model_request_end", "session.status_idle");
         CmaEvent.CustomToolUse call = (CmaEvent.CustomToolUse) first.get(3);
         assertThat(call.name()).isEqualTo("read_events");
         assertThat(call.input().path("limit").asInt()).isEqualTo(5);
-        assertThat(first.get(4)).isInstanceOfSatisfying(CmaEvent.Idle.class, idle -> {
+        assertThat(first.get(5)).isInstanceOfSatisfying(CmaEvent.Idle.class, idle -> {
             assertThat(idle.reason()).isEqualTo(StopReason.REQUIRES_ACTION);
             assertThat(idle.awaiting()).containsExactly(call.id());
         });
@@ -264,7 +288,7 @@ abstract class ManagedAgentsContract {
 
         List<CmaEvent> second = until(stream, ManagedAgentsContract::turnOver);
         assertThat(types(second)).containsExactly("user.custom_tool_result", "session.status_running",
-                "agent.message", "session.status_idle");
+                "agent.message", "span.model_request_end", "session.status_idle");
         assertThat(second.get(0)).isInstanceOfSatisfying(CmaEvent.UserCustomToolResult.class, result -> {
             assertThat(result.customToolUseId()).isEqualTo(call.id());
             assertThat(result.processedAt()).as("a result is processed on receipt").isNotNull();
@@ -391,8 +415,8 @@ abstract class ManagedAgentsContract {
 
         List<CmaEvent> turn = until(stream, ManagedAgentsContract::turnOver);
         assertThat(types(turn)).containsExactly("session.status_running", "user.message",
-                "agent.mcp_tool_use", "agent.mcp_tool_result", "agent.tool_use", "agent.tool_result",
-                "agent.message", "session.status_idle");
+                "agent.mcp_tool_use", "agent.mcp_tool_result", "agent.tool_use", "agent.tool_result", "span.model_request_end",
+                "agent.message", "span.model_request_end", "session.status_idle");
         assertThat(turn.stream().filter(CmaEvent.ToolUse.class::isInstance).map(CmaEvent.ToolUse.class::cast))
                 .extracting(CmaEvent.ToolUse::permission).containsOnly(Permission.ALLOW);
         assertThat(lastOf(turn, CmaEvent.ToolUse.class).mcpServer()).as("a built-in tool has no server").isNull();
@@ -780,7 +804,7 @@ abstract class ManagedAgentsContract {
 
         try (EventTail tail = EventTail.open(cma, session, null)) {
             assertThat(types(tail.stored())).containsExactly("session.status_running", "user.message", "agent.message",
-                    "session.status_idle");
+                    "span.model_request_end", "session.status_idle");
             assertThat(tail.stored()).as("handed out once").isEmpty();
 
             cma.send(session, List.of(new Outgoing.UserMessage("two")));

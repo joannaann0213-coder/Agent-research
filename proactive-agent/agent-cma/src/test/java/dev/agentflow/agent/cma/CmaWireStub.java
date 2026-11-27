@@ -492,6 +492,12 @@ final class CmaWireStub implements AutoCloseable {
                     detail.putObject("retry_status").put("type", error.retry().name().toLowerCase());
                 }
             }
+            case CmaEvent.ModelUsage used -> {
+                json.put("model_request_start_id", "start_of_" + used.id()).put("is_error", false);
+                json.putObject("model_usage").put("input_tokens", used.inputTokens()).put("output_tokens", used.outputTokens())
+                        .put("cache_read_input_tokens", used.cacheReadTokens())
+                        .put("cache_creation_input_tokens", used.cacheCreationTokens());
+            }
             case CmaEvent.Other other -> {
             }
         }

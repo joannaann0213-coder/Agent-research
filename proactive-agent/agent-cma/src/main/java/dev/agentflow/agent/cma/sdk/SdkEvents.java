@@ -13,6 +13,8 @@ import com.anthropic.models.beta.sessions.events.BetaManagedAgentsSendSessionEve
 import com.anthropic.models.beta.sessions.events.BetaManagedAgentsSessionErrorEvent;
 import com.anthropic.models.beta.sessions.events.BetaManagedAgentsSessionEvent;
 import com.anthropic.models.beta.sessions.events.BetaManagedAgentsSessionStatusIdleEvent;
+import com.anthropic.models.beta.sessions.events.BetaManagedAgentsSpanModelRequestEndEvent;
+import com.anthropic.models.beta.sessions.events.BetaManagedAgentsSpanModelUsage;
 import com.anthropic.models.beta.sessions.events.BetaManagedAgentsStreamSessionEvents;
 import com.anthropic.models.beta.sessions.events.BetaManagedAgentsUserCustomToolResultEvent;
 import com.anthropic.models.beta.sessions.events.BetaManagedAgentsUserInterruptEvent;
@@ -80,6 +82,8 @@ final class SdkEvents {
                     instant(event.asSessionStatusTerminated().processedAt()));
         } else if (event.isSessionError()) {
             return of(event.asSessionError());
+        } else if (event.isSpanModelRequestEnd()) {
+            return of(event.asSpanModelRequestEnd());
         }
         return other(event._json());
     }
@@ -124,6 +128,8 @@ final class SdkEvents {
                     instant(event.asSessionStatusTerminated().processedAt()));
         } else if (event.isSessionError()) {
             return of(event.asSessionError());
+        } else if (event.isSpanModelRequestEnd()) {
+            return of(event.asSpanModelRequestEnd());
         }
         return other(event._json());
     }
@@ -224,6 +230,12 @@ final class SdkEvents {
                     case "terminal" -> CmaEvent.Error.Retry.TERMINAL;
                     default -> null;
                 });
+    }
+
+    private static CmaEvent of(BetaManagedAgentsSpanModelRequestEndEvent event) {
+        BetaManagedAgentsSpanModelUsage usage = event.modelUsage();
+        return new CmaEvent.ModelUsage(event.id(), instant(event.processedAt()), usage.inputTokens(), usage.outputTokens(),
+                usage.cacheReadInputTokens(), usage.cacheCreationInputTokens());
     }
 
     /** An event this service does not act on. Its id, time and type are read from the raw value. */

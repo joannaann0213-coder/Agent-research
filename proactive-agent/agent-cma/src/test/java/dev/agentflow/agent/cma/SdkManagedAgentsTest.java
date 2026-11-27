@@ -47,12 +47,12 @@ class SdkManagedAgentsTest {
 
         List<CmaEvent> events = cma.listEvents(session, null);
 
-        assertThat(events).hasSize(12);
+        assertThat(events).hasSize(15);
         assertThat(events.stream().filter(CmaEvent.AgentMessage.class::isInstance).map(event -> ((CmaEvent.AgentMessage) event).text()))
                 .containsExactly("You said: message 1", "You said: message 2", "You said: message 3");
         assertThat(events).extracting(CmaEvent::id).doesNotHaveDuplicates();
         assertThat(stub.requests().stream().filter(request -> request.equals("GET /v1/sessions/" + session + "/events")))
-                .as("four pages of three").hasSize(4);
+                .as("five pages of three").hasSize(5);
     }
 
     @Test
@@ -75,7 +75,7 @@ class SdkManagedAgentsTest {
             assertThat(events.get(1)).as("a type that did not exist when this was written")
                     .isEqualTo(new CmaEvent.Other("sevt_new", java.time.Instant.parse("2026-11-20T10:00:02Z"), "session.invented_next_year"));
             assertThat(events.subList(2, events.size()).stream().map(CmaEvent::type)).containsExactly(
-                    "session.status_running", "user.message", "agent.message", "session.status_idle");
+                    "session.status_running", "user.message", "agent.message", "span.model_request_end", "session.status_idle");
         }
     }
 

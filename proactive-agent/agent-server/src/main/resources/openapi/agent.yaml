@@ -54,6 +54,11 @@ tags:
       What happened for a user: a message, an action that waits or was decided, a task that a main
       agent delegated or that moved on, a run that failed. As a page to poll, as a live stream, or
       delivered to the application's webhook.
+  - name: Statistics
+    description: |
+      What the agents did and what it used, for one user and for all users of an application. How
+      much an agent does unasked is a setting (`proactivity`, the rules of the roles, the limits of
+      the service); these are the numbers to set it by.
   - name: Users
     description: The end users of an application, and the tokens their clients use.
   - name: Admin
@@ -1118,6 +1123,52 @@ paths:
         default:
           $ref: '#/components/responses/Error'
 
+  /v1/users/{user_id}/stats:
+    parameters:
+      - $ref: '#/components/parameters/UserId'
+    get:
+      tags: [Statistics]
+      operationId: getUserStats
+      summary: What the agents did for a user, and what it used
+      description: |
+        Returns, for one user and a span of time: the turns of their agents by kind and outcome,
+        with what the requests to the model used; how long the user waited for replies; what was
+        said; what became of the tasks; and the user's own setting for `proactivity`.
+
+        A turn is counted in the span in which it began, and once it has ended. A user whom the
+        application has not mentioned yet has no numbers: every count is zero. Only an API key may
+        call this.
+      parameters:
+        - name: since
+          in: query
+          description: From when, inclusive. 24 hours before `until` when absent.
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: To when, exclusive. Now when absent. At most 92 days after `since`.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: The numbers for the span of time.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsView'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
   /v1/users/{user_id}/updates:
     parameters:
       - $ref: '#/components/parameters/UserId'
@@ -1240,6 +1291,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StreamTicket'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        default:
+          $ref: '#/components/responses/Error'
+
+  /v1/stats:
+    get:
+      tags: [Statistics]
+      operationId: getStats
+      summary: What the agents did for all users of the application, and what it used
+      description: |
+        Returns, for all users of the application together and a span of time, what
+        `GET /v1/users/{user_id}/stats` returns for one: turns by kind and outcome with what they
+        used, how long users waited for replies, what was said, and what became of the tasks. In
+        the place of one user's setting it has `users`, how many users had a turn, and `levels`:
+        the application's users by their setting for `proactivity`, with the notifications that
+        each group was sent.
+
+        Read it before and after a change of a setting: of an agent's `proactivity`, of the rule
+        by which a role may start, of a limit of the service. Turns in the background that end
+        `silent` are what an agent was woken for and did nothing about; `absorbed` ones cost no
+        request to the model. Only an API key may call this.
+      parameters:
+        - name: since
+          in: query
+          description: From when, inclusive. 24 hours before `until` when absent.
+          schema:
+            type: string
+            format: date-time
+        - name: until
+          in: query
+          description: To when, exclusive. Now when absent. At most 92 days after `since`.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: The numbers for the span of time.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsView'
         '400':
           $ref: '#/components/responses/InvalidRequest'
         '401':
@@ -2647,6 +2746,217 @@ components:
           type: string
           format: date-time
           description: When it was set last. Absent when it was never set.
+
+    StatsView:
+      type: object
+      required: [since, until, turns, replies, messages, tasks]
+      properties:
+        since:
+          type: string
+          format: date-time
+          description: From when, inclusive.
+        until:
+          type: string
+          format: date-time
+          description: To when, exclusive.
+        users:
+          type: integer
+          format: int64
+          description: For an application, how many of its users had a turn in that time. Absent for one user.
+        proactivity:
+          type: string
+          enum: [proactive, balanced, quiet]
+          description: |
+            For one user, their own setting for how forward their main agent is. Absent when they
+            have none, and for an application.
+        turns:
+          type: array
+          description: The turns that began in that time and have ended, by kind and outcome.
+          items:
+            $ref: '#/components/schemas/TurnStats'
+        replies:
+          $ref: '#/components/schemas/ReplyStats'
+        messages:
+          $ref: '#/components/schemas/MessageStats'
+        tasks:
+          $ref: '#/components/schemas/TaskStats'
+        levels:
+          type: array
+          description: |
+            For an application, its users by their setting for `proactivity`, and what each group
+            was sent. Absent for one user.
+          items:
+            $ref: '#/components/schemas/LevelStats'
+
+    TurnStats:
+      type: object
+      required: [kind, outcome, turns, yields, seconds, model_requests, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens]
+      properties:
+        kind:
+          type: string
+          enum: [chat, background, worker, none]
+          description: |
+            `chat`: a user wrote. `background`: something happened in the application's systems,
+            fell due, or a worker reported. `worker`: a worker's turn on a task. `none`: a turn that
+            failed before it knew what it was for.
+        outcome:
+          type: string
+          enum: [replied, notified, reported, silent, refused, stopped, superseded, absorbed, closed, failed]
+          description: |
+            How the turns ended. Of a chat: `replied`, `silent`, `refused`, `stopped` by the user,
+            `superseded` because the user wrote again, or `absorbed` because another turn answered
+            the message. In the background: `notified`, `silent`, `refused`, or `absorbed` because
+            another turn had been given the news. Of a worker: `reported`, `silent` or `closed`. Of
+            any: `failed`.
+        turns:
+          type: integer
+          format: int64
+          description: How many.
+        yields:
+          type: integer
+          format: int64
+          description: How often they gave way to a message of the user and started over.
+        seconds:
+          type: number
+          format: double
+          description: How long they took together, from the first delivery of their run to their end.
+        model_requests:
+          type: integer
+          format: int64
+          description: The requests to the model that they made, one for every step of the agent.
+        input_tokens:
+          type: integer
+          format: int64
+          description: Input that was neither read from the cache nor written to it.
+        output_tokens:
+          type: integer
+          format: int64
+          description: What the model wrote.
+        cache_read_tokens:
+          type: integer
+          format: int64
+          description: Input that was read from the cache.
+        cache_creation_tokens:
+          type: integer
+          format: int64
+          description: Input that was written to the cache.
+
+    ReplyStats:
+      type: object
+      required: [replies]
+      description: |
+        How long users waited for replies, from the oldest message that a reply answers to the
+        reply. When a reply was ended because the user wrote again, the wait goes on to the reply
+        that came.
+      properties:
+        replies:
+          type: integer
+          format: int64
+          description: How many replies.
+        median_seconds:
+          type: number
+          format: double
+          description: Half of them came within this. Absent when there were none.
+        p95_seconds:
+          type: number
+          format: double
+          description: 95 in 100 came within this. Absent when there were none.
+
+    MessageStats:
+      type: object
+      required: [from_user, replies, notifications, questions, proposals]
+      properties:
+        from_user:
+          type: integer
+          format: int64
+          description: Messages of users.
+        replies:
+          type: integer
+          format: int64
+          description: Answers to them.
+        notifications:
+          type: integer
+          format: int64
+          description: What agents told users without having been asked.
+        questions:
+          type: integer
+          format: int64
+          description: What agents asked users.
+        proposals:
+          type: integer
+          format: int64
+          description: Work that a main agent offered to do.
+
+    TaskStats:
+      type: object
+      required: [made, by_agent, by_application, asked_for, confirmed, unasked, declined, expired, withdrawn, waiting, failures]
+      description: The tasks of main agents that were made in the span of time, and what became of them.
+      properties:
+        made:
+          type: integer
+          format: int64
+          description: How many.
+        by_agent:
+          type: integer
+          format: int64
+          description: Of those, made by a main agent.
+        by_application:
+          type: integer
+          format: int64
+          description: Of those, handed to a worker by the application itself.
+        asked_for:
+          type: integer
+          format: int64
+          description: Made in a turn that the user began; the user asked for the work.
+        confirmed:
+          type: integer
+          format: int64
+          description: Offered by a main agent, and confirmed by the user or the application.
+        unasked:
+          type: integer
+          format: int64
+          description: |
+            Begun by a main agent on its own initiative and allowed to start by the user's standing
+            authorisation or the rule of the role.
+        declined:
+          type: integer
+          format: int64
+          description: Offered, and declined by the user or the application.
+        expired:
+          type: integer
+          format: int64
+          description: Offered, and never confirmed in time.
+        withdrawn:
+          type: integer
+          format: int64
+          description: Offered, and taken back by the main agent.
+        waiting:
+          type: integer
+          format: int64
+          description: Offered, and still waiting for a confirmation.
+        failures:
+          type: integer
+          format: int64
+          description: Turns of workers that failed in that time.
+
+    LevelStats:
+      type: object
+      required: [proactivity, users, notifications]
+      properties:
+        proactivity:
+          type: string
+          enum: [proactive, balanced, quiet, default]
+          description: |
+            The setting. `default` stands for the users who have not said, for whom the agent's or
+            the service's default applies.
+        users:
+          type: integer
+          format: int64
+          description: How many users have it.
+        notifications:
+          type: integer
+          format: int64
+          description: How many notifications they were sent in the span of time.
 
     OAuthTokens:
       type: object

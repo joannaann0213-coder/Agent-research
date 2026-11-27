@@ -163,7 +163,23 @@ public sealed interface CmaEvent {
         }
     }
 
-    /** Any event the agent service does not act on: thinking, spans, usage, and types added later. */
+    /**
+     * A request to the model has ended, and this is what it used. A turn makes one for every step of
+     * the agent: one before each batch of tool calls, and one for its last words.
+     *
+     * @param inputTokens input that was neither read from the cache nor written to it
+     * @param cacheReadTokens input that was read from the cache
+     * @param cacheCreationTokens input that was written to the cache
+     */
+    record ModelUsage(String id, Instant processedAt, int inputTokens, int outputTokens, int cacheReadTokens,
+            int cacheCreationTokens) implements CmaEvent {
+        @Override
+        public String type() {
+            return "span.model_request_end";
+        }
+    }
+
+    /** Any event the agent service does not act on: thinking, the start of a span, and types added later. */
     record Other(String id, Instant processedAt, String type) implements CmaEvent {
     }
 

@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import tools.jackson.databind.JsonNode;
 
 /**
@@ -68,12 +70,18 @@ public class Turns {
         }
     }
 
+    public static final String CHAT = "chat";
+    public static final String BACKGROUND = "background";
+    public static final String WORKER = "worker";
+
     private final JdbcClient jdbc;
     private final AgentClock clock;
+    private final TurnMetrics metrics;
 
-    public Turns(JdbcClient jdbc, AgentClock clock) {
+    public Turns(JdbcClient jdbc, AgentClock clock, TurnMetrics metrics) {
         this.jdbc = jdbc;
         this.clock = clock;
+        this.metrics = metrics;
     }
 
     /**
@@ -101,13 +109,27 @@ public class Turns {
                 .optional();
     }
 
-    /** Records what the turn works on, the first time it is found. */
-    public Turn work(Turn turn, JsonNode work) {
+    /**
+     * Records what the turn works on, and with that what kind of turn it is.
+     *
+     * @param kind {@link #CHAT}, {@link #BACKGROUND} or {@link #WORKER}
+     * @param agentKey the agent of the turn's line
+     */
+    public Turn work(Turn turn, JsonNode work, String kind, String agentKey) {
         update(turn, """
-                UPDATE turn SET work = CAST(:work AS jsonb), updated_at = :now
+                UPDATE turn SET work = CAST(:work AS jsonb), kind = :kind, agent_key = :agentKey, updated_at = :now
                  WHERE run_id = :runId AND epoch = :epoch AND state = 'open'
-                """, "work", Json.STORED.writeValueAsString(work));
+                """, "work", Json.STORED.writeValueAsString(work), "kind", kind, "agentKey", agentKey);
         return turn.withWork(work);
+    }
+
+    /**
+     * Records what kind of turn this is, for one that ends before it has work to record: a message
+     * that another turn has answered, a task that was closed. Without it the turn would count as none.
+     */
+    public void kind(Turn turn, String kind, String agentKey) {
+        update(turn, "UPDATE turn SET kind = :kind, agent_key = :agentKey, updated_at = :now "
+                + "WHERE run_id = :runId AND epoch = :epoch AND state = 'open'", "kind", kind, "agentKey", agentKey);
     }
 
     /** Records which session the turn runs in. A turn that moves to another session starts over there. */
@@ -143,12 +165,17 @@ public class Turns {
      * its run comes back. From here on a later turn of the line does not wait for it. Call it in the
      * transaction that notes how far the session was read.
      */
-    public void startOver(Turn turn) {
+    public void startOver(Turn turn, Usage used) {
         update(turn, """
                 UPDATE turn SET boundary_set = false, boundary_event_id = NULL, boundary_at = NULL, input_event_id = NULL,
-                       yields = yields + 1, updated_at = :now
+                       yields = yields + 1, updated_at = :now,
+                       model_requests = model_requests + :requests, input_tokens = input_tokens + :input,
+                       output_tokens = output_tokens + :output, cache_read_tokens = cache_read_tokens + :cacheRead,
+                       cache_creation_tokens = cache_creation_tokens + :cacheCreation
                  WHERE run_id = :runId AND epoch = :epoch AND state = 'open'
-                """);
+                """, "requests", used.requests(), "input", used.inputTokens(), "output", used.outputTokens(),
+                "cacheRead", used.cacheReadTokens(), "cacheCreation", used.cacheCreationTokens());
+        afterCommit(metrics::gaveWay);
     }
 
     /** Notes that the turn waits for people, its run about to be suspended in the Inbox. */
@@ -163,11 +190,59 @@ public class Turns {
 
     /** @param note what the agent wrote at the end of a turn that no user reads; {@code null} for none */
     public void finish(Turn turn, String state, String outcome, String error, String note) {
-        update(turn, """
+        finish(turn, state, outcome, error, note, Usage.NONE, null);
+    }
+
+    /**
+     * @param used what the requests to the model used in the part of the turn that ends here; it is
+     *     added to what earlier parts of the turn used, before it gave way
+     * @param waitedMs for a reply: how long the user waited for it; {@code null} otherwise
+     */
+    public void finish(Turn turn, String state, String outcome, String error, String note, Usage used, Long waitedMs) {
+        Instant now = clock.now();
+        Ended ended = jdbc.sql("""
                 UPDATE turn SET state = :state, outcome = :outcome, error = :error, note = :note, parked = false,
-                       updated_at = :now, finished_at = :now
+                       updated_at = :now, finished_at = :now, waited_ms = :waitedMs,
+                       model_requests = model_requests + :requests, input_tokens = input_tokens + :input,
+                       output_tokens = output_tokens + :output, cache_read_tokens = cache_read_tokens + :cacheRead,
+                       cache_creation_tokens = cache_creation_tokens + :cacheCreation
                  WHERE run_id = :runId AND epoch = :epoch AND state = 'open'
-                """, "state", state, "outcome", outcome, "error", error, "note", note);
+                RETURNING kind, created_at, model_requests, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+                """)
+                .param("state", state).param("outcome", outcome).param("error", error).param("note", note)
+                .param("now", Db.ts(now)).param("waitedMs", waitedMs).param("requests", used.requests())
+                .param("input", used.inputTokens()).param("output", used.outputTokens())
+                .param("cacheRead", used.cacheReadTokens()).param("cacheCreation", used.cacheCreationTokens())
+                .param("runId", turn.runId()).param("epoch", turn.epoch())
+                .query(Turns::ended)
+                .optional()
+                .orElseThrow(() -> new StaleTurnException(turn.runId(), turn.epoch()));
+        afterCommit(() -> metrics.ended(ended.kind(), outcome != null ? outcome : state, Duration.between(ended.createdAt(), now),
+                ended.used(), waitedMs));
+    }
+
+    /** What a turn that has just ended was, for the meters. */
+    private record Ended(String kind, Instant createdAt, Usage used) {
+    }
+
+    private static Ended ended(ResultSet rs, int rowNumber) throws SQLException {
+        return new Ended(rs.getString("kind"), Db.instant(rs, "created_at"), new Usage(rs.getInt("model_requests"),
+                rs.getLong("input_tokens"), rs.getLong("output_tokens"), rs.getLong("cache_read_tokens"),
+                rs.getLong("cache_creation_tokens")));
+    }
+
+    /** Counts what happened only once it is certain: when the transaction that wrote it is through, or at once without one. */
+    private static void afterCommit(Runnable count) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    count.run();
+                }
+            });
+        } else {
+            count.run();
+        }
     }
 
     /**
@@ -216,12 +291,18 @@ public class Turns {
      * @return whether the turn was open
      */
     public boolean abandon(String runId, String error) {
-        return jdbc.sql("""
+        Instant now = clock.now();
+        Optional<Ended> ended = jdbc.sql("""
                 UPDATE turn SET state = 'failed', error = :error, parked = false, updated_at = :now, finished_at = :now
                  WHERE run_id = :runId AND state = 'open'
+                RETURNING kind, created_at, model_requests, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
                 """)
-                .param("error", error).param("now", Db.ts(clock.now())).param("runId", runId)
-                .update() == 1;
+                .param("error", error).param("now", Db.ts(now)).param("runId", runId)
+                .query(Turns::ended)
+                .optional();
+        ended.ifPresent(turn -> afterCommit(() -> metrics.ended(turn.kind(), FAILED, Duration.between(turn.createdAt(), now),
+                turn.used(), null)));
+        return ended.isPresent();
     }
 
     public Optional<Turn> find(String runId) {

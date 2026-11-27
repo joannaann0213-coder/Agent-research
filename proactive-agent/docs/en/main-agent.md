@@ -516,7 +516,9 @@ structural, not complete: turns of the main agent are kept short by delegating, 
 together become one turn, and how often the main agent is woken for what only says how a task
 stands is the user's, or the application's, to turn down.
 
-What to measure once the service runs with a model:
+What to measure once the service runs with a model. Every turn records what it was and what it
+used, and `GET /v1/stats` returns the numbers for an application or a user
+([Agent API](agent-api.md#statistics)):
 
 - How long a user's message waits behind a turn in the background on the same line, at the 95th
   percentile, and how often a turn gives way and starts over.

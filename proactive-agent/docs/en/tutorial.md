@@ -506,6 +506,15 @@ curl -s -X POST $API/v1/users/u-1001/messages -H "Authorization: Bearer $KEY" \
   -d '{"conversation_id": "support", "text": "for four, at seven"}'
 ```
 
+What all of this comes to shows in the statistics: the turns of your users' agents by kind and
+outcome, what they used, how long users waited for a reply, and how many notifications went out at
+each level. Look at them before and after you change a setting.
+
+```bash
+curl -s "$API/v1/stats" -H "Authorization: Bearer $KEY"
+curl -s "$API/v1/users/u-1001/stats" -H "Authorization: Bearer $KEY"
+```
+
 `examples/agent-api/main-agent.sh` runs all of this, step by step.
 
 ## 11. Switch to live mode

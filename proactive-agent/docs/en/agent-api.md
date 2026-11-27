@@ -373,6 +373,67 @@ makes the script take four seconds over its answer, so that writing again before
 there can be tried.
 `examples/agent-api/main-agent.sh` walks through all of these.
 
+## Statistics
+
+How much an agent does unasked is a setting: a user's `proactivity`, the rule by which a role may
+start, the limits of the service. The numbers to set it by come from two calls, for an API key:
+`GET /v1/users/{user_id}/stats` for one user, and `GET /v1/stats` for all users of your application.
+Both take `since` and `until`, which are the last 24 hours when absent and 92 days apart at most.
+
+```bash
+curl -s "$API/v1/stats" -H "Authorization: Bearer $KEY"
+```
+
+```json
+{
+  "since": "2026-11-19T10:00:00Z",
+  "until": "2026-11-20T10:00:00Z",
+  "users": 37,
+  "turns": [
+    {"kind": "background", "outcome": "notified", "turns": 61, "yields": 3, "seconds": 402.5, "model_requests": 190,
+     "input_tokens": 41200, "output_tokens": 9100, "cache_read_tokens": 611000, "cache_creation_tokens": 28000},
+    {"kind": "background", "outcome": "silent", "turns": 148, "yields": 0, "seconds": 655.1, "model_requests": 301,
+     "input_tokens": 60400, "output_tokens": 7200, "cache_read_tokens": 980000, "cache_creation_tokens": 31000},
+    {"kind": "chat", "outcome": "replied", "turns": 212, "yields": 0, "seconds": 1190.4, "model_requests": 344,
+     "input_tokens": 90100, "output_tokens": 30800, "cache_read_tokens": 1320000, "cache_creation_tokens": 77000},
+    {"kind": "chat", "outcome": "superseded", "turns": 9, "yields": 0, "seconds": 21.0, "model_requests": 9,
+     "input_tokens": 2100, "output_tokens": 600, "cache_read_tokens": 31000, "cache_creation_tokens": 0},
+    {"kind": "worker", "outcome": "reported", "turns": 58, "yields": 0, "seconds": 2740.9, "model_requests": 410,
+     "input_tokens": 120300, "output_tokens": 51000, "cache_read_tokens": 1500000, "cache_creation_tokens": 90000}
+  ],
+  "replies": {"replies": 212, "median_seconds": 6.4, "p95_seconds": 11.9},
+  "messages": {"from_user": 233, "replies": 212, "notifications": 74, "questions": 5, "proposals": 12},
+  "tasks": {"made": 63, "by_agent": 51, "by_application": 12, "asked_for": 39, "confirmed": 7, "unasked": 2,
+            "declined": 2, "expired": 1, "withdrawn": 0, "waiting": 0, "failures": 1},
+  "levels": [
+    {"proactivity": "balanced", "users": 4, "notifications": 6},
+    {"proactivity": "default", "users": 31, "notifications": 66},
+    {"proactivity": "quiet", "users": 2, "notifications": 2}
+  ]
+}
+```
+
+| Field | What it tells you |
+| --- | --- |
+| `turns` | The turns that began in the span and have ended, by `kind` (`chat`, `background`, `worker`) and `outcome`, with how long they took and what their requests to the model used |
+| `replies` | How long users waited for a reply, counted from the oldest message that it answers |
+| `messages` | What was said: by users, and by agents as replies, notifications, questions and proposals |
+| `tasks` | The tasks that were made, who made them, what let them start, and what became of the ones that were offered |
+| `users`, `levels` | For the application: how many users had a turn, and the users by their setting for `proactivity`, with the notifications each group was sent |
+| `proactivity` | For one user: their own setting; absent when they have none |
+
+- Turns in the `background` that end `silent` are what a main agent was woken for and did nothing
+  about. A lower `proactivity` wakes it less; so does an event that your systems do not send.
+- A turn that ends `absorbed` found its work done by another turn and made no request to the model.
+- A `superseded` chat is a reply that was ended because the user wrote again. What it had used by
+  then is used, and its wait is counted in the reply that came.
+- The input of a request is the sum of three numbers: `input_tokens`, `cache_read_tokens` and
+  `cache_creation_tokens`. A session reads most of its input from the cache, which costs a fraction.
+- The service's meters count the same turns, without users and applications; see
+  [Agent service](agent-service.md#what-to-watch).
+- In demo mode there is no model: every step of the script counts as one request with 100 tokens of
+  input and 20 of output.
+
 ## Limits
 
 | What | Default | Setting |

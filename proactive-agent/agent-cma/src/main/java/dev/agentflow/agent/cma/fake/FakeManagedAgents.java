@@ -61,6 +61,8 @@ import tools.jackson.databind.JsonNode;
  *       nothing.
  *   <li>The stream shows a message when the session takes it up, once, after it has said that it
  *       is running. The answer to the send has it as queued.
+ *   <li>After every request to the model the session reports what the request used, after what the
+ *       model wrote and before the session goes idle.
  * </ul>
  *
  * <p>Used by the tests of the agent service and by its local demo mode. It is not a simulator of
@@ -122,6 +124,9 @@ public final class FakeManagedAgents implements ManagedAgents {
 
     private static final int MAX_STEPS_PER_TURN = 50;
 
+    /** The tokens a request to the model is reported to have used unless a test says otherwise. */
+    private static final int[] DEFAULT_USAGE = {100, 20, 0, 0};
+
     private static final Set<String> BUILT_IN_TOOLS =
             Set.of("bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search");
 
@@ -139,6 +144,8 @@ public final class FakeManagedAgents implements ManagedAgents {
     private FakeBrain brain = FakeBrains.echo();
     private AutoJudge autoJudge = (server, tool, input) -> Permission.ALLOW;
     private boolean interruptsHaveIds = true;
+    /** What every request to the model is reported to have used: input, output, read from the cache, written to it. */
+    private int[] usage = DEFAULT_USAGE.clone();
     private long nextId = 1;
     /** Set in the demo mode of the service: finds the configuration of an agent that a restart made this platform forget. */
     private Function<String, Optional<AgentSpec>> forgotten;
@@ -170,6 +177,7 @@ public final class FakeManagedAgents implements ManagedAgents {
             brain = FakeBrains.echo();
             autoJudge = (server, tool, input) -> Permission.ALLOW;
             interruptsHaveIds = true;
+            usage = DEFAULT_USAGE.clone();
             forgotten = null;
         }
     }
@@ -230,6 +238,16 @@ public final class FakeManagedAgents implements ManagedAgents {
     public void autoJudge(AutoJudge judge) {
         synchronized (lock) {
             this.autoJudge = judge;
+        }
+    }
+
+    /**
+     * What every request to the model is reported to have used from now on. Without this it is 100
+     * tokens of input and 20 of output, and nothing from or to the cache.
+     */
+    public void usagePerRequest(int inputTokens, int outputTokens, int cacheReadTokens, int cacheCreationTokens) {
+        synchronized (lock) {
+            usage = new int[] {inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens};
         }
     }
 
@@ -824,6 +842,7 @@ public final class FakeManagedAgents implements ManagedAgents {
             for (ModelStep.Block block : step.blocks()) {
                 perform(session, block);
             }
+            emit(session, new CmaEvent.ModelUsage(newEventId(), clock.get(), usage[0], usage[1], usage[2], usage[3]));
             if (step.stop().isPresent()) {
                 // The turn is over whatever it had begun; calls that wait are not going to be asked about again.
                 session.inTurn = false;

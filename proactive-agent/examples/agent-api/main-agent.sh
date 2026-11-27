@@ -10,6 +10,7 @@
 # "proactivity:" with a level tells the main agent how much the user wants to hear from it. And
 # "slow:" makes it take a few seconds over its answer, so that writing again before the answer is
 # there can be tried: the reply under way is ended, and one reply answers everything.
+# At the end the statistics show what all of it came to.
 #
 #   API=http://localhost:8090 ADMIN=<an administration key> examples/agent-api/main-agent.sh
 #
@@ -192,3 +193,13 @@ done
 echo "25. Everything that happened for the user, in order:"
 call GET "/v1/users/$USER_ID/updates?after=0" '' "$TOKEN" \
   | python3 -c "import json,sys; [print('  ', x['seq'], x['type'], x['data'].get('kind', x['data'].get('status', ''))) for x in json.load(sys.stdin)['updates']]"
+
+echo "26. What it all came to, with the API key: the turns by kind and outcome, and what they used."
+call GET "/v1/users/$USER_ID/stats" \
+  | python3 -c "
+import json, sys
+s = json.load(sys.stdin)
+for t in s['turns']:
+    print('   %-10s %-10s %3d turns %3d requests to the model %7d tokens in %6d out' % (t['kind'], t['outcome'], t['turns'],
+          t['model_requests'], t['input_tokens'] + t['cache_read_tokens'] + t['cache_creation_tokens'], t['output_tokens']))
+print('   replies:', s['replies'], ' notifications:', s['messages']['notifications'], ' tasks made:', s['tasks']['made'])"

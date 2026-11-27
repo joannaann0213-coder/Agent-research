@@ -281,13 +281,15 @@ public class TurnRunner {
                 return new Settlement.Done();
             }
         }
-        if (work == null || run.mergeKey() == null
-                || threads.find(run.tenantId(), run.inboxId(), run.mergeKey()).isEmpty()) {
+        Optional<Threads.Thread> line = run.mergeKey() == null ? Optional.empty()
+                : threads.find(run.tenantId(), run.inboxId(), run.mergeKey());
+        if (work == null || line.isEmpty()) {
             return fail(run, "the run holds nothing this service can work on");
         }
         if (work instanceof Work.Job job && !turn.boundarySet()
                 && tasks.closed(run.tenantId(), run.inboxId(), job.task().taskId())) {
             // The task was closed before the worker got to this. Its session is not touched, or not even made.
+            turns.kind(turn, Turns.WORKER, line.get().agentKey());
             turns.finish(turn, Turns.DONE, "closed", null);
             return new Settlement.Done();
         }
@@ -300,7 +302,7 @@ public class TurnRunner {
             turn = taken.get().turn();
             work = taken.get().work();
         } else if (turn.work() == null) {
-            turn = turns.work(turn, stored(work));
+            turn = turns.work(turn, stored(work), work instanceof Work.Job ? Turns.WORKER : Turns.BACKGROUND, line.get().agentKey());
         }
         Optional<Settlement> earlierFirst = waitForTheLine(run, turn);
         if (earlierFirst.isPresent()) {
@@ -436,7 +438,7 @@ public class TurnRunner {
                         throw new StaleTurnException(run.runId(), run.epoch());
                     }
                     if (!clock.now().isBefore(deadline)) {
-                        return giveUp(run, turn, thread);
+                        return giveUp(run, turn, thread, reading.used);
                     }
                     if (!reading.stopping && stopped(thread, work)) {
                         reading.stopping = true;
@@ -490,10 +492,12 @@ public class TurnRunner {
      * on record under the run and the call's place in the turn, so nothing is done twice.
      */
     private Settlement giveWay(ClaimedRun run, Turn turn, Threads.Thread thread, boolean begun) {
+        Usage used = Usage.NONE;
         if (begun) {
             bringToRest(thread);
+            used = usedSince(turn, thread);
         }
-        turns.startOver(turn);
+        turns.startOver(turn, used);
         hooks.at(Point.YIELDED, run);
         long seconds = Math.max(1, config.getYieldDelay().toSeconds());
         ApiResult<RunOutcome> suspended = inbox.suspend(run.runId(), new SuspendRequest(run.epoch(),
@@ -543,9 +547,11 @@ public class TurnRunner {
             long through = users.lastSeq(appId, userId);
             List<MessageView> has = messages.take(appId, userId, conversationId, run.runId(),
                     chat.messages().stream().map(MessageView::seq).toList(), stoppedThrough, config.getMaxMessages(), MESSAGE_CHARS);
+            String agentKey = threads.find(appId, userId, run.mergeKey()).orElseThrow().agentKey();
             if (has.isEmpty()) {
                 // The last write of the transaction, and conditional on the lease, like every end of a turn.
                 boolean stopped = chat.messages().stream().allMatch(message -> message.seq() <= stoppedThrough);
+                turns.kind(turn, Turns.CHAT, agentKey);
                 turns.finish(turn, Turns.DONE, stopped ? "stopped" : "absorbed", null);
                 return Optional.<Taken>empty();
             }
@@ -554,7 +560,7 @@ public class TurnRunner {
                 return Optional.of(new Taken(turn, chat));
             }
             Work.Chat work = new Work.Chat(has, fitting(tasks.news(appId, userId, run.mergeKey())), through);
-            return Optional.of(new Taken(turns.work(turn, stored(work)), work));
+            return Optional.of(new Taken(turns.work(turn, stored(work), Turns.CHAT, agentKey), work));
         });
     }
 
@@ -597,15 +603,32 @@ public class TurnRunner {
      */
     private Settlement supersede(ClaimedRun run, Turn turn, Threads.Thread thread, Work.Chat chat) {
         bringToRest(thread);
+        Usage used = usedSince(turn, thread);
         hooks.at(Point.SUPERSEDED, run);
         tx.executeWithoutResult(status -> {
             users.lock(thread.appId(), thread.userId());
             giveBack(thread, chat);
-            turns.finish(turn, Turns.DONE, "superseded", null);
+            turns.finish(turn, Turns.DONE, "superseded", null, null, used, null);
         });
         log.info("run {}: the user wrote again on line {} before the reply was there; the next turn answers all of it",
                 run.runId(), thread.mergeKey());
         return new Settlement.Done();
+    }
+
+    /**
+     * What the requests to the model have used in this turn, up to where its session stands now: read
+     * from the session, for a turn that is put aside or ended before its end. What the model had
+     * begun and was stopped in the middle of is used all the same.
+     */
+    private Usage usedSince(Turn turn, Threads.Thread thread) {
+        List<CmaEvent> held = platform(() -> cma.listEvents(thread.sessionId(), since(turn.boundaryAt())));
+        Usage used = Usage.NONE;
+        for (CmaEvent event : after(held, turn.boundaryEventId(), turn.boundaryAt())) {
+            if (event instanceof CmaEvent.ModelUsage one) {
+                used = used.plus(one);
+            }
+        }
+        return used;
     }
 
     /**
@@ -1643,6 +1666,8 @@ public class TurnRunner {
             users.lock(thread.appId(), thread.userId());
             String outcome;
             String note = null;
+            // For a reply: how long the user waited for it, counted from the oldest message that it answers.
+            Long waitedMs = null;
             // Under the user's lock, what the user did either came before this or comes after it. A reply that is
             // stored here was written knowing everything the user had written by now, and was not stopped by them.
             boolean stopped = work instanceof Work.Chat && (reading.stopping || stopped(thread, work));
@@ -1664,6 +1689,7 @@ public class TurnRunner {
                     if (wrote) {
                         messages.storeFromAgent(thread.appId(), thread.userId(), thread.conversationId(), thread.mergeKey(),
                                 "reply:" + run.runId(), "reply", last, run.runId(), null);
+                        waitedMs = Duration.between(chat.messages().getFirst().createdAt(), clock.now()).toMillis();
                     }
                     if (reading.syncedTo != null) {
                         threads.synced(thread, reading.syncedTo);
@@ -1703,7 +1729,7 @@ public class TurnRunner {
                 threads.sawUpTo(thread, reading.lastEventId, reading.lastEventAt);
             }
             // Last, and conditional on the lease: if this worker is no longer the run's, what it wrote above is rolled back.
-            turns.finish(turn, Turns.DONE, outcome, null, note);
+            turns.finish(turn, Turns.DONE, outcome, null, note, reading.used, waitedMs);
         });
         hooks.at(Point.RESULT_STORED, run);
         return new Settlement.Done();
@@ -1713,7 +1739,7 @@ public class TurnRunner {
      * Ends a turn that has run out of time. The session is told to stop; whether it does shows at the
      * line's next turn, which brings it to rest first in any case.
      */
-    private Settlement giveUp(ClaimedRun run, Turn turn, Threads.Thread thread) {
+    private Settlement giveUp(ClaimedRun run, Turn turn, Threads.Thread thread, Usage used) {
         try {
             cma.send(thread.sessionId(), List.of(new Outgoing.Interrupt()));
         } catch (CmaException e) {
@@ -1722,7 +1748,7 @@ public class TurnRunner {
         String error = "the turn took longer than " + deadlineOf(run);
         tx.executeWithoutResult(status -> {
             users.lock(thread.appId(), thread.userId());
-            turns.finish(turn, Turns.FAILED, null, error);
+            turns.finish(turn, Turns.FAILED, null, error, null, used, null);
             outbound.record(thread.appId(), thread.userId(), Update.RUN_FAILED, Outbound.failure(run.runId(), run.mergeKey(), error));
             tasks.turnFailed(thread.appId(), thread.userId(), run.mergeKey(), run.runId(), error);
         });
@@ -1851,6 +1877,8 @@ public class TurnRunner {
         private Long syncedTo;
         /** The user stopped the reply; the session has been told to stop. */
         private boolean stopping;
+        /** What the requests to the model have used since the boundary. Read again from the session, it is the same. */
+        private Usage used = Usage.NONE;
 
         Reading(String inputId) {
             this.inputId = inputId;
@@ -1926,6 +1954,7 @@ public class TurnRunner {
                     }
                 }
                 case CmaEvent.Terminated terminated -> end = End.TERMINATED;
+                case CmaEvent.ModelUsage one -> used = used.plus(one);
                 default -> {
                 }
             }

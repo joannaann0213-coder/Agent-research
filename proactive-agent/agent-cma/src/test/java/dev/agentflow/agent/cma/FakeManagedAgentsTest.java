@@ -96,7 +96,7 @@ class FakeManagedAgentsTest {
         List<CmaEvent> events = fake.listEvents(session, null);
         assertThat(events.stream().filter(CmaEvent.ToolUse.class::isInstance).map(event -> ((CmaEvent.ToolUse) event).permission()))
                 .containsExactly(CmaEvent.Permission.ALLOW, CmaEvent.Permission.DENY, CmaEvent.Permission.DENY);
-        assertThat(((CmaEvent.AgentMessage) events.get(events.size() - 2)).text()).isEqualTo("results: 2");
+        assertThat(((CmaEvent.AgentMessage) events.get(events.size() - 3)).text()).isEqualTo("results: 2");
         assertThat(fake.executions()).hasSize(1);
     }
 

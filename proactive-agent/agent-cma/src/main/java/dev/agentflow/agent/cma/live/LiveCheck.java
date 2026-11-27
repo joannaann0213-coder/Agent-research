@@ -200,6 +200,14 @@ public final class LiveCheck {
                 ordered && messages == 1 ? Verdict.AS_ASSUMED : Verdict.DIFFERENT,
                 stored.size() + " events: " + types(stored));
 
+        // The agent service counts the tokens of a turn from these, also when it reads a turn again.
+        List<CmaEvent.ModelUsage> used = stored.stream().filter(CmaEvent.ModelUsage.class::isInstance)
+                .map(CmaEvent.ModelUsage.class::cast).toList();
+        boolean counted = !used.isEmpty() && used.stream().allMatch(one -> one.outputTokens() > 0
+                && one.inputTokens() + one.cacheReadTokens() + one.cacheCreationTokens() > 0);
+        note("the stored list says what every request to the model used", counted ? Verdict.AS_ASSUMED : Verdict.DIFFERENT,
+                used.size() + " requests: " + used);
+
         List<CmaEvent> later = cma.listEvents(session, previous.plusSeconds(1));
         note("the stored list can be read from a point in time", later.isEmpty() ? Verdict.AS_ASSUMED : Verdict.DIFFERENT,
                 "from one second after the last event: " + types(later));
