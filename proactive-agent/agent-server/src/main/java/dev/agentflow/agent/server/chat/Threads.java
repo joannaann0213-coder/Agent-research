@@ -37,10 +37,13 @@ public class Threads {
      * @param memory how the session has the user's memory: {@code ""}, {@code rw} or {@code ro}
      * @param superseded for a conversation: how many replies in a row were ended because the user wrote
      *     again before they were there; 0 once a reply has reached the user
+     * @param briefedGeneration the latest session of the line that was given what the service has on
+     *     record of the line's work before it; a session that replaces another one is behind until then
      */
     public record Thread(String appId, String userId, String mergeKey, String kind, String conversationId,
             String agentKey, int generation, String sessionId, AgentRef sessionAgent, String lastEventId,
-            Instant lastEventAt, long syncedSeq, long stoppedThrough, String vaultIds, String memory, int superseded) {
+            Instant lastEventAt, long syncedSeq, long stoppedThrough, String vaultIds, String memory, int superseded,
+            int briefedGeneration) {
 
         public boolean chat() {
             return CHAT.equals(kind);
@@ -123,7 +126,7 @@ public class Threads {
         return jdbc.sql("""
                 SELECT app_id, user_id, merge_key, kind, conversation_id, agent_key, generation, cma_session_id,
                        cma_agent_id, cma_agent_version, last_event_id, last_event_at, synced_seq, stopped_through, cma_vault_ids,
-                       cma_memory, superseded
+                       cma_memory, superseded, briefed_generation
                   FROM thread WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
                 """)
                 .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey)
@@ -218,6 +221,20 @@ public class Threads {
                 .update();
     }
 
+    /**
+     * Notes that the line's session has what the service has on record of the line's work before it,
+     * or that there is nothing to tell it.
+     */
+    public void briefed(Thread thread) {
+        jdbc.sql("""
+                UPDATE thread SET briefed_generation = GREATEST(briefed_generation, :generation), updated_at = :now
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey
+                """)
+                .param("generation", thread.generation()).param("now", Db.ts(clock.now())).param("appId", thread.appId())
+                .param("userId", thread.userId()).param("mergeKey", thread.mergeKey())
+                .update();
+    }
+
     /** How far the conversation's messages are stopped, as it stands now. */
     public long stoppedThrough(String appId, String userId, String mergeKey) {
         return jdbc.sql("SELECT stopped_through FROM thread WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey")
@@ -257,6 +274,6 @@ public class Threads {
                 rs.getString("cma_session_id"), agentId == null ? null : new AgentRef(agentId, rs.getInt("cma_agent_version")),
                 rs.getString("last_event_id"), Db.instant(rs, "last_event_at"), rs.getLong("synced_seq"),
                 rs.getLong("stopped_through"), rs.getString("cma_vault_ids"), rs.getString("cma_memory"),
-                rs.getInt("superseded"));
+                rs.getInt("superseded"), rs.getInt("briefed_generation"));
     }
 }

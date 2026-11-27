@@ -240,7 +240,7 @@ curl -s -X PUT $API/v1/users/u42/credentials/notes -H "Authorization: Bearer $KE
 | `coordinator` | 让这个 agent 成为主 agent。`workers` 列出它可以把工作交给谁：每一项有 `role`、扮演这个角色的 `agent` 的 key、告诉主 agent 这个角色用来做什么的 `description`，需要时还有 `start`，规定这个角色的任务何时可以开始。`proactivity` 规定用户没说过时主 agent 的主动程度：不设就是 `proactive` |
 
 服务给每个 agent 四个自带工具：`read_events`、`notify_user`、`ask_user` 和 `schedule_followup`；主 agent 另有五个用来交出工作的工具：`delegate_task`、`start_task`、`message_worker`、`list_tasks`
-和 `close_task`，另外还有 `set_proactivity`。正在进行的会话在下一轮采用改过的配置，换到一个新的 session，并被告知之前说过的内容。
+和 `close_task`，另外还有 `set_proactivity`。正在进行的会话在下一轮采用改过的配置，换到一个新的 session，被告知之前说过的内容，并拿到服务记录在案的 agent 的工作内容。
 
 ## 主 agent 和它的任务
 

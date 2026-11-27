@@ -305,6 +305,35 @@ public class Turns {
         return ended.isPresent();
     }
 
+    /**
+     * A turn in the background that is over: what it was about, how it ended, and what the agent
+     * wrote at its end.
+     *
+     * @param work what the turn worked on, as its row names it
+     * @param note the agent's last words in the turn, which no user read; {@code null} when it wrote none
+     */
+    public record Past(String runId, Instant at, String outcome, String note, JsonNode work) {
+    }
+
+    /**
+     * The latest turns in the background of a line in which the agent did something or decided to
+     * do nothing, oldest first. Turns that found their work done by another one are left out.
+     */
+    public List<Past> latestInBackground(String appId, String userId, String mergeKey, int limit) {
+        List<Past> newestFirst = jdbc.sql("""
+                SELECT run_id, created_at, outcome, note, work::text AS work FROM turn
+                 WHERE app_id = :appId AND user_id = :userId AND merge_key = :mergeKey AND kind = 'background'
+                   AND state = 'done' AND outcome IN ('notified', 'silent', 'refused') AND work IS NOT NULL
+                 ORDER BY created_at DESC, run_id DESC
+                 LIMIT :limit
+                """)
+                .param("appId", appId).param("userId", userId).param("mergeKey", mergeKey).param("limit", limit)
+                .query((rs, row) -> new Past(rs.getString("run_id"), Db.instant(rs, "created_at"), rs.getString("outcome"),
+                        rs.getString("note"), Json.STORED.readTree(rs.getString("work"))))
+                .list();
+        return newestFirst.reversed();
+    }
+
     public Optional<Turn> find(String runId) {
         return jdbc.sql("SELECT " + COLUMNS + " FROM turn WHERE run_id = :runId")
                 .param("runId", runId)

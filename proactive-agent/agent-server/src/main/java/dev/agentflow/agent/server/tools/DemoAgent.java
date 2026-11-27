@@ -20,7 +20,8 @@ import tools.jackson.databind.node.ObjectNode;
  *       notifications, it reads them first and says so. When the user writes {@code slow:} and
  *       something, it takes a few seconds over its answer, so that writing again before the answer
  *       is there can be tried; and when its turn was ended because the user did, it answers all
- *       they wrote in one reply.
+ *       they wrote in one reply. In a session that replaced another one it reads what the service
+ *       has on record of its work, and says that it did.
  *   <li>In the background it reads the events and tells the user about each one, in fixed words,
  *       except those whose data has {@code "silent": true}.
  *   <li>As a main agent it hands on whatever the user writes after {@code task:} to the first of its
@@ -123,7 +124,8 @@ public final class DemoAgent implements FakeBrain {
             }
             return ModelStep.say("You said: " + all
                     + (told.isEmpty() ? "" : " (Since we last spoke you were told: " + String.join(" / ", told) + ")")
-                    + (news.isEmpty() ? "" : " (News of your tasks: " + String.join(" / ", news) + ")"));
+                    + (news.isEmpty() ? "" : " (News of your tasks: " + String.join(" / ", news) + ")")
+                    + onRecord(since.path("before_this_session")));
         }
         if (read == null) {
             ToolOutcome sent = context.resultOf(PlatformTools.NOTIFY_USER);
@@ -241,6 +243,30 @@ public final class DemoAgent implements FakeBrain {
         int note = input.indexOf(WROTE_AGAIN);
         int end = note < 0 ? -1 : input.indexOf("]\n\n", note);
         return end < 0 ? lastLine : String.join(" / ", input.substring(end + 3).split("\n\n"));
+    }
+
+    /**
+     * What a session that replaced another one says about what the service gave it from its records,
+     * so that it shows: the session is new, and still knows of its work.
+     */
+    private static String onRecord(JsonNode record) {
+        if (record.isMissingNode()) {
+            return "";
+        }
+        List<String> known = new ArrayList<>();
+        int open = record.path("tasks").size();
+        int closed = record.path("closed_lately").size();
+        int handled = record.path("in_the_background").size();
+        if (open > 0) {
+            known.add(open == 1 ? "a task that is open" : open + " tasks that are open");
+        }
+        if (closed > 0) {
+            known.add(closed == 1 ? "a task that was closed lately" : closed + " tasks that were closed lately");
+        }
+        if (handled > 0) {
+            known.add(handled == 1 ? "one thing I handled in the background" : handled + " things I handled in the background");
+        }
+        return " (This is a new session of mine. From the service's records I know of " + String.join(", ", known) + ".)";
     }
 
     /** Keeps the answer back for a few seconds, as a model does that thinks about it. */

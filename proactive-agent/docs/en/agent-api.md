@@ -285,7 +285,8 @@ from the next call on. With a refresh token, the platform renews the access toke
 The service gives every agent four tools of its own: `read_events`, `notify_user`, `ask_user` and
 `schedule_followup`; a main agent gets five more to hand work on, `delegate_task`, `start_task`,
 `message_worker`, `list_tasks` and `close_task`, and `set_proactivity`. A conversation that is under way takes a changed
-configuration on at its next turn, in a new session that is told what was said before.
+configuration on at its next turn, in a new session that is told what was said before and is given
+what the service has on record of the agent's work.
 
 ## A main agent and its tasks
 

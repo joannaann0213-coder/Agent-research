@@ -14,6 +14,7 @@ import dev.agentflow.agent.server.chat.Threads;
 import dev.agentflow.agent.server.config.AgentProperties;
 import dev.agentflow.agent.server.core.Json;
 import dev.agentflow.agent.server.api.AgentException;
+import dev.agentflow.agent.server.events.AppEvents;
 import dev.agentflow.agent.server.events.AppEvents.AppEvent;
 import dev.agentflow.agent.server.profile.AgentProfiles;
 import dev.agentflow.agent.server.schedules.Schedules;
@@ -49,6 +50,12 @@ class TurnTools {
 
     static final Duration QUOTA_WINDOW = Duration.ofHours(24);
 
+    /** How many turns in the background, and how many closed tasks, a new session is told of. */
+    private static final int PAST_TURNS = 10;
+    private static final int PAST_TASKS = 5;
+    /** How much of an event's data, and of what the user was told, a new session is shown of each. */
+    private static final int PAST_EXCERPT = 400;
+
     /**
      * @param error whether the agent is told that the call failed
      * @param syncedTo for a conversation: the position of the last notification the answer told the session about
@@ -78,9 +85,10 @@ class TurnTools {
     private final Actions actions;
     private final AgentProfiles profiles;
     private final Preferences preferences;
+    private final AppEvents appEvents;
 
     TurnTools(Messages messages, Threads threads, Users users, Turns turns, Schedules schedules, Tasks tasks, Actions actions,
-            AgentProfiles profiles, Preferences preferences, TransactionTemplate tx, AgentClock clock,
+            AgentProfiles profiles, Preferences preferences, AppEvents appEvents, TransactionTemplate tx, AgentClock clock,
             AgentProperties properties) {
         this.messages = messages;
         this.threads = threads;
@@ -96,6 +104,7 @@ class TurnTools {
         this.actions = actions;
         this.profiles = profiles;
         this.preferences = preferences;
+        this.appEvents = appEvents;
     }
 
     /** @param ordinal the call's place among the turn's calls of the same tool, from 1 */
@@ -118,9 +127,116 @@ class TurnTools {
 
     private Answer readEvents(Threads.Thread line, Work work, JsonNode input) {
         return switch (work) {
-            case Work.Task task -> waitingEvents(task, input);
+            case Work.Task task -> waitingEvents(line, task, input);
             case Work.Chat chat -> unreadNotifications(line, chat);
             case Work.Job job -> handedOver(line, job);
+        };
+    }
+
+    // ================================================================ what a new session is told
+
+    /**
+     * Whether the line's session replaced another one and has not been given what the service has on
+     * record of the line's work before it. A worker's line is not meant: a worker's new session is
+     * given the task's notes with its work.
+     */
+    static boolean unbriefed(Threads.Thread line) {
+        return !line.work() && line.generation() > 1 && line.briefedGeneration() < line.generation();
+    }
+
+    /**
+     * What the service has on record of a line's work, for a session that replaces another one and
+     * knows none of it: for a main agent its tasks, open and lately closed, and a question it asked
+     * that still waits; for every agent what its latest turns in the background were about, what it
+     * told the user in them, and what it wrote at their end. What the user and the agent said to each
+     * other is not in it: that is given with the turn's input.
+     *
+     * <p>It goes to the agent as the result of a tool, like everything that did not come from the
+     * user: it holds what other systems and other agents said.
+     *
+     * @return {@code null} when there is nothing on record
+     */
+    ObjectNode onRecord(Threads.Thread line) {
+        ObjectNode record = Json.STORED.createObjectNode();
+        record.put("about", "This session is new. This is what the service has on record of your work on this line before it.");
+        boolean any = false;
+        if (notAMainAgent(line) == null) {
+            ArrayNode open = openTasks(line);
+            if (!open.isEmpty()) {
+                record.set("tasks", open);
+                any = true;
+            }
+            List<Tasks.Task> closed = tasks.closedLately(line, PAST_TASKS);
+            if (!closed.isEmpty()) {
+                ArrayNode lately = record.putArray("closed_lately");
+                for (Tasks.Task task : closed.reversed()) {
+                    ObjectNode one = lately.addObject();
+                    one.put("task_id", task.taskId()).put("role", task.role()).put("title", task.title())
+                            .put("started_by", task.ofApplication() ? "the application" : "you")
+                            .put("closed_at", task.closedAt().toString()).put("closed_by", whoClosed(task.closedBy()));
+                    if (task.closedReason() != null) {
+                        one.put("closed_because", Tasks.excerpt(task.closedReason()));
+                    }
+                    tasks.lastReport(task).ifPresent(note -> one.putObject("last_report").put("text", Tasks.excerpt(note.text()))
+                            .put("sent_at", note.createdAt().toString()));
+                }
+                any = true;
+            }
+            Optional<Actions.Action> asked = actions.latestPendingQuestion(line.appId(), line.userId(), line.conversationId())
+                    .filter(Actions.Action::inPassing);
+            if (asked.isPresent()) {
+                record.putObject("question_waiting").put("question", asked.get().question())
+                        .put("asked_at", asked.get().createdAt().toString());
+                any = true;
+            }
+        }
+        List<Turns.Past> past = turns.latestInBackground(line.appId(), line.userId(), line.mergeKey(), PAST_TURNS);
+        if (!past.isEmpty()) {
+            ArrayNode background = record.putArray("in_the_background");
+            for (Turns.Past turn : past) {
+                ObjectNode one = background.addObject();
+                one.put("at", turn.at().toString());
+                ArrayNode about = one.putArray("about");
+                for (JsonNode eventId : turn.work().path("events")) {
+                    appEvents.find(line.appId(), line.userId(), eventId.asString()).ifPresent(event -> about.addObject()
+                            .put("event", event.type()).put("subject", event.subject()).put("data", excerpt(event.data().toString())));
+                }
+                for (JsonNode due : turn.work().path("due")) {
+                    schedules.find(line.appId(), line.userId(), due.path("schedule_id").asString()).ifPresent(schedule ->
+                            about.addObject().put(schedule.followup() ? "your_follow_up" : "scheduled_by_the_application",
+                                    schedule.followup() ? excerpt(schedule.note()) : schedule.name()));
+                }
+                int reports = turn.work().path("reports").size();
+                if (reports > 0) {
+                    about.addObject().put("news_of_your_tasks", reports);
+                }
+                ArrayNode told = one.putArray("told_the_user");
+                messages.saidBy(line.appId(), line.userId(), turn.runId()).forEach(message -> told.add(excerpt(message.text())));
+                if (turn.note() != null) {
+                    one.put("your_last_words", turn.note());
+                }
+            }
+            any = true;
+        }
+        if (!any) {
+            return null;
+        }
+        if (notAMainAgent(line) == null) {
+            record.put("the_user_wants_you", preferences.proactivity(line.appId(), line.userId(), line.agentKey()));
+        }
+        return record;
+    }
+
+    private static String excerpt(String text) {
+        return text.length() <= PAST_EXCERPT ? text : text.substring(0, PAST_EXCERPT) + "…";
+    }
+
+    private static String whoClosed(String closedBy) {
+        return switch (closedBy == null ? "" : closedBy) {
+            case "agent" -> "you";
+            case "user" -> "the user";
+            case "app" -> "the application";
+            default -> "the service";
         };
     }
 
@@ -128,7 +244,7 @@ class TurnTools {
      * The events of the run and, for a main agent, what its workers have for it, as many as fit, from
      * where the previous answer stopped: the events first, then the workers' reports.
      */
-    private static Answer waitingEvents(Work.Task task, JsonNode input) {
+    private Answer waitingEvents(Threads.Thread line, Work.Task task, JsonNode input) {
         List<AppEvent> all = task.events();
         List<Tasks.Report> reports = task.reports();
         int total = all.size() + reports.size();
@@ -180,7 +296,20 @@ class TurnTools {
                         .put("due_at", item.dueAt().toString());
             }
         }
+        if (from == 0) {
+            beforeThisSession(result, line);
+        }
         return Answer.ok(result.toString());
+    }
+
+    /** For a session that replaced another one and was not told yet: what the service has on record from before it. */
+    private void beforeThisSession(ObjectNode result, Threads.Thread line) {
+        if (unbriefed(line)) {
+            ObjectNode record = onRecord(line);
+            if (record != null) {
+                result.set("before_this_session", record);
+            }
+        }
     }
 
     /** A note of a task for the main agent, with the task it is about. */
@@ -213,6 +342,7 @@ class TurnTools {
             ArrayNode reports = result.putArray("reports");
             chat.news().forEach(report -> reported(reports.addObject(), report));
         }
+        beforeThisSession(result, line);
         return new Answer(result.toString(), false, unread.isEmpty() ? null : unread.getLast().seq());
     }
 
@@ -472,25 +602,7 @@ class TurnTools {
             return Answer.failed("Not listed: " + refusal);
         }
         ObjectNode result = Json.STORED.createObjectNode();
-        ArrayNode open = result.putArray("tasks");
-        for (Tasks.Task task : tasks.open(line)) {
-            ObjectNode one = open.addObject();
-            one.put("task_id", task.taskId()).put("role", task.role()).put("title", task.title()).put("status", task.status())
-                    .put("started_by", task.ofApplication() ? "the application" : "you")
-                    .put("delegated_at", task.createdAt().toString());
-            if (task.subject() != null) {
-                one.put("subject", task.subject());
-            }
-            // What the worker waits for people to decide: the main agent is who the user asks about it.
-            List<Actions.Action> waiting = actions.pendingOfLine(task.appId(), task.userId(), task.line());
-            if (!waiting.isEmpty()) {
-                ArrayNode waitsFor = one.putArray("waits_for");
-                waiting.forEach(action -> waitsFor.add((Actions.BY_USER.equals(action.approver()) ? "the user's" : "the application's")
-                        + " approval of " + action.toolServer() + "." + action.toolName()));
-            }
-            tasks.lastForMain(task).ifPresent(note -> one.putObject("latest").put("from", fromWhom(note))
-                    .put("kind", note.kind()).put("text", Tasks.excerpt(note.text())).put("sent_at", note.createdAt().toString()));
-        }
+        result.set("tasks", openTasks(line));
         // What is still to come for the workers without the main agent's doing: the application's schedules for them.
         List<Schedules.Schedule> standing = schedules.forWorkers(line.appId(), line.userId(), line.mergeKey());
         if (!standing.isEmpty()) {
@@ -510,6 +622,30 @@ class TurnTools {
             }
         }
         return Answer.ok(result.toString());
+    }
+
+    /** The open tasks of a main agent's line, with how each stands and the latest that was said about it to the main agent. */
+    private ArrayNode openTasks(Threads.Thread line) {
+        ArrayNode open = Json.STORED.createArrayNode();
+        for (Tasks.Task task : tasks.open(line)) {
+            ObjectNode one = open.addObject();
+            one.put("task_id", task.taskId()).put("role", task.role()).put("title", task.title()).put("status", task.status())
+                    .put("started_by", task.ofApplication() ? "the application" : "you")
+                    .put("delegated_at", task.createdAt().toString());
+            if (task.subject() != null) {
+                one.put("subject", task.subject());
+            }
+            // What the worker waits for people to decide: the main agent is who the user asks about it.
+            List<Actions.Action> waiting = actions.pendingOfLine(task.appId(), task.userId(), task.line());
+            if (!waiting.isEmpty()) {
+                ArrayNode waitsFor = one.putArray("waits_for");
+                waiting.forEach(action -> waitsFor.add((Actions.BY_USER.equals(action.approver()) ? "the user's" : "the application's")
+                        + " approval of " + action.toolServer() + "." + action.toolName()));
+            }
+            tasks.lastForMain(task).ifPresent(note -> one.putObject("latest").put("from", fromWhom(note))
+                    .put("kind", note.kind()).put("text", Tasks.excerpt(note.text())).put("sent_at", note.createdAt().toString()));
+        }
+        return open;
     }
 
     private Answer closeTask(Turn turn, Threads.Thread line, JsonNode input) {

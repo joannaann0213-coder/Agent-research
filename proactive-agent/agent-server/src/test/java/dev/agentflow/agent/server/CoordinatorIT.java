@@ -509,8 +509,11 @@ class CoordinatorIT extends AgentTestBase {
         String first = cma.userMessages(cma.sessionIds().getLast()).getFirst();
         assertThat(first).startsWith("[From the service that runs you, not from the user: this conversation continues in a new session.")
                 .contains("User: research flights to Tokyo\nYou: On it: " + lastTask + "\n[End of the earlier conversation.]",
-                        "One of them is still open. Call list_tasks to see it.",
+                        "The service has it on record: your tasks and how they stand. Call read_events to get it before you "
+                                + "decide what to do.]",
                         "A worker has something for you on a task you delegated.");
+        assertThat(mainRead.getLast().path("before_this_session").path("tasks").get(0).path("task_id").asString())
+                .as("with the report that it is woken for, the new session is given its tasks").isEqualTo(lastTask);
 
         userSays(acme, USER, "list");
         settle();

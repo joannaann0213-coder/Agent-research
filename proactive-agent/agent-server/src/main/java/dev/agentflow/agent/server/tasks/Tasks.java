@@ -657,6 +657,18 @@ public class Tasks {
     }
 
     /** The main agent's open tasks, oldest first. */
+    /** The tasks of a main agent's line that were closed last, the latest first. */
+    public List<Task> closedLately(Threads.Thread hub, int limit) {
+        return jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND hub_key = :hubKey AND status = 'closed'
+                 ORDER BY closed_at DESC, task_id DESC
+                 LIMIT :limit
+                """)
+                .param("appId", hub.appId()).param("userId", hub.userId()).param("hubKey", hub.mergeKey()).param("limit", limit)
+                .query(Tasks::task)
+                .list();
+    }
+
     public List<Task> open(Threads.Thread hub) {
         return jdbc.sql(SELECT + """
                  WHERE app_id = :appId AND user_id = :userId AND hub_key = :hubKey AND status <> 'closed'
@@ -792,6 +804,17 @@ public class Tasks {
     }
 
     /** What the worker, or the service about the worker, last told the main agent. */
+    /** What the worker of a task reported last, if it ever did. */
+    public Optional<Note> lastReport(Task task) {
+        return jdbc.sql(NOTES + """
+                 WHERE app_id = :appId AND user_id = :userId AND task_id = :taskId AND kind = 'report'
+                 ORDER BY seq DESC LIMIT 1
+                """)
+                .param("appId", task.appId()).param("userId", task.userId()).param("taskId", task.taskId())
+                .query(Tasks::note)
+                .optional();
+    }
+
     public Optional<Note> lastForMain(Task task) {
         return jdbc.sql(NOTES + """
                  WHERE app_id = :appId AND user_id = :userId AND task_id = :taskId AND direction = 'to_main'

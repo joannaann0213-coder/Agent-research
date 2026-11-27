@@ -1237,26 +1237,62 @@ public class TurnRunner {
     }
 
     /**
-     * For the first turn of a session that replaces another one, when that turn is not the user's:
-     * what was said in the conversation before, of which the new session knows nothing. A turn that
-     * the user starts is told the same by {@link #said}; without this, a conversation whose new
-     * session happened to start in the background would never be told.
+     * For a turn in the background of a session that replaces another one. In a conversation it is
+     * told what was said before, of which the new session knows nothing: a turn that the user starts
+     * is told the same by {@link #said}, and without this a conversation whose new session happened
+     * to start in the background would never be told. On every line it is pointed to what the service
+     * has on record of the line's work.
      */
     private String recalled(Threads.Thread thread) {
-        if (!thread.chat() || thread.generation() <= 1 || thread.lastEventId() != null) {
+        StringBuilder text = new StringBuilder();
+        if (thread.chat() && thread.generation() > 1 && thread.lastEventId() == null) {
+            List<MessageView> earlier = messages.dialogueBefore(thread.appId(), thread.userId(), thread.conversationId(),
+                    thread.mergeKey(), Long.MAX_VALUE, config.getTranscriptMessages());
+            if (!earlier.isEmpty()) {
+                text.append("[From the service that runs you, not from the user: this conversation continues in a new "
+                        + "session. This is what was said before, for your reference.]\n");
+                transcript(text, earlier);
+                text.append("[End of the earlier conversation.]\n\n");
+                threads.unsyncedAfter(thread, earlier.getFirst().seq() - 1);
+            }
+        }
+        return text.append(onRecord(thread, "decide what to do")).toString();
+    }
+
+    /**
+     * For a session that replaced another one and has not been told yet: that the service has the
+     * line's work so far on record, and how to get it. A session knows only what happened in it. For a
+     * main agent, which is the one that knows everything about its user, that would be a clean slate
+     * each time its agent is configured anew or its session does not come to rest; so the service
+     * keeps what the agent did and made of things, and hands it over. It goes through read_events,
+     * as the result of a tool, because it holds what other systems and other agents said.
+     *
+     * <p>A line with nothing on record has nothing to be told, and counts as told.
+     *
+     * @param then what the agent is about to do, in words for the notice
+     */
+    private String onRecord(Threads.Thread thread, String then) {
+        if (!TurnTools.unbriefed(thread)) {
             return "";
         }
-        StringBuilder text = new StringBuilder();
-        List<MessageView> earlier = messages.dialogueBefore(thread.appId(), thread.userId(), thread.conversationId(),
-                thread.mergeKey(), Long.MAX_VALUE, config.getTranscriptMessages());
-        if (!earlier.isEmpty()) {
-            text.append("[From the service that runs you, not from the user: this conversation continues in a new "
-                    + "session. This is what was said before, for your reference.]\n");
-            transcript(text, earlier);
-            text.append("[End of the earlier conversation.]\n\n");
-            threads.unsyncedAfter(thread, earlier.getFirst().seq() - 1);
+        ObjectNode record = tools.onRecord(thread);
+        if (record == null) {
+            threads.briefed(thread);
+            return "";
         }
-        return text.append(delegatedBefore(thread)).toString();
+        List<String> what = new ArrayList<>();
+        if (record.has("tasks") || record.has("closed_lately")) {
+            what.add("your tasks and how they stand");
+        }
+        if (record.has("in_the_background")) {
+            what.add("what you handled in the background and what you made of it");
+        }
+        if (record.has("question_waiting")) {
+            what.add("a question that you asked the user and that still waits for an answer");
+        }
+        return "[From the service that runs you, not from the user: this session is new and knows nothing of your work "
+                + "before it. The service has it on record: " + String.join(", ", what) + ". Call read_events to get it before "
+                + "you " + then + ".]\n\n";
     }
 
     private static void transcript(StringBuilder text, List<MessageView> earlier) {
@@ -1265,18 +1301,6 @@ public class TurnRunner {
                     : message.text().substring(0, TRANSCRIPT_CHARS_PER_MESSAGE) + "…";
             text.append(message.role().equals("user") ? "User: " : "You: ").append(words).append('\n');
         }
-    }
-
-    /** For a main agent's new session: that tasks it delegated in an earlier session are still open. */
-    private String delegatedBefore(Threads.Thread thread) {
-        int open = thread.chat() ? tasks.open(thread).size() : 0;
-        if (open == 0 || !PlatformTools.delegates(profiles.config(thread.appId(), thread.agentKey()).coordinator())) {
-            return "";
-        }
-        return "[From the service that runs you, not from the user: this session is new and knows nothing of the tasks you "
-                + "delegated before, or that the application handed to your workers. " + (open == 1 ? "One of them is"
-                : open + " of them are")
-                + " still open. Call list_tasks to see " + (open == 1 ? "it" : "them") + ".]\n\n";
     }
 
     /**
@@ -1300,8 +1324,8 @@ public class TurnRunner {
                 synced = Math.min(synced, earlier.getFirst().seq() - 1);
                 threads.unsyncedAfter(thread, synced);
             }
-            text.append(delegatedBefore(thread));
         }
+        text.append(onRecord(thread, "answer"));
         int unread = messages.outsideAfter(thread.appId(), thread.userId(), thread.conversationId(), thread.mergeKey(), synced,
                 TurnTools.MAX_NOTIFICATIONS_READ).size();
         if (unread > 0) {
@@ -1724,6 +1748,10 @@ public class TurnRunner {
                     schedules.fired(thread.appId(), thread.userId(),
                             job.due().stream().map(item -> item.schedule().scheduleId()).toList());
                 }
+            }
+            if (TurnTools.unbriefed(thread) && reading.answeredCall(PlatformTools.READ_EVENTS)) {
+                // The session replaced another one, and has now been given what the service had on record from before it.
+                threads.briefed(thread);
             }
             if (reading.lastEventId != null) {
                 threads.sawUpTo(thread, reading.lastEventId, reading.lastEventAt);

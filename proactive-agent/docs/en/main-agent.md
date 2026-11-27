@@ -75,7 +75,7 @@ carries the tasks here.
 | What a worker shares with the main agent | The notes of the task, and nothing else | The session's sandbox, files, vaults and memory |
 | Who can write to a worker | The main agent, at any time, with `message_worker` | Only the coordinator: a client cannot post into a thread |
 | What the user waits for | Not for the work: the main agent's turn ends as soon as it has delegated | For the work: the session is busy while any of its threads is, so the turn lasts as long as the work |
-| When the main agent gets a new session | The tasks go on, and the new session is told that they are open | The threads go with the session |
+| When the main agent gets a new session | The tasks go on, and the new session is given them, with what the main agent did and made of things before | The threads go with the session |
 | What it costs | A session per task, with the time it takes to start, and no shared working directory | Nothing on top: a thread starts inside the running session |
 
 The first two rows decide it. Every wake-up that goes around the Inbox is one that its guarantees do
@@ -122,6 +122,21 @@ not only what came of it. Three things see to that.
 Not every note wakes the main agent. What a person decided comes with the worker's next report, or
 with the user's next message, whichever is first. Which of the others wake it is a matter of
 [how forward the user wants it](#how-forward-the-main-agent-is).
+
+A session knows only what happened in it, and the main agent's session is replaced now and then:
+when the agent is configured anew, when credentials change, when the session does not come to rest
+after it was stopped. For the one agent that knows everything about its user, that would be a clean
+slate each time. So the new session is told what was said, with its first input, and is pointed to
+what the service has on record of its work, which it reads with `read_events`:
+
+- its tasks, the open ones and the ones closed lately, with the latest that was said about each;
+- what its latest turns in the background were about, what it told the user in them, and what it
+  wrote at their end, which is where an agent says what it made of something it kept to itself;
+- a question that it asked the user and that still waits;
+- how forward the user wants it.
+
+It is offered with every turn until the session has read it, and then no more. What the agent only
+thought in the old session, and wrote nowhere, is gone.
 
 The service adds a few sentences to a main agent's instructions. They say that everything about the
 user comes to this session; that each time it is the agent's judgement whether to act, to tell the
@@ -355,7 +370,7 @@ update, `task.created` or `task.updated`.
 | A turn of the worker fails, or runs out of time | A note from the service tells the main agent that the work is not done. The main agent sends the worker a message to have it try again, or closes the task |
 | The worker ends its turn without writing anything | If the main agent had sent something, the service reports that in the worker's place, so the main agent never waits for nothing |
 | The task is closed while the worker works | The worker's session is interrupted, and no report is stored |
-| The main agent's session is replaced | The first turn of the new session is told what was said before and that tasks are open, also when that turn starts in the background |
+| The main agent's session is replaced | The new session is told what was said before, and is given what the service has on record of its work: its tasks, what it handled in the background, and what it made of it. Also when its first turn starts in the background, and with every turn until it has read it |
 | The main agent delegates more and more | `delegate_task` is refused, with the reason, while 4 tasks are queued or worked on, or 20 are open |
 | Nobody confirms a proposed task | After 3 days the sweep closes it and records `task.updated`, so that the application that shows it knows; an attempt to confirm it then is refused |
 | The main agent proposes more and more | `delegate_task` is refused while 5 tasks wait for a confirmation |

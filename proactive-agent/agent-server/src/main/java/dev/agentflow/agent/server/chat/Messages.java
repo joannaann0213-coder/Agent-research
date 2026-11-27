@@ -415,6 +415,17 @@ public class Messages {
         return newestFirst.reversed();
     }
 
+    /** What a run told the user: its reply, notifications, questions and proposals, in order. */
+    public List<MessageView> saidBy(String appId, String userId, String runId) {
+        return jdbc.sql(SELECT + """
+                 WHERE app_id = :appId AND user_id = :userId AND run_id = :runId AND role = 'agent'
+                 ORDER BY seq
+                """)
+                .param("appId", appId).param("userId", userId).param("runId", runId)
+                .query(Messages::view)
+                .list();
+    }
+
     /** How many notifications the user was sent since {@code since}, in all conversations. */
     public long notificationsSince(String appId, String userId, Instant since) {
         return jdbc.sql("""

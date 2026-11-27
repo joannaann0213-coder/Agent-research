@@ -61,6 +61,11 @@ background, for example when it reminds the user of something an hour later.
 A line's session is replaced when it can no longer be used, and renewed between turns when the agent
 was configured anew or the user's vaults changed. Each session is a new generation of the line; the
 first input of a conversation's new session begins with what the user and the agent said before.
+What else the service has on record of the line's work, the new session is pointed to and reads
+with `read_events`: what the agent's latest turns in the background were about, what it told the
+user in them and what it wrote at their end, and for a main agent its tasks as well. It goes
+through the tool because it holds what other systems and other agents said. A session is told once
+(`thread.briefed_generation`); a worker's new session gets the notes of its task with its work.
 
 ## Main agent and workers
 
@@ -130,7 +135,7 @@ document the design, the tools and the reasons.
 | A worker stalls past its lease | Its successor takes the turn over under a higher epoch; every write of the stalled worker is refused |
 | The answer to the send of the input is lost | The session is read to see whether the input arrived, before anything is sent again |
 | The platform is overloaded or refuses for a moment | The call is tried again a few times, with growing delays, while the lease is kept alive; then the run goes back to the Inbox for later |
-| The session is terminated, unknown, or the platform gave up on the turn | The line gets a new session in the same turn, told what was said before; if that fails too, the run is tried again later |
+| The session is terminated, unknown, or the platform gave up on the turn | The line gets a new session in the same turn, told what was said before and given what is on record of its work; if that fails too, the run is tried again later |
 | A turn takes longer than its deadline (10 minutes) | The session is interrupted, the turn fails, and a `run.failed` update is recorded |
 | A run dies (its attempts are used up) | A sweep closes its turn and records `run.failed`; the next turn of the line brings the session to rest first |
 | The stream breaks | The tail opens it again and reads what is stored in between |
@@ -322,8 +327,9 @@ else: live mode starts with new applications.
   messenger does. A message that arrives during a turn is not taken into that turn. It gets the next
   one, and for a main agent the reply under way is ended for it, so that the next one answers
   everything.
-- Memory is per user and agent, and only for agents with a sandbox. A conversation's new session is
-  also told the recent dialogue.
+- Memory is per user and agent, and only for agents with a sandbox. A new session is also told the
+  recent dialogue and given what the service has on record of the line's work. What the agent only
+  thought in the old session, and did not write at the end of a turn, is gone.
 - The rate limits and the stream's wake-ups are per instance.
 - Notifications are not sent to other channels (push, e-mail); applications do that from the updates.
 - A main agent takes one thing at a time. A turn in the background gives way to a message of the
